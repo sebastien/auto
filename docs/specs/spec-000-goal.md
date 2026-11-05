@@ -29,8 +29,10 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 ## Principles
 
 - *Simple model*: a small set of elements, each built from existing ones.
-- *Composable layers*: each layer adds elements, and extends the *Run* defined
-  by Execution.
+- *Composable layers*: each layer adds elements; Planning introduces the *Run*,
+  extended by the layers above.
+- *Zero setup*: running a script needs no storage or configuration;
+  persistence starts with tasks.
 - *No new primitives*: higher-level ideas are expressed with existing elements
   (a meta-task is a Task, actuation is Planning informed by Learnings,
   learning management is a set of Tasks in a Workflow).
@@ -41,8 +43,8 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 
 | Layer | Adds | Built from | Extends Run with |
 |---|---|---|---|
-| Execution | Script, Run | Template + inputs | State, journal of events, receipt |
-| Planning | Task, Plan | Script + contract; Tasks + Learnings | Output assessment, learnings |
+| Execution | Script | Template + inputs | — (ephemeral: events and output) |
+| Planning | Task, Run, Plan | Script + contract; Tasks + Learnings | State, journal, receipt, output assessment |
 | Orchestration | Workflow | Rules acting on a Plan | Budget status, retry count |
 | Learning | Learning | Assessed Runs | — |
 
@@ -61,11 +63,12 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 
 ## Elements
 
-- *Script*: an agent-runnable template supporting inputs and parameters.
-- *Run*: the execution of a script, carrying a state, a journal of events, and
-  a receipt of completion or failure. Extended by each layer above Execution.
+- *Script*: an agent-runnable template supporting inputs and parameters, run
+  standalone and without storage.
 - *Task*: a script decorated with a contract: dependencies and quality
   assessment of the output (definition of done).
+- *Run*: the stored execution of a task, carrying a state, a journal of events,
+  and a receipt of completion or failure. Extended by Orchestration.
 - *Plan*: a set of tasks, refined as they are executed and as learnings accrue.
 - *Workflow*: rules that drive the creation and updating of a plan.
 - *Learning*: knowledge derived from an assessed Run, classified (failure,

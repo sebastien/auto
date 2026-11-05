@@ -50,9 +50,10 @@ they can be stored as standalone artifacts and shared across scripts.
 Template: templated text that supports expansion, transclusion, repetition and
 conditionals.
 
-Run: the execution of a script (see [Goal](spec-000-goal.md)), carrying a state,
-a journal of events and a receipt. Defined here at the Execution layer, extended
-by the layers above.
+Execution: running a script is ephemeral, like running a shell script. It
+streams events and ends with a status and an output, without storage or
+configuration (see [Goal](spec-000-goal.md)). Persistence starts with task runs
+(see [Task](spec-003-task.md)).
 
 ## Format
 
@@ -124,18 +125,20 @@ depends on its source:
 
 - `ScriptExpand(context,script)`: renders the script as a prompt without
   running it through a model.
-- `ScriptRun(context,script)`: runs the script through the model, producing
-  a Run and streaming its events.
+- `ScriptStart(context,script)`: runs the script through the model, streaming
+  its events. Interrupting the stream cancels the execution.
 - `ScriptInputs(context,script)`: determines the inputs (including transitive)
   that would be used by the script.
 
-Events, forming the Run journal, can be consumed and relayed through the CLI:
+Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
 - `ScriptMeta(name,value)`: meta information emitted by the runtime (model,
   cost, tokens, etc).
 - `ScriptAction(name,content)`: internal action logged.
 - `ScriptMessage(content)`: message output by the model (for information).
-- `ScriptQuestion(name,content)`: question raised by the model, awaiting an answer.
-- `ScriptReceipt(status,output)`: completion or failure, ending the Run.
+- `ScriptQuestion(name,content)`: question raised by the model, answered live
+  by the consumer (eg. a CLI prompt). Scripts rarely need questions.
+- `ScriptEnded(status,output)`: ends the stream, with status `Succeeded`,
+  `Failed`, `TimedOut` or `Cancelled`.
 
 ## Rules
 
@@ -147,17 +150,21 @@ Events, forming the Run journal, can be consumed and relayed through the CLI:
   3. Defaults in the current context
   4. Defaults in the transcluded script
 - *Output*: the output contract is included in the prompt given to the model.
-  The receipt fails when the output does not match `output.format` or
+  The execution fails when the output does not match `output.format` or
   `output.schema`. Conformance is checked here; quality assessment belongs to
   Planning.
 - *Shell*: shell commands run in `cwd` with `env`, subject to the runtime
   permission policy.
+- *Limits*: the runtime ends an execution that exceeds its limits, as
+  `TimedOut` for time and `Failed` otherwise. Limits are given by the caller
+  (eg. a task budget).
 
 ## Out of Scope
 
 - Task contracts, dependencies and output quality assessment (see Planning)
-- Effects of a run (eg. file system changes), captured by Planning and Orchestration
-- Retries, budgets and sequencing (see Orchestration)
+- Persistence of executions (see Task runs)
+- Effects of an execution (eg. file system changes), captured by Planning and Orchestration
+- Budget allocation (see Planning), tracking across task runs, retries and sequencing (see Orchestration)
 - Shell permission policy (defined by the runtime)
 - Learning capture and storage (see Learning)
 
