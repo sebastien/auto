@@ -2,7 +2,7 @@
 
 A specification artifact should be a small, focussed document that defines
 an aspect of what we're trying to build. The main goal of the spec is to convey
-intent, and defines boundaries for what the result should look like. A spec
+intent, and defines a perimeter for what the result should look like. A spec
 does not need to be exhaustive or prescriptive, as decisions and refinements
 can be made during implementation.
 

@@ -1,47 +1,81 @@
 # Goal
 
 We want to create an agent orchestration tool, built on composable layers of
-execution. The end goal is to support building fully autonomous, self improving
+execution. The end goal is to support building fully autonomous, self-improving
 systems with human control and oversight. Task automation is central, but just
-as importantly is knowledge retention and learning, that feeds back into
-a core process.
+as important is knowledge retention and learning, which feeds back into
+the core process.
 
 ```
-PROCESS -> TASK -> OUTPUT -> EVALUATION -> LEARNINGS -> ACTUATION
+GOAL      An initial goal leads to the creation of an initial plan
+ |
+ v
+PLAN      A plan is made of tasks and updated as tasks progress   <--+
+ |                                                                   |
+ v                                                                   |
+TASK      A task is executed and produces outputs                    |
+ |                                                                   |
+ v                                                                   |
+OUTPUT    Outputs are assessed against the task                      |
+ |                                                                   |
+ v                                                                   |
+LEARNING  Assessed outputs (failures, surprises, successes)          |
+          build knowledge                                            |
+ |                                                                   |
+ v                                                                   |
+ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 ```
 
-We envision the following layers:
+## Principles
 
-- *Agent Script* as a way to template agent work, giving scripted instructions
-  and outputting a result.
+- *Simple model*: a small set of elements, each built from existing ones.
+- *Composable layers*: each layer adds elements, and extends the *Run* defined
+  by Execution.
+- *No new primitives*: higher-level ideas are expressed with existing elements
+  (a meta-task is a Task, actuation is Planning informed by Learnings,
+  learning management is a set of Tasks in a Workflow).
+- *Orthogonal storage*: the storage format and policy of learnings (and memory
+  in general) is independent of the layers, defaulting to Memo.
 
-- *Auto Task* as a way to compose one script and its contract into a task that is
-  part of a plan with inputs, output, prerequisites and postconditions that assess
-  quality of execution (definition of done, quality control).
+## Layers
 
-- *Agent Workflow* as definition of how to run a task or a collection of tasks,
-  in that sense a workflow is a meta-task with an emphasis on logic and
-  conditional behaviour. While a task is for doing, a workflow is for coordinating.
-  The baseline [Meta-task](spec-007-meta-task.md) uses an ordinary Auto Task to
-  coordinate work, with durable Memo checkpoints and explicit questions.
+| Layer | Adds | Built from | Extends Run with |
+|---|---|---|---|
+| Execution | Script, Run | Template + inputs | State, journal of events, receipt |
+| Planning | Task, Plan | Script + contract; Tasks + Learnings | Output assessment, learnings |
+| Orchestration | Workflow | Rules acting on a Plan | Budget status, retry count |
+| Learning | Learning | Assessed Runs | — |
 
-- *Agent Memory* as way to keep track of things done (a journal), along with
-  learnings (based on failures, surprises and discoveries)
+- *Execution*: defines agent work as templated instructions, run as a script
+  that outputs a result or produces effects.
+- *Planning*: composes a script and its contract (inputs, outputs,
+  prerequisites, postconditions) into a task, and tasks into a plan. Planning
+  uses learnings to refine or decompose tasks (meta-tasks) into sub-tasks.
+- *Orchestration*: sequences and refines tasks, and decides on the overall
+  progression of the plan based on time and budget constraints, policy and
+  strategy.
+- *Learning*: closes the loop, as learnings are derived from Runs and feed back
+  into Planning. Managing learnings is itself defined as Tasks within
+  a Workflow (eg. capture failures and surprises, register learnings,
+  periodically consolidate them into a defined knowledge structure).
 
-Supported by the following elements:
+## Elements
 
-- *Artifact* as a definition of an output, covering its format or structure, and quality
-  assessment criteria.
-- *Role* as a subset of an `AGENT.md` file delimiting the focus, without the
-  personality.
-- *Personality*, as a way to add color and character to the execution of the task.
-- *Skill*, *Tool* as a classic agent skills and tools
+- *Script*: an agent-runnable template supporting inputs and parameters.
+- *Run*: the execution of a script, carrying a state, a journal of events, and
+  a receipt of completion or failure. Extended by each layer above Execution.
+- *Task*: a script decorated with a contract: dependencies and quality
+  assessment of the output (definition of done).
+- *Plan*: a set of tasks, refined as they are executed and as learnings accrue.
+- *Workflow*: rules that drive the creation and updating of a plan.
+- *Learning*: knowledge derived from an assessed Run, classified (failure,
+  surprise, discovery) and stored durably for retrieval.
 
 ## References
 
 - [mdflow](https://github.com/johnlindquist/mdflow) defines a good executable
   markdown format, but drifted off in a vibecoded fever and added many features
-  the dilute the purpose.
+  that dilute the purpose.
 - [agenttasks.dev](https://agenttasks.dev/) defines a format for managing
   tasks given to agents. Its [task file format](https://agenttasks.dev/docs/spec/task-file)
   works well with something like mdflow.
@@ -50,3 +84,5 @@ Supported by the following elements:
   not changed entirely.
 - [OpenSpec](https://openspec.dev/) defines a methodology to expand a prompt
   into a `proposal -> specs -> design -> tasks` loop.
+- [Memo](https://github.com/sebastien/memo) defines a classification and conventions
+  to organise and query knowledge.
