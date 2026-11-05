@@ -95,8 +95,8 @@ depends on its source:
 
 `PATH`:
 - Starts with `./`, `../` or `/` for a local path, or `{scheme}:` for a scheme
-  provided by the runtime (like `git:{operation}`). This disambiguates `@PATH`
-  from mentions.
+  provided by the runtime (like `git:{operation}`, or `memo:{ref}` for a Memo
+  entry). This disambiguates `@PATH` from mentions.
 - Is double-quoted when it contains whitespace, like `"./path with spaces"`.
 - Supports a suffix, based on the runtime capabilities:
   - `#L{START}-{END}` for a range of lines

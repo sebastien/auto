@@ -31,6 +31,9 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 - *Simple model*: a small set of elements, each built from existing ones.
 - *Composable layers*: each layer adds elements; Planning introduces the *Run*,
   extended by the layers above.
+- *Facets, not subtypes*: a layer extends an existing element with attributes
+  (a facet) rather than introducing a specialised type (eg. Task gains a plan
+  facet, Run is extended by Orchestration).
 - *Zero setup*: running a script needs no storage or configuration;
   persistence starts with tasks.
 - *No new primitives*: higher-level ideas are expressed with existing elements
@@ -44,9 +47,9 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 | Layer | Adds | Built from | Extends Run with |
 |---|---|---|---|
 | Execution | Script | Template + inputs | — (ephemeral: events and output) |
-| Planning | Task, Run, Plan | Script + contract; Tasks + Learnings | State, journal, receipt, output assessment |
+| Planning | Task, Run, Plan, Gap, Decision | Script + contract; Tasks + Learnings | State, journal, receipt, output assessment |
 | Orchestration | Workflow | Rules acting on a Plan | Budget status, retry count |
-| Learning | Learning | Assessed Runs | — |
+| Learning | Learning | Assessed Runs, Decisions | — |
 
 - *Execution*: defines agent work as templated instructions, run as a script
   that outputs a result or produces effects.
@@ -56,7 +59,7 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 - *Orchestration*: sequences and refines tasks, and decides on the overall
   progression of the plan based on time and budget constraints, policy and
   strategy.
-- *Learning*: closes the loop, as learnings are derived from Runs and feed back
+- *Learning*: closes the loop, as learnings are derived from Runs and Decisions, and feed back
   into Planning. Managing learnings is itself defined as Tasks within
   a Workflow (eg. capture failures and surprises, register learnings,
   periodically consolidate them into a defined knowledge structure).
@@ -69,10 +72,14 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
   assessment of the output (definition of done).
 - *Run*: the stored execution of a task, carrying a state, a journal of events,
   and a receipt of completion or failure. Extended by Orchestration.
-- *Plan*: a set of tasks, refined as they are executed and as learnings accrue.
+- *Plan*: the scope of a set of tasks working towards a goal, elaborated from
+  the goal and refined as tasks are executed and as learnings accrue.
+- *Gap*: something a task or plan needs and does not have (missing input,
+  question, decision to be made), tracked until resolved.
+- *Decision*: the resolution of a gap, with its rationale and author.
 - *Workflow*: rules that drive the creation and updating of a plan.
-- *Learning*: knowledge derived from an assessed Run, classified (failure,
-  surprise, discovery) and stored durably for retrieval.
+- *Learning*: knowledge derived from assessed Runs and Decisions, classified
+  (failure, surprise, discovery) and stored durably for retrieval.
 
 ## References
 

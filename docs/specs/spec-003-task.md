@@ -54,8 +54,12 @@ Run: the stored execution of a task, extended by the layers above.
 - `output`: the output data
 - `pre`, `post`: TaskVerdicts
 - `evaluation`: TaskEvaluation
+- `failure.kind`: `system` (tool or engine error), `input` (bad input or
+  precondition), `output` (conformance or postcondition), `budget` (limits
+  exceeded) or `cancelled`
+- `failure.reason`: text
 - `receipt`: the run metadata (status, timing, runtime, usage, verdicts,
-  evaluation, failure reason)
+  evaluation, failure)
 
 The journal only tracks runtime events; each engine may keep more granular logs
 (eg. full transcript).
@@ -103,19 +107,19 @@ Output evaluation criteria.
 
 | Property | Type | Purpose |
 |---|---|---|
-| `id` | string | Task identifier; defaults to the file path without extension |
+| `id` | string | Task identifier, unique within its plan; defaults to the file name without extension |
 | `budget.tokens` | number | Token budget per run |
 | `budget.cost` | number | Cost budget per run |
 | `budget.time` | duration | Time budget per run |
 
 - `task:{id}` is a `PATH` scheme resolving to the output of the latest
-  succeeded run of a task.
+  succeeded run of a task within the same plan (see [Plan](spec-004-plan.md)).
 - Output instructions are given with `output.template` (see Script).
 - All sections are optional except `Process`.
 
 ### Run Storage
 
-A run is stored by the runtime as files covering:
+A run is stored by the runtime within its plan, as files covering:
 - The output, as a text or JSON file
 - The journal, as a structured log file
 - The receipt, as structured data
@@ -142,8 +146,8 @@ Run:
 - `RunJournal(context,run,since?)`: streams the journal events, live while
   the run is in progress.
 - `RunOutput(context,run)`: returns the output.
-- `RunAnswer(context,run,question,answer)`: answers a pending question,
-  resuming a `Waiting` run.
+- `RunAnswer(context,run,answer,rationale)`: resolves the gap raised by the
+  pending question with a decision (see `GapDecide`), resuming a `Waiting` run.
 - `RunCancel(context,run)`: stops the run, ending it as `Cancelled`.
 - `RunCheck(context,run,check)`: evaluates a precondition or postcondition,
   returning a TaskVerdict.
@@ -176,10 +180,12 @@ Events, added to the run journal after the script events:
   `evaluation`, the run output.
 - *Budget*: allocated per run and passed to the runtime as limits (see Script
   limits). Checks count towards the budget.
+- *Questions*: a script question raised during a run is raised as a gap in the
+  plan, and the run is `Waiting` until it is resolved (see Plan gaps).
 
 ## Out of Scope
 
-- Plans: composition, scheduling and refinement of tasks (see Planning)
+- Plans: scope, composition and refinement of tasks, gaps (see [Plan](spec-004-plan.md))
 - Budget tracking across runs, retries and sequencing (see Orchestration)
 - Effects of a run (eg. file system changes), captured by Planning and Orchestration
 - Learning capture from evaluations and failures (see Learning)
