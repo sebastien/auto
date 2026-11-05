@@ -21,6 +21,8 @@ constrained and assessed, and can be part of a plan. Tasks need to support:
 Task: an identified script with a contract.
 - `id`: identifier, from the frontmatter or derived from the file path
 - `title`, `description`: human-readable label and summary
+- `goal`: intended outcome, elaborated into sub-tasks (see
+  [Elaboration](spec-006-elaboration.md))
 - `inputs`: script inputs, which can reference other tasks (see Format)
 - `budget.{tokens,cost,time}`: allocated budget, if any
 - `process`: template transcluding the script, run as a script
@@ -111,16 +113,25 @@ Output evaluation criteria.
 | Property | Type | Purpose |
 |---|---|---|
 | `id` | string | Task identifier, unique within its plan; defaults to the file name without extension |
+| `goal` | string | Intended outcome; defaults to the title and description |
 | `budget.tokens` | number | Token budget per run |
 | `budget.cost` | number | Cost budget per run |
 | `budget.time` | duration | Time budget per run |
+| `artifact` | PATH | Artifact type giving the output contract and checks |
+| `profile` | PATH | Allocation profile, overridden by explicit script config |
+| `from` | `{ref,digest}` | Task template the task was materialised from |
+| `phase` | string | Methodology phase the task belongs to |
+| `hints.*` | string | Advisory flags for Orchestration (`refine`, `elaborate`, `gate`) |
+
+The last five keys are defined by [Elaboration](spec-006-elaboration.md).
 
 - `task:{id}` is a `PATH` scheme resolving to the output of the latest
   succeeded run of a task within the same plan; `task:{id}/definition` and
   `run:{id}` reference the task file and a given run (see
   [Plan references](spec-004-plan.md)).
 - Output instructions are given with `output.template` (see Script).
-- All sections are optional except `Process`.
+- All sections are optional except `Process`, which aggregates may omit (see
+  [Plan aggregates](spec-004-plan.md)).
 
 ### Run Storage
 
@@ -168,7 +179,8 @@ Events, added to the run journal after the script events:
 ## Rules
 
 - *Dependencies*: a task depends on every task it references with `task:`,
-  in its inputs or transclusions. Dependencies are implied, never declared.
+  in its inputs or transclusions, and, within a plan, on its children (see
+  Plan decomposition). Dependencies are implied, never declared.
 - *Lifecycle*: `TaskStart` runs the following steps, stopping at the first
   failure:
   1. *Inputs*: input tasks without a succeeded run end the run as `Blocked`
