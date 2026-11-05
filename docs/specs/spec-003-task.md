@@ -58,8 +58,11 @@ Run: the stored execution of a task, extended by the layers above.
   precondition), `output` (conformance or postcondition), `budget` (limits
   exceeded) or `cancelled`
 - `failure.reason`: text
-- `receipt`: the run metadata (status, timing, runtime, usage, verdicts,
-  evaluation, failure)
+- `inputs`: `[{ref,digest}]`, every input and transclusion resolved by the
+  run (see `ScriptInputs`), so that changed content can invalidate the run;
+  each digest is supplied by the content owner (see Plan digest)
+- `receipt`: the run metadata (status, timing, runtime, usage, inputs,
+  verdicts, evaluation, failure)
 
 The journal only tracks runtime events; each engine may keep more granular logs
 (eg. full transcript).
@@ -113,7 +116,9 @@ Output evaluation criteria.
 | `budget.time` | duration | Time budget per run |
 
 - `task:{id}` is a `PATH` scheme resolving to the output of the latest
-  succeeded run of a task within the same plan (see [Plan](spec-004-plan.md)).
+  succeeded run of a task within the same plan; `task:{id}/definition` and
+  `run:{id}` reference the task file and a given run (see
+  [Plan references](spec-004-plan.md)).
 - Output instructions are given with `output.template` (see Script).
 - All sections are optional except `Process`.
 
