@@ -19,6 +19,7 @@ Script: templated text decorated with configuration, parameters and inputs.
 - `configuration`: runtime/execution settings (see Frontmatter)
 - `parameters`: a named map of parameters, matching a schema
 - `inputs`: an arbitrary map of inputs
+- `output`: the expected output (see Output)
 - `content`: templated text (see Template)
 
 Input: data given to the script.
@@ -37,6 +38,14 @@ Value: one of
 - *Literal*: native YAML data
 - *File*: a `PATH` resolved by the runtime
 - *Shell*: a command whose output is the value
+
+Output: the contract for what the script produces, as text or JSON.
+- `format`: the output format (`markdown`, `text` or `json`)
+- `schema`: the structure the output must conform to (eg. JSON Schema)
+- `template`: an outline the output follows (eg. markdown headings and sections)
+
+Schemas and templates are Values: given as text, or referenced by `PATH` so
+they can be stored as standalone artifacts and shared across scripts.
 
 Template: templated text that supports expansion, transclusion, repetition and
 conditionals.
@@ -63,9 +72,25 @@ Template syntax:
   - File: `{{@PATH}}` inline, or `@PATH` alone on a line
   - Shell: `{{!SHELL}}` inline, or `!SHELL` alone on a line (excluding `![`)
 
+### Transclusion
+
 Transclusion markers (`@`, `!`) are distinct from Liquid expressions and are
-resolved by the template engine during expansion. Transcluded content is itself
-expanded in the current context.
+resolved by the template engine during expansion. How content is inserted
+depends on its source:
+
+| Source | Insertion | Expanded |
+|---|---|---|
+| Markdown file | Inlined as-is | Yes, in the current context |
+| Markdown file with frontmatter | Inlined as a sub-script (see Composition) | Yes, with inherited context |
+| Other file | Fenced block, language inferred from the file type | No, verbatim |
+| Shell command | Fenced block | No, verbatim |
+
+- The single-line form (`@PATH`, `!SHELL`) applies the insertion above; the
+  inline form (`{{@PATH}}`, `{{!SHELL}}`) inserts the content verbatim, for
+  short values within a line.
+- Fences are longer than any backtick sequence in the content.
+- A path that cannot be resolved, or a shell command that fails, fails the
+  expansion.
 
 `PATH`:
 - Starts with `./`, `../` or `/` for a local path, or `{scheme}:` for a scheme
@@ -91,7 +116,9 @@ expanded in the current context.
 | `isolated` | config | boolean | Isolate ambient context where supported; default `true` |
 | `inputs.*` | input | Value | Input data |
 | `params.*` | param | Value | Behaviour parameters |
-| `output.*` | output | string | Output format and post-processing |
+| `output.format` | output | string | Output format; default `markdown` |
+| `output.schema` | output | Value | Schema the output must conform to |
+| `output.template` | output | Value | Outline the output follows |
 
 ## Operations
 
@@ -112,20 +139,26 @@ Events, forming the Run journal, can be consumed and relayed through the CLI:
 
 ## Rules
 
-- *Composition*: a transcluded file with frontmatter is a script. Its expanded
+- *Composition*: a transcluded markdown file with frontmatter is a script. Its expanded
   content is inlined (it does not run separately), and it inherits the
   configuration and parameters of the current context, by decreasing precedence:
   1. Explicit values in the current context
   2. Explicit values in the transcluded script
   3. Defaults in the current context
   4. Defaults in the transcluded script
+- *Output*: the output contract is included in the prompt given to the model.
+  The receipt fails when the output does not match `output.format` or
+  `output.schema`. Conformance is checked here; quality assessment belongs to
+  Planning.
 - *Shell*: shell commands run in `cwd` with `env`, subject to the runtime
   permission policy.
 
 ## Out of Scope
 
-- Contracts, dependencies and output assessment (see Planning)
+- Task contracts, dependencies and output quality assessment (see Planning)
+- Effects of a run (eg. file system changes), captured by Planning and Orchestration
 - Retries, budgets and sequencing (see Orchestration)
+- Shell permission policy (defined by the runtime)
 - Learning capture and storage (see Learning)
 
 ## References
