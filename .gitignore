@@ -1,0 +1,7 @@
+.venv/
+.auto/
+.kame/
+__pycache__/
+*.egg-info/
+build/
+dist/

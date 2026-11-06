@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-orchestrator"
+version = "0.1.0"
+description = "Composable agent scripts, tasks and plans"
+requires-python = ">=3.14"
+dependencies = ["ruamel.yaml>=0.18,<0.19", "python-liquid>=2.3,<3", "jsonschema>=4.23,<5"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.20,<2"]
+
+[project.scripts]
+auto = "auto.app.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src/py"]
+namespaces = true
+
+[tool.setuptools.data-files]
+"share/auto/catalogue/task" = ["src/md/auto/catalogue/task/*.md"]
+"share/auto/catalogue/artifact" = ["src/md/auto/catalogue/artifact/*.md"]
+"share/auto/catalogue/check" = ["src/md/auto/catalogue/check/*.md"]
+"share/auto/catalogue/profile" = ["src/md/auto/catalogue/profile/*.md"]

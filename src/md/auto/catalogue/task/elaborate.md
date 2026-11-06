@@ -35,7 +35,7 @@ after validation.
 
 {{ goal }}
 
-{% if state %}
+{% if state != blank %}
 @./elaborate.state.md
 
 ### Plan state
@@ -56,7 +56,7 @@ Explore the context with your tools as much as the structure of the plan
 requires. List everything you relied on in the `context` field of your
 output.
 
-{% if methodology %}
+{% if methodology != blank %}
 ### Methodology
 
 Your elaboration must conform to this methodology: every phase has at least
@@ -74,7 +74,7 @@ identity. Do not reference entries that are not listed here.
 
 {{ catalogue }}
 
-{% if learnings %}
+{% if learnings != blank %}
 ### Learnings
 
 Learnings from previous runs and decisions. Apply those that are relevant,
@@ -86,7 +86,7 @@ of the task it affects.
 
 ### Budget
 
-{% if budget %}{{ budget }}{% else %}No budget was given.{% endif %}
+{% if budget != blank %}{{ budget }}{% else %}No budget was given.{% endif %}
 
 @./elaborate.instructions.md
 

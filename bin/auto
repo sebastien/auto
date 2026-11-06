@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Run Auto from a source checkout or installed environment."""
+
+import os
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+python = root / ".venv/bin/python"
+if python.exists() and Path(sys.prefix).resolve() != python.parent.parent.resolve():
+	os.execv(str(python), [str(python), __file__, *sys.argv[1:]])
+sys.path.insert(0, str(root / "src/py"))
+os.environ["PATH"] = str(root / "bin") + os.pathsep + os.environ.get("PATH", "")
+from auto.app.cli.main import main
+
+raise SystemExit(main())
+
+# EOF

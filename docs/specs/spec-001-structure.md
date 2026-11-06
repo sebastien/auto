@@ -61,28 +61,50 @@ src/md/auto/
     {kind}/{name}.md        # Built-in catalogue entry (see Elaboration)
     {kind}/{name}.{companion}.{ext}  # Companion files of the entry
 src/py/auto/
+  wiring.py                 # Composition root: reference resolvers
   integration/
-    opencode/               # OpenCode integration
-    pi/                     # Pi integration
-    llm/                    # llm integration
-    memo/                   # Memo integration (memory and learning storage)
+    process.py              # Shared subprocess boundary
+    opencode/
+      engine.py             # OpenCode integration
+    pi/
+      engine.py             # Pi integration
+    llm/
+      engine.py             # llm integration
+    memo/
+      store.py              # Memo integration (memory and learning storage)
   runtime/
-    model.py                # Runtime data model
+    model.py                # Runtime data model, statuses, enums and effect options
     operations.py           # Core abstract operations
     config.py               # Runtime configuration
+    integration.py          # Engine and knowledge integration contracts
   features/
     script/
       model.py              # Feature data model
       operations.py         # Feature operations, using the runtime
       config.py             # Feature configuration
+      templates.py          # Liquid renderer and transclusions
     task/
-    …
+      model.py              # Task and Run models
+      operations.py         # Task and run operations
+    plan/
+      model.py              # Plan, Revision, Gap and Decision models
+      operations.py         # Plan graphs, revisions and status
+      store.py              # Journal, lock and recovery
+      references.py         # Plan-scoped reference resolution
+      gaps.py               # Gap operations and Memo reconciliation
+    elaboration/
+      operations.py         # Elaboration, plan creation and refinement
+      catalogue.py          # Layered framework assets
+      materialize.py        # Template instantiation
   app/
+    operations.py           # Exposure metadata shared by interfaces
     cli/
       main.py               # Main CLI module
     mcp/
       main.py               # MCP server, served by `auto mcp`
   utils/
+    data.py                 # YAML/JSON, digests and atomic writes
+    references.py           # Relative reference relocation
     *.py                    # Shared utilities
 tests/
   data/                     # Test data
@@ -93,3 +115,13 @@ tests/
 
 - Keep files under 1000 lines, split into submodules as they grow.
 - Follow `review-py` standards.
+- Depend downward: `utils` and `runtime` know no feature; integrations implement
+  the contracts in `runtime/integration.py`; `script → task → plan → elaboration`;
+  `app` projects feature operations. Reference-scheme wiring lives in
+  `wiring.py`, the only module that knows both the runtime and the features.
+- Operations are `PascalCase` (`{Noun}{Verb}`); helpers and model members are
+  `camelCase`. Model payloads serialise to the snake_case keys defined by the
+  specifications.
+- Entities with a specification model have a dataclass: `Script`, `Task`, `Run`,
+  `Plan`, `Revision`, `Gap` and `Decision`. Operations may return their
+  serialised form at the interface boundary.
