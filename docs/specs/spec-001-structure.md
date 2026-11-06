@@ -39,6 +39,12 @@ Operations take the form `Operation(context,arguments...)`, where:
 - `context` composes the runtime and (integration) configuration
 - `arguments` is a serializable payload giving the inputs and parameters
 
+### Operation/Interface
+
+Operations are the contract. Interfaces (CLI, MCP) are projections of
+a subset of the operations, following shared mapping rules and adding no
+behaviour (see [Interface](spec-007-interface.md)).
+
 ## Filesystem Layout
 
 The expected layout of the project. The intent is to define conventions that
@@ -50,6 +56,10 @@ Kamefile                    # Automation rules (Kame)
 docs/
   specs/
     spec-NNN-{name}.md      # Specification
+src/md/auto/
+  catalogue/
+    {kind}/{name}.md        # Built-in catalogue entry (see Elaboration)
+    {kind}/{name}.{companion}.{ext}  # Companion files of the entry
 src/py/auto/
   integration/
     opencode/               # OpenCode integration
@@ -70,6 +80,8 @@ src/py/auto/
   app/
     cli/
       main.py               # Main CLI module
+    mcp/
+      main.py               # MCP server, served by `auto mcp`
   utils/
     *.py                    # Shared utilities
 tests/

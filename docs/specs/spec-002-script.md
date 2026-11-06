@@ -39,6 +39,19 @@ Value: one of
 - *File*: a `PATH` resolved by the runtime
 - *Shell*: a command whose output is the value
 
+Values are written in YAML, and a string is interpreted by its form:
+- `!SHELL`: a Shell value, its value being the command stdout as text, without
+  the trailing newline. YAML requires quoting it (eg. `"!git log -5"`), as an
+  unquoted `!` starts a YAML tag.
+- `PATH` form (`./`, `../`, `/` or `{scheme}:`): a File value, its value being
+  the content of the file or reference.
+- `\` prefix: a Literal, with the `\` removed (eg. `'\./not-a-path'`).
+- Anything else, and non-string data: a Literal.
+
+Only top-level values are resolved: the items of a list or mapping are
+Literals, so a list of `PATH`s is passed as references (eg. for the agent to
+explore) rather than as content.
+
 Output: the contract for what the script produces, as text or JSON.
 - `format`: the output format (`markdown`, `text` or `json`)
 - `schema`: the structure the output must conform to (eg. JSON Schema)
@@ -62,7 +75,8 @@ configuration (see [Goal](spec-000-goal.md)). Persistence starts with task runs
 Script templates are defined by:
 - Content in *markdown* format with extensions
 - Frontmatter in YAML
-- Template in Liquid syntax
+- Template in [Liquid](https://shopify.github.io/liquid/) syntax, including
+  its standard operators (eg. `contains`) and filters (eg. `size`, `join`)
 
 Template syntax:
 
@@ -71,7 +85,8 @@ Template syntax:
 - Repetition: `{% for ITEM in ITEMS %}CONTENT{% endfor %}`
 - Transclusion:
   - File: `{{@PATH}}` inline, or `@PATH` alone on a line
-  - Shell: `{{!SHELL}}` inline, or `!SHELL` alone on a line (excluding `![`)
+  - Shell: `{{!SHELL}}` inline, or `!SHELL` alone on a line (excluding `![`,
+    and `!?`, reserved for shell checks; see [Task](spec-003-task.md))
 
 ### Transclusion
 
@@ -94,7 +109,8 @@ depends on its source:
   expansion.
 
 `PATH`:
-- Starts with `./`, `../` or `/` for a local path, or `{scheme}:` for a scheme
+- Starts with `./`, `../` or `/` for a local path, relative paths resolving
+  against the directory of the file containing them, or `{scheme}:` for a scheme
   provided by the runtime (like `git:{operation}`, or `memo:{ref}` for a Memo
   entry). Planning adds `task:`, `run:`, `revision:`, `gap:`, `decision:`,
   `plan:` and `auto:`

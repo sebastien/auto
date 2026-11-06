@@ -31,7 +31,7 @@ Task: an identified script with a contract.
 - `evaluation`: TaskCheck producing a TaskEvaluation
 
 TaskCheck: instructions assessing a task run, evaluated as a script.
-- `content`: instructions, or a transcluded script
+- `content`: instructions, a transcluded script, or shell checks (see Rules)
 
 TaskVerdict: result of a precondition or postcondition.
 - `pass`: boolean
@@ -195,6 +195,18 @@ Events, added to the run journal after the script events:
 - *Checks*: each check is run as a script with a TaskVerdict or TaskEvaluation
   output schema, and is given the task inputs and, for `post` and
   `evaluation`, the run output.
+- *Shell checks*: in Pre, Post and Evaluation, `!?SHELL` alone on a line is
+  a shell check, run in `cwd` with `env` (see Script shell), with the task
+  inputs, `plan` (the plan id, within a plan) and, for `post` and
+  `evaluation`, `run.id` and `run.output` (the path of the run output)
+  available as template variables:
+  - In Pre and Post, exit status `0` passes and any other fails, with stdout
+    and stderr as the `reason`.
+  - In Evaluation, stdout is parsed as a TaskEvaluation.
+  - Shell checks run first, in order. A failing shell check ends the check
+    without running the model; otherwise their outputs are given to the model
+    as evidence for the remaining instructions.
+  - A check made only of shell checks does not run the model.
 - *Budget*: allocated per run and passed to the runtime as limits (see Script
   limits). Checks count towards the budget.
 - *Questions*: a script question raised during a run is raised as a gap in the

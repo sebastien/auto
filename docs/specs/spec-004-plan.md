@@ -152,10 +152,12 @@ identity mapping and consistency rules are defined by the
 
 ## Format
 
-A plan is a directory, acting as the scope of its tasks:
+A plan is a directory, acting as the scope of its tasks, stored in the
+project as `.auto/plans/{plan}/`, next to the project catalogue (see
+[Elaboration](spec-006-elaboration.md)):
 
 ```
-{plan}/
+.auto/plans/{plan}/
   plan.md             # Root task: goal, inputs and budget (frontmatter), description
   tasks/{task}.md     # Task definitions (see Task)
   runs/{run}/         # Output, journal and receipt (see Task)

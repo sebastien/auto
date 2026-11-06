@@ -176,7 +176,9 @@ the artifact type:
   changes do not affect it (see Plan immutability).
 - A profile gives `engine`, `model`, `agent`, `temperature` and a default
   `budget`, and a description of its capabilities to guide selection.
-  Explicit values on the task take precedence over the profile.
+  Runtime settings are resolved by decreasing precedence: explicit task
+  values, the profile, the script values (see Script composition), then the
+  runtime defaults. A profile may leave any setting unset.
 
 ## Catalogue
 
@@ -184,10 +186,20 @@ The catalogue makes framework files available across plans and projects:
 - Files are stored as `{catalogue}/{kind}/{name}.md`, using Memo front matter
   conventions (`kind`, `identity`, `title`, `description`, tags), so that Memo
   can index and query them.
+- Companion files of an entry (eg. prompt fragments, templates) are stored
+  next to it as `{catalogue}/{kind}/{name}.{companion}.{ext}` (eg.
+  `task-elaboration.template.md`), and transcluded by relative path. Entry
+  names contain no `.`, so companion files are not catalogue entries.
 - Their identity is `auto:catalogue/{kind}/{name}`, resolved by Auto without
   Memo. `catalogue` is reserved and is not a valid plan id.
-- Catalogues are layered by decreasing precedence: project, user, built-in.
-  The first match wins.
+- Catalogues are layered by decreasing precedence. The first match wins:
+
+| Layer | Location |
+|---|---|
+| Project | `.auto/catalogue/` |
+| User | `~/.config/auto/catalogue/` |
+| Built-in | `src/md/auto/catalogue/`, shipped with Auto |
+
 - An Elaborator may be given catalogue entries as content, as references, or
   query them through the harness (eg. a Memo query).
 
@@ -271,11 +283,21 @@ aggregate (see Plan aggregates):
 
 ## Operations
 
+Catalogue:
+- `CatalogueList(context,kind?,query?)`: lists the entries of all layers, the
+  first match winning, with their identity, kind, title, description and
+  layer.
+- `CatalogueGet(context,identity)`: returns an entry, from the first layer
+  defining it.
+
+Elaboration:
 - `ElaborationStart(context,plan,task,reason?)`: runs the plan Elaborator on
   the TaskGoal of the task, returning the run.
 - `ElaborationParse(context,text)`: parses a TaskElaboration.
 - `ElaborationValidate(context,plan,elaboration)`: returns the violations of
-  the TaskElaboration (see Validation).
+  the TaskElaboration (see Validation), each with the element concerned
+  (`task:{id}`, `gap:{name}`, `remove:{id}` or the elaboration) and
+  a message. A TaskElaboration is valid when there are no violations.
 - `ElaborationApply(context,plan,elaboration,run)`: applies a valid
   TaskElaboration as a PlanRevision.
 
@@ -313,8 +335,9 @@ and apply its TaskElaboration.
 - *Methodology*: a declared methodology is strict. Conformance requires that
   every phase has a task, that each phase artifact is produced by a task of
   the phase, that phase gates are raised, and that no task depends on a task
-  of a later phase. Conformance is a Post check of the Elaborator: a violation
-  fails the run as `output`, with the violations as feedback for a retry.
+  of a later phase. Conformance is a Post check of the Elaborator (typically
+  a shell check, see Task): a violation fails the run as `output`, with the
+  violations as feedback for a retry.
 - *Learnings*: when the Elaborator does not supply `learnings`, Auto supplies
   the plan learnings. Applied learnings are cited in the TaskElaboration and
   recorded in the revision.
@@ -339,6 +362,22 @@ interface or the TaskElaboration format:
 
 The built-in Elaborator is a reference for these stages, and its prompts are
 assets rather than part of this specification.
+
+### Built-in Elaborator
+
+`auto:catalogue/task/elaborate` is the default Elaborator, at the *Extracted*
+and *Variants* stages. It produces an `auto:catalogue/artifact/task-elaboration`,
+and its Post is a shell check running `auto elaboration validate`. It takes two
+parameters, which vary independently:
+
+| Param | Values | Effect |
+|---|---|---|
+| `breakdown` | `coarse` (default), `fine` | How far the goal is broken down in one pass: few tasks deferring detail with `elaborate: later`, or tasks ready to run |
+| `detail` | list of `contract`, `allocation`, `governance` | Which aspects are filled in for each task, in addition to `core` |
+
+For example, `coarse` with `governance` gives few tasks with gates, for a plan
+reviewed step by step, while `fine` with no `detail` gives many lightweight
+tasks, for a plan run like a script.
 
 ## Out of Scope
 
