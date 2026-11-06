@@ -12,7 +12,9 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render
+from auto.app.cli.frontend import Frontend
 from auto.runtime.config import contextFor
+from auto.utils.config import RUNTIME_SETTINGS
 from auto.utils.data import AutoError, merge, yamlLoad
 
 
@@ -69,14 +71,17 @@ def main(argv=None) -> int:
 	if args.noun in (None, "help"):
 		cli.print_help()
 		return 0
+	frontend = None
 	try:
 		sources = {} if args.noun == "config" else None
 		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=args.agent, sources=sources)
 		if args.noun == "config":
 			for key in ("engine", "isolated"):
 				if key not in context.defaults and key not in context.config:
-					sources[(key,)] = "built-in"
-			showConfig(merge({"engine": "pi", "isololated": True}, context.defaults, context.config), sources)
+					sources[("runtime", key)] = "built-in"
+			settings = merge({"engine": "pi", "isolated": True}, context.defaults, context.config)
+			runtime = {key: settings.pop(key) for key in RUNTIME_SETTINGS if key in settings}
+			showConfig({**settings, "runtime": runtime}, sources)
 			return 0
 		if args.noun == "mcp":
 			from auto.app.mcp.main import serve
@@ -95,7 +100,15 @@ def main(argv=None) -> int:
 			if value == "-" or name == "elaboration":
 				text = sys.stdin.read() if value == "-" else Path(value).read_text()
 				arguments[name] = {"content": text, "path": str(Path.cwd() / "stdin.md")} if name == "script" else text
-		context.question = (lambda event: inputQuestion(event)) if sys.stdin.isatty() and sys.stderr.isatty() else None
+		if args.format == "text":
+			frontend = Frontend(args.format)
+			context.observe = frontend.event
+			context.tick = frontend.tick
+		def question(event):
+			if frontend:
+				frontend.clear()
+			return inputQuestion(event)
+		context.question = question if sys.stdin.isatty() and sys.stderr.isatty() else None
 		result = exposure.call(context, arguments)
 		if exposure.name == "TaskStart" and context.question:
 			from auto.features.task.operations import RunAnswer, RunGet
@@ -106,11 +119,17 @@ def main(argv=None) -> int:
 			stream = result
 			try:
 				for result in stream:
-					print(render(result, args.format), flush=True)
+					if frontend and exposure.name == "ScriptStart":
+						frontend.scriptEvent(result)
+					else:
+						print(render(result, args.format), flush=True)
 			finally:
 				stream.close()
 		else:
-			print(render(result, args.format))
+			if frontend:
+				frontend.result(result)
+			else:
+				print(render(result, args.format))
 		return exitStatus(result, exposure.name)
 	except (AutoError, OSError, ValueError) as error:
 		print(str(error), file=sys.stderr)
@@ -119,6 +138,9 @@ def main(argv=None) -> int:
 		return 1
 	except KeyboardInterrupt:
 		return 130
+	finally:
+		if frontend:
+			frontend.close()
 
 
 def showConfig(config: dict, sources: dict, prefix: tuple = ()) -> None:
