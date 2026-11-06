@@ -9,6 +9,9 @@ from pathlib import Path
 from auto.utils.data import AutoError, merge, yamlLoad
 
 
+RUNTIME_SETTINGS = {"engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated"}
+
+
 def loadConfig(project: Path, sources: dict | None = None) -> dict:
 	"""Merge home, XDG and project configuration, preferring TOML at each location."""
 	xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -25,6 +28,17 @@ def loadConfig(project: Path, sources: dict | None = None) -> dict:
 				raise AutoError(f"Invalid configuration {file}: {error}") from error
 			if not isinstance(value, dict):
 				raise AutoError(f"Configuration must be a mapping: {file}")
+			misplaced = RUNTIME_SETTINGS & value.keys()
+			if misplaced:
+				raise AutoError(f"{file}: move settings under [runtime]: {', '.join(sorted(misplaced))}")
+			runtime = value.get("runtime", {})
+			if not isinstance(runtime, dict):
+				raise AutoError(f"{file}: runtime must be a mapping")
+			if any(not isinstance(key, str) for key in runtime):
+				raise AutoError(f"{file}: runtime keys must be strings")
+			unknown = runtime.keys() - RUNTIME_SETTINGS
+			if unknown:
+				raise AutoError(f"{file}: unknown runtime settings: {', '.join(sorted(unknown))}")
 			if sources is not None:
 				updateSources(result, value, sources, str(file))
 			result = merge(result, value)

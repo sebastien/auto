@@ -36,6 +36,8 @@ def streamProcess(options: ProcessOptions, args: list[str], config: dict, stdin:
 			else:
 				process.stdin.close()
 			while selector.get_map() or process.poll() is None:
+				if options.tick:
+					options.tick()
 				if options.cancelled():
 					raise AutoError("Execution cancelled", "cancelled")
 				if options.limits:

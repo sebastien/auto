@@ -98,6 +98,18 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(run["evaluation"]["score"], .2)
 		self.assertGreater(run["usage"]["time"], 0)
 
+	def testRunObserverReceivesActivityWithoutChangingJournal(self):
+		self.add("observed", budget={"cost": 1})
+		events = []
+		run = TaskStart(self.ctx.derive(observe=events.append), "observed")
+		self.assertEqual(run["status"], "Succeeded")
+		self.assertEqual([event["type"] for event in events], ["RunStarted", "RunPhase", "ScriptEnded", "RunFinished"])
+		self.assertEqual(events[0]["budget"], {"cost": 1})
+		self.assertEqual(events[-1]["run"]["id"], run["id"])
+		journalText = (self.plan / "runs" / run["id"] / "journal.jsonl").read_text()
+		self.assertNotIn("RunStarted", journalText)
+		self.assertNotIn("RunPhase", journalText)
+
 	def testCyclesAndInvalidElaborationDoNotWrite(self):
 		text = """---
 task: root

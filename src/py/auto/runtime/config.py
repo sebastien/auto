@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from auto.features.script.config import validateConfig
 from auto.runtime.model import Context
 from auto.utils.config import loadConfig
 from auto.utils.data import identifier
@@ -14,6 +15,9 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	cwd = (directory or Path.cwd()).resolve()
 	project = next((p for p in (cwd, *cwd.parents) if (p / ".auto").is_dir() or (p / ".git").exists()), cwd)
 	config = loadConfig(project, sources)
+	runtime = config.pop("runtime", {})
+	validateConfig(runtime)
+	config.update(runtime)
 	selected = plan or os.environ.get("AUTO_PLAN")
 	planPath = None
 	if selected:
@@ -27,9 +31,9 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 			explicit[key] = value
 			if sources is not None:
 				for path in list(sources):
-					if path[0] == key:
+					if path[:2] == ("runtime", key):
 						del sources[path]
-				sources[(key,)] = "--" + key if overrides.get(key) is not None else "AUTO_" + key.upper()
+				sources[("runtime", key)] = "--" + key if overrides.get(key) is not None else "AUTO_" + key.upper()
 	return Context(project=project, plan=planPath, config=explicit, defaults=config)
 
 # EOF

@@ -132,7 +132,10 @@ def main(argv=None) -> int:
 				print(render(result, args.format))
 		return exitStatus(result, exposure.name)
 	except (AutoError, OSError, ValueError) as error:
-		print(str(error), file=sys.stderr)
+		if frontend and frontend.terminal:
+			frontend.error(error)
+		else:
+			print(str(error), file=sys.stderr)
 		if getattr(args, "format", None) == "json":
 			print(render({"failure": {"kind": getattr(error, "kind", "system"), "reason": str(error)}}, "json"))
 		return 1

@@ -144,7 +144,8 @@ class Frontend:
 			self.tokens = event.get("value", {}).get("tokens")
 		elif kind == "ScriptMeta" and event.get("name") == "warning":
 			self.clear()
-			print("  ! " + safeText(event.get("value", "")), file=self.stderr, flush=True)
+			marker = "\033[33m!\033[0m" if self.color else "!"
+			print("  " + marker + " " + safeText(event.get("value", "")), file=self.stderr, flush=True)
 		elif kind == "ScriptMessage" and response and not self.structured:
 			self.clear()
 			text = event.get("content", "")
@@ -190,7 +191,7 @@ class Frontend:
 		if event.get("type") == "ScriptEnded":
 			self.finish(event)
 			if event.get("failure"):
-				print("auto: error: " + safeText(event["failure"].get("reason", "Execution failed")), file=self.stderr)
+				self.error(event["failure"].get("reason", "Execution failed"))
 			elif not self.streamed and event.get("output") is not None:
 				print(render(event["output"], self.format), file=self.stdout)
 
@@ -221,6 +222,11 @@ class Frontend:
 
 	def close(self):
 		self.clear()
+
+	def error(self, message):
+		self.clear()
+		prefix = "\033[31mauto: error:\033[0m" if self.color else "auto: error:"
+		print(prefix + " " + safeText(message), file=self.stderr)
 
 
 # EOF

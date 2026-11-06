@@ -56,7 +56,7 @@ class OpenCode:
 					payload["model"] = {"providerID": provider, "id": model}
 				self.api(context, "post", "/api/session", payload, config)
 				yield {"type": "ScriptMeta", "name": "session", "value": request["session"]}
-				request["message"] = "msg" + uuid4().hex
+				request["message"] = "msg_" + uuid4().hex
 				self.api(context, "post", f"/api/session/{request['session']}/prompt", {"id": request["message"], "text": request["prompt"]}, config)
 			base = f"/api/session/{request['session']}"
 			if "answer" in request:

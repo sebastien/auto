@@ -71,6 +71,9 @@ class EngineTests(unittest.TestCase):
 		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode", "isolated": False}, question=lambda event: {"answer": "yes"})
 		result = list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]
 		self.assertEqual(result["output"], "Done")
+		prompt = next(data for method, path, data in engine.calls if path.endswith("/prompt"))
+		self.assertRegex(prompt["id"], r"^msg_")
+		self.assertTrue(prompt["text"].startswith("Work"))
 		self.assertTrue(engine.answered)
 		for temperature in (0, .1):
 			with self.subTest(temperature=temperature):

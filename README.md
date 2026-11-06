@@ -45,6 +45,7 @@ Pi is the default engine. Set defaults in `~/.auto/config.toml`,
 or the project's `.auto/config.toml`, in increasing order of precedence:
 
 ```toml
+[runtime]
 engine = "opencode"
 provider = "openrouter"
 model = "deepseek/deepseek-chat"
@@ -56,6 +57,9 @@ enabled = true
 ```
 
 Nested tables are merged and available to features through the runtime context.
+Execution defaults belong under `[runtime]` (or `runtime:` in YAML); flat
+runtime settings and unknown keys within that section are rejected. Script
+frontmatter and CLI flags remain flat.
 Existing `config.yaml` files remain supported; TOML takes precedence over YAML
 at the same location. Script metadata overrides file defaults; `AUTO_ENGINE`,
 `AUTO_PROVIDER`, `AUTO_MODEL`, `AUTO_AGENT`, and corresponding command flags
@@ -89,6 +93,11 @@ explicitly, then run their aggregate parent (including `root`).
 `--format json` provides structured output. Exit statuses: `0` success,
 `1` failure, `2` invalid CLI usage, `3` Waiting/Blocked/Skipped, `124` timeout,
 `130` cancellation. Each command has `--help`.
+
+In a terminal, execution shows a transient activity line on stderr with elapsed
+time and reported cost; task budgets are shown when configured. Cost and token
+usage depend on what the selected engine reports. Redirected output stays plain;
+`NO_COLOR` disables color and `TERM=dumb` disables terminal progress.
 
 ## MCP and Python
 

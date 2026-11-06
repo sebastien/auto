@@ -239,6 +239,9 @@ def _drive(context, path, run, state, request, answer=None):
 			event = stream.send(answer)
 			answer = None
 			emit(path, event)
+			if context.observe:
+				observed = {**event, "value": dict(context.limits.usage)} if event.get("type") == "ScriptMeta" and event.get("name") == "usage" else event
+				context.observe(observed)
 			run["usage"] = dict(context.limits.usage)
 			if event["type"] == "ScriptMeta" and event["name"] == "session":
 				run["runtime"]["session"] = event["value"]
@@ -270,6 +273,8 @@ def _continue(context, path, run, state, answer=UNSET):
 	variables = {"plan": Plan.read(context.plan).id, "run": {"id": run["id"], "output": str(path / run.get("outputFile", "output.txt"))}}
 	context = context.derive(config=state["config"], defaults=state.get("defaults", {}), inputs=state["inputs"], params=state.get("params", {}), variables=variables,
 		limits=limits, evidence=run["inputs"], cancelled=lambda: (path / "cancel").exists())
+	if context.observe:
+		context.observe({"type": "RunStarted", "task": run["task"], "budget": run["budget"], "usage": run["usage"]})
 	run["status"] = RunStatus.RUNNING
 	try:
 		if answer is not UNSET:
@@ -286,6 +291,8 @@ def _continue(context, path, run, state, answer=UNSET):
 				continue
 			limits.check()
 			state["phase"] = phase
+			if context.observe:
+				context.observe({"type": "RunPhase", "phase": phase})
 			if phase in {"Post", "Evaluation"}:
 				context.variables["result"] = RunOutput(context, run)
 				context.variables["run"]["output"] = str(path / run["outputFile"])
@@ -347,6 +354,8 @@ def _continue(context, path, run, state, answer=UNSET):
 		if run["status"] in TERMINAL:
 			run["ended"] = timestamp()
 			emit(path, {"type": "RunEnded", "status": run["status"]})
+		if context.observe:
+			context.observe({"type": "RunFinished", "run": run})
 		saveRun(path, run, state)
 	return run
 

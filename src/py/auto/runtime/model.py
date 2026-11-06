@@ -96,6 +96,7 @@ class ProcessOptions:
 	maxBytes: int
 	limits: Limits | None = None
 	cancelled: Callable = field(default_factory=lambda: (lambda: False))
+	tick: Callable | None = None
 
 
 @dataclass(slots=True)
@@ -117,6 +118,8 @@ class Context:
 	evidence: list = field(default_factory=list)
 	variables: dict = field(default_factory=dict)
 	question: Callable | None = None
+	observe: Callable | None = None
+	tick: Callable | None = None
 	cancelled: Callable = field(default_factory=lambda: (lambda: False))
 	maxBytes: int = 4 * 1024 * 1024
 	maxDepth: int = 32
@@ -129,7 +132,7 @@ class Context:
 
 	@property
 	def process(self) -> ProcessOptions:
-		return ProcessOptions(self.project, self.environ, self.maxBytes, self.limits, self.cancelled)
+		return ProcessOptions(self.project, self.environ, self.maxBytes, self.limits, self.cancelled, self.tick)
 
 	def derive(self, **changes) -> Context:
 		return replace(self, **changes)

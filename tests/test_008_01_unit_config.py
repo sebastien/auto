@@ -45,10 +45,10 @@ class ConfigTests(unittest.TestCase):
 			home, xdg, project = root / "home", root / "xdg", root / "project"
 			for path in (home / ".auto", xdg / "auto", project / ".auto"):
 				path.mkdir(parents=True)
-			(home / ".auto/config.toml").write_text('engine = "pi"\n[features.example]\nhome = true\nvalue = "home"\n')
-			(xdg / "auto/config.yaml").write_text('model: yaml\nfeatures:\n  example:\n    yaml: true\n')
-			(xdg / "auto/config.toml").write_text('model = "xdg"\n[features.example]\nvalue = "xdg"\n')
-			(project / ".auto/config.toml").write_text('provider = "openrouter"\nmodel = "project"\ntemperature = 0.2\n[features.example]\nproject = true\n')
+			(home / ".auto/config.toml").write_text('[runtime]\nengine = "pi"\n[features.example]\nhome = true\nvalue = "home"\n')
+			(xdg / "auto/config.yaml").write_text('runtime:\n  model: yaml\nfeatures:\n  example:\n    yaml: true\n')
+			(xdg / "auto/config.toml").write_text('[runtime]\nmodel = "xdg"\n[features.example]\nvalue = "xdg"\n')
+			(project / ".auto/config.toml").write_text('[runtime]\nprovider = "openrouter"\nmodel = "project"\ntemperature = 0.2\n[features.example]\nproject = true\n')
 			with patch.dict(os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg), "AUTO_MODEL": "environment"}, clear=True):
 				ctx = contextFor(project, model="flag")
 				self.assertEqual(ctx.defaults["features"]["example"], {"home": True, "yaml": True, "value": "xdg", "project": True})
@@ -57,10 +57,57 @@ class ConfigTests(unittest.TestCase):
 				self.assertEqual(request["config"]["model"], "flag")
 				self.assertEqual(request["config"]["provider"], "script-provider")
 				self.assertEqual(request["config"]["temperature"], 0.2)
+				request = prepare(contextFor(project), Script("hello", project / "test.md", {"model": "script"}))
+				self.assertEqual(request["config"]["model"], "environment")
+				self.assertEqual(prepare(ctx.derive(config={}), Script("hello", project / "test.md", {"model": "script"}))["config"]["model"], "script")
 				self.assertEqual(contextFor(project).config["model"], "environment")
 				(project / ".auto/config.toml").write_text("invalid = [")
 				with self.assertRaisesRegex(AutoError, "config.toml"):
 					contextFor(project)
+
+	def testInvalidRuntimeSettings(self):
+		cases = (
+			('engine = "opencode"\n', r"move settings under \[runtime\]: engine"),
+			('runtime = "opencode"\n', "runtime must be a mapping"),
+			('[runtime]\nmodle = "gpt-6-luna"\n', "unknown runtime settings: modle"),
+			('[runtime]\nmodel = 42\n', "model must be a string"),
+			('[runtime]\nisolated = "false"\n', "isolated must be a boolean"),
+		)
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".auto").mkdir()
+			with patch.dict(os.environ, {"HOME": directory, "XDG_CONFIG_HOME": str(root / "xdg")}, clear=True):
+				for content, message in cases:
+					with self.subTest(content=content):
+						(root / ".auto/config.toml").write_text(content)
+						with self.assertRaisesRegex(AutoError, message):
+							contextFor(root)
+				(root / ".auto/config.toml").unlink()
+				(root / ".auto/config.yaml").write_text('runtime:\n  1: bad\n  typo: bad\n')
+				with self.assertRaisesRegex(AutoError, "runtime keys must be strings"):
+					contextFor(root)
+
+	def testRuntimeFileSelectsOpenCodeAndModel(self):
+		class Stub(OpenCode):
+			def api(self, context, method, path, data=None, config=None):
+				self.calls.append((path, data))
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					return {"data": [{"type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".auto").mkdir()
+			(root / ".auto/config.toml").write_text('[runtime]\nengine = "opencode"\nprovider = "openai"\nmodel = "gpt-6-luna"\nisolated = false\n')
+			with patch.dict(os.environ, {"HOME": directory, "XDG_CONFIG_HOME": str(root / "xdg")}, clear=True):
+				engine = Stub()
+				engine.calls = []
+				ctx = contextFor(root).derive(engines={"opencode": engine})
+				result = list(ScriptStart(ctx, Script("hello", root / "test.md")))
+				self.assertEqual(result[-1]["status"], "Succeeded")
+				self.assertEqual(engine.calls[0][1]["model"], {"providerID": "openai", "id": "gpt-6-luna"})
 
 	def testProviderEngineMapping(self):
 		class Stub(OpenCode):
@@ -88,16 +135,20 @@ class ConfigTests(unittest.TestCase):
 			home, xdg, project = root / "home", root / "xdg", root / "project"
 			for path in (home / ".auto", xdg / "auto", project / ".auto"):
 				path.mkdir(parents=True)
-			(xdg / "auto/config.toml").write_text('model = "old"\n[features.example]\na = 1\nb = 2\n')
-			(project / ".auto/config.toml").write_text('[features.example]\nb = 3\n')
+			(xdg / "auto/config.toml").write_text('[runtime]\nmodel = "old"\n[features.example]\na = 1\nb = 2\n')
+			(project / ".auto/config.toml").write_text('[runtime]\nprovider = "openai"\n[features.example]\nb = 3\n')
 			environ = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(xdg), "AUTO_MODEL": "env"}
 			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "config", "--model", "flag"], cwd=project, env=environ, text=True, capture_output=True)
 			self.assertEqual(result.returncode, 0, result.stderr)
-			self.assertIn('engine = "pi" # source=built-in', result.stdout)
-			self.assertIn('model = "flag" # source=--model', result.stdout)
+			self.assertIn('runtime.engine = "pi" # source=built-in', result.stdout)
+			self.assertIn('runtime.isolated = true # source=built-in', result.stdout)
+			self.assertNotIn('isololated', result.stdout)
+			self.assertIn('runtime.model = "flag" # source=--model', result.stdout)
+			self.assertIn(f'runtime.provider = "openai" # source={project / ".auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.a = 1 # source={xdg / "auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.b = 3 # source={project / ".auto/config.toml"}', result.stdout)
 			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "config"], cwd=project, env=environ, text=True, capture_output=True)
-			self.assertIn('model = "env" # source=AUTO_MODEL', result.stdout)
+			self.assertEqual(result.returncode, 0, result.stderr)
+			self.assertIn('runtime.model = "env" # source=AUTO_MODEL', result.stdout)
 
 # EOF

@@ -138,6 +138,8 @@ def ScriptStart(context: Context, script):
 	stream = None
 	try:
 		request = prepare(context, script)
+		if context.observe:
+			context.observe({"type": "ExecutionStarted", "config": request["config"], "output": request["output"]})
 		stream = executePrepared(context, request)
 		answer = None
 		while True:
