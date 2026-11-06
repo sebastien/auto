@@ -142,6 +142,10 @@ class Renderer:
 		if content.path.suffix != ".md":
 			return fence(content.text, content.path.suffix.lstrip("."))
 		meta, body = document(content.text)
+		if "each" in meta:
+			raise AutoError(f"A transcluded script cannot use each: {content.path}")
+		# Lifecycle keys (pre, post, apply) belong to the script being run, so
+		# they are dropped below with the other non-inherited keys.
 		child = Renderer(self.context, Script(body, content.path, meta), self.defaults, (*self.stack, str(self.script.path)))
 		childNamespace = child.bindings(namespace)
 		# Loop locals are inherited; child defaults fill previously absent inputs.

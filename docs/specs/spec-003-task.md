@@ -54,7 +54,7 @@ Run: the stored execution of a task, extended by the layers above.
 - `usage.{tokens,cost,time}`: resources used, compared to `budget`
 - `journal`: the script events (see [Script](spec-002-script.md)) and task events
 - `output`: the output data
-- `pre`, `post`: TaskVerdicts
+- `pre`, `post`, `apply`: TaskVerdicts
 - `evaluation`: TaskEvaluation
 - `failure.kind`: `system` (tool or engine error), `input` (bad input or
   precondition), `output` (conformance or postcondition), `budget` (limits
@@ -113,6 +113,9 @@ Output evaluation criteria.
 | Property | Type | Purpose |
 |---|---|---|
 | `id` | string | Task identifier, unique within its plan; defaults to the file name without extension |
+| `pre`, `post` | Command(s) | Shell checks run before those of the `Pre` and `Post` sections |
+| `apply` | Command(s) | Effects applying the output once the postconditions pass |
+| `eval` | Command(s) | Shell evaluations run before those of the `Evaluation` section |
 | `goal` | string | Intended outcome; defaults to the title and description |
 | `budget.tokens` | number | Token budget per run |
 | `budget.cost` | number | Cost budget per run |
@@ -132,6 +135,11 @@ The last five keys are defined by [Elaboration](spec-006-elaboration.md).
 - Output instructions are given with `output.template` (see Script).
 - All sections are optional except `Process`, which aggregates may omit (see
   [Plan aggregates](spec-004-plan.md)).
+- The lifecycle keys of the frontmatter (`pre`, `post`, `apply`, `eval`)
+  follow the script lifecycle commands (see [Script](spec-002-script.md)), and
+  add to the matching sections rather than overriding them: the frontmatter
+  holds the parameterisable checks, the body the templated ones. `each` is
+  not supported, as a run is a single item.
 
 ### Run Storage
 
@@ -188,7 +196,9 @@ Events, added to the run journal after the script events:
   3. *Process*: the process is run with `ScriptStart`, its events recorded in
      the journal; `ScriptEnded` gives the status and output
   4. *Post*: a failed postcondition ends the run as `Failed`
-  5. *Evaluation*: records a TaskEvaluation, without changing the status
+  5. *Apply*: a failing `apply` command ends the run as `Failed` (`system`
+     failure); applied effects are not run again when a run resumes
+  6. *Evaluation*: records a TaskEvaluation, without changing the status
 - *Composition*: the process transcludes the script, so task values take
   precedence over the script values (see Script composition). `Pre`, `Post`
   and `Evaluation` are not part of the process prompt.
@@ -198,8 +208,11 @@ Events, added to the run journal after the script events:
 - *Shell checks*: in Pre, Post and Evaluation, `!?SHELL` alone on a line is
   a shell check, run in `cwd` with `env` (see Script shell), with the task
   inputs, `plan` (the plan id, within a plan) and, for `post` and
-  `evaluation`, `run.id` and `run.output` (the path of the run output)
-  available as template variables:
+  `evaluation`, `run.id`, `run.output` (the path of the run output) and
+  `output` (the output data) available as template variables, and the output
+  given on stdin:
+  - Frontmatter commands (`pre`, `post`, `eval`) are shell checks run before
+    those of the matching section.
   - In Pre and Post, exit status `0` passes and any other fails, with stdout
     and stderr as the `reason`.
   - In Evaluation, stdout is parsed as a TaskEvaluation.
@@ -216,7 +229,8 @@ Events, added to the run journal after the script events:
 
 - Plans: scope, composition and refinement of tasks, gaps (see [Plan](spec-004-plan.md))
 - Budget tracking across runs, retries and sequencing (see Orchestration)
-- Effects of a run (eg. file system changes), captured by Planning and Orchestration
+- Effects of a run (eg. file system changes) beyond the declared `apply`
+  commands, captured by Planning and Orchestration
 - Learning capture from evaluations and failures (see Learning)
 
 ## References

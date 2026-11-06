@@ -12,6 +12,7 @@ from liquid.exceptions import LiquidError
 from auto.features.plan.model import Plan
 from auto.features.plan.references import latestRun
 from auto.features.plan.store import locked, planPath, recover
+from auto.features.script.config import commands
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, executePrepared, prepare
 from auto.features.script.templates import Renderer
@@ -30,6 +31,8 @@ from auto.utils.references import relocate
 VERDICT = {"type": "object", "properties": {"pass": {"type": "boolean"}, "reason": {"type": "string"}}, "required": ["pass", "reason"], "additionalProperties": False}
 EVALUATION = {"type": "object", "properties": {"score": {"type": "number", "minimum": 0, "maximum": 1}, "feedback": {"type": "string"}}, "required": ["score", "feedback"], "additionalProperties": False}
 UNSET = object()
+# Front matter keys holding the shell commands of each lifecycle phase.
+LIFECYCLE = {"Pre": "pre", "Post": "post", "Apply": "apply", "Evaluation": "eval"}
 
 
 def TaskGet(context, id: str) -> Task:
@@ -52,6 +55,8 @@ def resolveTask(context, task) -> Task:
 def effectiveTask(context, task: Task) -> Task:
 	"""Resolve profile and artifact defaults at their own source locations."""
 	meta, parts = dict(task.meta), dict(task.sections)
+	if "each" in meta:
+		raise AutoError("each is only supported by scripts: a task run is a single item")
 	if meta.get("profile"):
 		content = Resolve(context, meta["profile"], task.path.parent)
 		profile, _ = document(content.text)
@@ -64,6 +69,9 @@ def effectiveTask(context, task: Task) -> Task:
 			if isinstance(value, str) and value.startswith(("./", "../")):
 				contract[key] = str((content.path.parent / value).resolve())
 		meta["output"] = merge(contract, meta.get("output", {}))
+		for key in ("post", "eval"):
+			if artifact.meta.get(key):
+				meta[key] = commands(artifact.meta[key]) + commands(meta.get(key))
 		for name in ("Post", "Evaluation"):
 			if name in artifact.sections:
 				# Keep the included fragment's relative references attached to its origin.
@@ -200,16 +208,32 @@ def saveRun(path, run, state=None):
 		(path / "active.json").unlink(missing_ok=True)
 
 
+def hasCheck(task, phase) -> bool:
+	return bool(task.sections.get(phase) or task.meta.get(LIFECYCLE[phase]))
+
+
+def outputText(value) -> str:
+	return "" if value is None else value if isinstance(value, str) else jsonText(value)
+
+
 def checkRequest(context, task, check):
-	"""Expand checks, run shell evidence first, then ask the model only if needed."""
+	"""Expand checks, run shell evidence first, then ask the model only if needed.
+
+	Front matter commands run before the body `!?` checks: both add up, the
+	body does not override the front matter."""
 	renderer = Renderer(context, task.script(check))
-	text = renderer.render()
-	shells, prose = [], []
+	namespace = renderer.bindings()
+	if check != "Pre":
+		namespace["output"] = context.variables.get("result")
+	text = renderer.render(namespace)
+	shells = [renderer.shellArgument(command, namespace) for command in commands(task.meta.get(LIFECYCLE[check]))]
+	prose = []
 	for line in text.splitlines():
 		(shells if line.startswith("!?") else prose).append(line[2:] if line.startswith("!?") else line)
+	stdin = "" if check == "Pre" else outputText(context.variables.get("result"))
 	evidence, last = [], None
 	for command in shells:
-		stdout, stderr, code = Shell(context, command, renderer.config)
+		stdout, stderr, code = Shell(context, command, renderer.config, stdin)
 		if check != "Evaluation":
 			last = {"pass": code == 0, "reason": stdout + stderr}
 			if code:
@@ -227,6 +251,19 @@ def checkRequest(context, task, check):
 	content = "{{ instructions }}\n\n{{ evidence }}\n\nTask inputs: {{ inputs | json }}\nRun output: {{ result | json }}"
 	ctx = context.derive(variables={**context.variables, "instructions": "\n".join(prose), "evidence": evidence, "result": context.variables.get("result")})
 	return prepare(ctx, Script(content, task.path, meta)), None
+
+
+def applyEffects(context, task) -> dict:
+	"""Run the `apply` commands, in order, with the run output on stdin."""
+	renderer = Renderer(context, task.script("Apply"))
+	result = context.variables.get("result")
+	namespace = {**renderer.bindings(), "output": result}
+	for command in commands(task.meta.get("apply")):
+		command = renderer.shellArgument(command, namespace)
+		stdout, stderr, code = Shell(context, command, renderer.config, outputText(result))
+		if code:
+			return {"pass": False, "reason": (stdout + stderr).strip() or f"apply command failed ({code}): {command}"}
+	return {"pass": True, "reason": "Applied"}
 
 
 def _drive(context, path, run, state, request, answer=None):
@@ -283,17 +320,17 @@ def _continue(context, path, run, state, answer=UNSET):
 		if "resolvedInputs" not in state:
 			state["resolvedInputs"] = Renderer(context, task.script()).bindings()["inputs"]
 		context.resolvedInputs = state["resolvedInputs"]
-		for phase in ("Pre", "Process", "Post", "Evaluation"):
+		for phase in ("Pre", "Process", "Post", "Apply", "Evaluation"):
 			if phase in state["completed"]:
 				continue
-			if phase != "Process" and not task.sections.get(phase):
+			if phase != "Process" and not hasCheck(task, phase):
 				state["completed"].append(phase)
 				continue
 			limits.check()
 			state["phase"] = phase
 			if context.observe:
 				context.observe({"type": "RunPhase", "phase": phase})
-			if phase in {"Post", "Evaluation"}:
+			if phase in {"Post", "Apply", "Evaluation"}:
 				context.variables["result"] = RunOutput(context, run)
 				context.variables["run"]["output"] = str(path / run["outputFile"])
 			request = state.get("request")
@@ -307,6 +344,8 @@ def _continue(context, path, run, state, answer=UNSET):
 						value = conform(value, contract)
 					else:
 						request = prepare(context, task.script())
+				elif phase == "Apply":
+					value = applyEffects(context, task)
 				else:
 					request, value = checkRequest(context, task, phase)
 			if request:
@@ -326,7 +365,7 @@ def _continue(context, path, run, state, answer=UNSET):
 				emit(path, {"type": "TaskChecked", "check": phase.lower(), "verdict": value})
 				if not value["pass"]:
 					run["status"] = RunStatus.SKIPPED if phase == "Pre" else RunStatus.FAILED
-					run["failure"] = {"kind": "input" if phase == "Pre" else "output", "reason": value["reason"]}
+					run["failure"] = {"kind": "input" if phase == "Pre" else "system" if phase == "Apply" else "output", "reason": value["reason"]}
 					break
 			saveRun(path, run, state)
 		limits.check()
@@ -470,7 +509,7 @@ def _assess(context, run, check, instructions=None):
 		task = taskFromDict(state["task"], Path(state["task"]["path"]))
 		if instructions is not None:
 			task.sections[check] = instructions.get("content", "") if isinstance(instructions, dict) else instructions
-		if not task.sections.get(check):
+		if not hasCheck(task, check):
 			raise AutoError(f"Run has no {check} check")
 		limits = Limits(receipt["budget"], dict(receipt["usage"]), initialTime=receipt["usage"]["time"])
 		ctx = context.derive(config=state["config"], defaults=state.get("defaults", {}), inputs=state["inputs"], resolvedInputs=state.get("resolvedInputs", {}), limits=limits,

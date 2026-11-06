@@ -98,6 +98,19 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(run["evaluation"]["score"], .2)
 		self.assertGreater(run["usage"]["time"], 0)
 
+	def testFrontmatterChecksAddToBodyAndApply(self):
+		self.add("front", pre="true", sections={"Pre": "!?false", "Process": "never"})
+		self.assertEqual(TaskStart(self.ctx, "front")["status"], "Skipped")
+		self.add("applied", post=["grep -q done", "test -s {{ run.output }}"], apply="cat > applied.txt",
+			eval="printf '{\"score\":0.5,\"feedback\":\"ok\"}'", sections={"Process": "work"})
+		run = TaskStart(self.ctx, "applied")
+		self.assertEqual(run["status"], "Succeeded", run)
+		self.assertEqual((self.root / "applied.txt").read_text(), "done")
+		self.assertEqual(run["evaluation"]["score"], .5)
+		self.add("unapplied", post="false", apply="touch never.txt", sections={"Process": "work"})
+		self.assertEqual(TaskStart(self.ctx, "unapplied")["status"], "Failed")
+		self.assertFalse((self.root / "never.txt").exists())
+
 	def testRunObserverReceivesActivityWithoutChangingJournal(self):
 		self.add("observed", budget={"cost": 1})
 		events = []

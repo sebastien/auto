@@ -88,12 +88,12 @@ def Resolve(context: Context, ref: str, base: Path | None = None) -> Content:
 	return content
 
 
-def Shell(context: Context, command: str, config: dict | None = None) -> tuple[str, str, int]:
+def Shell(context: Context, command: str, config: dict | None = None, stdin: str = "") -> tuple[str, str, int]:
 	"""Run `command` through the shell unless policy disables effects."""
 	if not context.allowShell:
 		raise AutoError("Shell execution is disabled by runtime policy")
 	from auto.integration.process import capture
-	return capture(context.process, ["/bin/sh", "-c", command], config or {})
+	return capture(context.process, ["/bin/sh", "-c", command], config or {}, stdin)
 
 
 def Value(context: Context, value: object, base: Path | None = None, config: dict | None = None):

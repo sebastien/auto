@@ -124,7 +124,8 @@ class Frontend:
 			self.active = True
 			model = event.get("config", {}).get("model") or "engine default"
 			if self.terminal:
-				print("  › Model: " + safeText(model), file=self.stderr, flush=True)
+				self.clear()
+				print("  › model: " + safeText(model), file=self.stderr, flush=True)
 		elif kind == "RunStarted":
 			self.active = True
 			self.started = time.monotonic()
@@ -138,7 +139,8 @@ class Frontend:
 		elif kind == "RunPhase":
 			self.operation = safeText(event.get("phase", "Running"))
 		elif kind == "ScriptAction":
-			self.operation = "Use " + safeText(event.get("name", "tool"))
+			name = safeText(event.get("name", "tool"))
+			self.operation = name + ": " + safeText(event.get("content", "")) if event.get("lifecycle") else "Use " + name
 		elif kind == "ScriptMeta" and event.get("name") == "usage":
 			self.cost = event.get("value", {}).get("cost")
 			self.tokens = event.get("value", {}).get("tokens")
@@ -163,6 +165,14 @@ class Frontend:
 			self.stdout.flush()
 		elif kind == "RunFinished":
 			self.finish(event["run"])
+		elif kind == "ScriptItemStarted":
+			self.active, self.started = True, time.monotonic()
+			if self.terminal:
+				print(f"  › {safeText(event.get('name', 'item'))}: {safeText(event.get('value', ''))} ({event.get('index', 0) + 1}/{event.get('count', 1)})", file=self.stderr, flush=True)
+		elif kind == "ScriptItemEnded":
+			self.finish(event)
+			if self.terminal and event.get("failure"):
+				print("    " + safeText(event["failure"].get("reason", "")), file=self.stderr, flush=True)
 		self.tick()
 
 	def finish(self, result: dict):

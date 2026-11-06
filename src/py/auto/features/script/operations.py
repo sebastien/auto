@@ -9,10 +9,11 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from liquid.exceptions import LiquidError
 
+from auto.features.script.config import commands, validateConfig
 from auto.features.script.model import Script
 from auto.features.script.templates import Renderer
 from auto.runtime.model import Context, FailureKind, Limits, RunStatus, failureFor, statusFor
-from auto.runtime.operations import Engine, Resolve, Value, isReference
+from auto.runtime.operations import Engine, Resolve, Shell, Value, isReference
 from auto.utils.data import AutoError, document, jsonText
 
 
@@ -66,6 +67,7 @@ def ScriptInputs(context: Context, script) -> dict:
 		visited.add(str(loaded.path))
 		renderer = Renderer(context, loaded)
 		names.update(loaded.meta.get("inputs", {}))
+		names.update(loaded.meta.get("each", {}) if depth == 0 else {})
 		names.update(name for name in renderer.template.global_variable_paths(include_partials=False) if not name.startswith(("params", "run", "plan", "forloop")))
 		values = list(loaded.meta.get("inputs", {}).values())
 		values += list(loaded.meta.get("output", {}).values())
@@ -132,9 +134,110 @@ def executePrepared(context: Context, request: dict):
 		stream.close()
 
 
+def ended(kind, reason, status=None) -> dict:
+	return {"type": "ScriptEnded", "status": status or statusFor(kind), "output": None, "failure": {"kind": failureFor(kind), "reason": reason}}
+
+
 def ScriptStart(context: Context, script):
-	"""Stream an ephemeral execution; closing the stream cancels its engine."""
+	"""Stream an ephemeral execution, once per `each` item; closing the stream cancels its engine."""
 	context = context.derive(limits=context.limits or Limits())
+	try:
+		loaded = loadScript(context, script)
+		validateConfig(loaded.meta)
+		each = loaded.meta.get("each")
+		if not each:
+			yield from runLifecycle(context, loaded)
+			return
+		name, value = next(iter(each.items()))
+		value = Value(context, value, loaded.path.parent, Renderer(context, loaded).config)
+		items = [line for line in value.splitlines() if line.strip()] if isinstance(value, str) else value
+		if not isinstance(items, list):
+			raise AutoError("each must give a list or lines of text", FailureKind.INPUT)
+	except (AutoError, KeyboardInterrupt) as error:
+		yield ended(error.kind if isinstance(error, AutoError) else FailureKind.CANCELLED, str(error))
+		return
+	except LiquidError as error:
+		yield ended(FailureKind.INPUT, str(error))
+		return
+	results = []
+	for index, item in enumerate(items):
+		yield {"type": "ScriptItemStarted", "name": name, "value": item, "index": index, "count": len(items)}
+		# Items are data: escaping keeps `!` and `PATH` forms from being resolved.
+		ctx = context.derive(inputs={**context.inputs, name: "\\" + item if isinstance(item, str) else item})
+		final = yield from relay(runLifecycle(ctx, loaded))
+		result = {"name": name, "value": item, "status": final["status"], "output": final.get("output")}
+		if final.get("failure"):
+			result["failure"] = final["failure"]
+		results.append(result)
+		yield {"type": "ScriptItemEnded", "index": index, **result}
+		if final["status"] in {RunStatus.CANCELLED, RunStatus.TIMED_OUT}:
+			yield {**ended(final["failure"]["kind"], final["failure"]["reason"], final["status"]), "output": results}
+			return
+	failed = [result for result in results if result["status"] not in {RunStatus.SUCCEEDED, RunStatus.SKIPPED}]
+	if failed:
+		yield {**ended(FailureKind.OUTPUT, f"{len(failed)} of {len(results)} items failed"), "output": results}
+	else:
+		yield {"type": "ScriptEnded", "status": RunStatus.SUCCEEDED, "output": results}
+
+
+def runLifecycle(context: Context, script: Script):
+	"""Run `pre` checks, the prompt, `post` checks then `apply` effects for one item."""
+	meta = script.meta
+	if not any(meta.get(name) for name in ("pre", "post", "apply")):
+		yield from runScript(context, script)
+		return
+	try:
+		renderer = Renderer(context, script)
+		namespace = renderer.bindings()
+		# Inputs are resolved once, so shell values do not run again for the prompt.
+		context = context.derive(resolvedInputs={**context.resolvedInputs, **namespace["inputs"]})
+		def shell(step, command, stdin=""):
+			command = renderer.shellArgument(command, namespace)
+			yield {"type": "ScriptAction", "name": step, "content": command, "lifecycle": True}
+			if context.limits:
+				context.limits.check()
+			stdout, stderr, code = Shell(context, command, renderer.config, stdin)
+			return code, (stdout + stderr).strip() or f"{step} command failed ({code}): {command}"
+		for command in commands(meta.get("pre")):
+			code, reason = yield from shell("pre", command)
+			if code:
+				yield ended(FailureKind.INPUT, reason, RunStatus.SKIPPED)
+				return
+		final = yield from relay(runScript(context, script))
+		if final["status"] != RunStatus.SUCCEEDED:
+			yield final
+			return
+		output = final["output"]
+		namespace = {**namespace, "output": output}
+		text = output if isinstance(output, str) else jsonText(output)
+		for step, kind in (("post", FailureKind.OUTPUT), ("apply", FailureKind.SYSTEM)):
+			for command in commands(meta.get(step)):
+				code, reason = yield from shell(step, command, text)
+				if code:
+					yield {**ended(kind, reason), "output": output}
+					return
+		yield {"type": "ScriptEnded", "status": RunStatus.SUCCEEDED, "output": output}
+	except (AutoError, KeyboardInterrupt) as error:
+		yield ended(error.kind if isinstance(error, AutoError) else FailureKind.CANCELLED, str(error))
+	except LiquidError as error:
+		yield ended(FailureKind.INPUT, f"{script.path}: {error}")
+
+
+def relay(stream):
+	"""Forward events and answers, returning the terminal `ScriptEnded` event."""
+	answer = None
+	try:
+		while True:
+			event = stream.send(answer)
+			if event["type"] == "ScriptEnded":
+				return event
+			answer = yield event
+	finally:
+		stream.close()
+
+
+def runScript(context: Context, script):
+	"""Run the prompt through the engine, streaming its events."""
 	stream = None
 	try:
 		request = prepare(context, script)

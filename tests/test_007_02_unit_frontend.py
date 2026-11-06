@@ -67,6 +67,18 @@ class FrontendTests(unittest.TestCase):
 		self.assertIn("! Failed", err.getvalue())
 		self.assertNotIn("secret", err.getvalue())
 
+	def testLifecycleProgressAndModelLine(self):
+		out, err = Terminal(), Terminal()
+		with patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": "1"}):
+			frontend = Frontend("text", stdout=out, stderr=err)
+			frontend.event({"type": "ScriptItemStarted", "name": "rev", "value": "abc"})
+			frontend.event({"type": "ScriptAction", "name": "pre", "content": "test -z abc", "lifecycle": True})
+			self.assertEqual(frontend.operation, "pre: test -z abc")
+			frontend.event({"type": "ExecutionStarted", "config": {"model": "example"}})
+			self.assertIn("\r  › model: example\n", err.getvalue())
+			frontend.event({"type": "ScriptAction", "name": "pre", "content": "tool event"})
+			self.assertEqual(frontend.operation, "Use pre")
+
 	def testDiagnosticColorsOnlyOnColorTerminals(self):
 		for noColor in (False, True):
 			out, err = Terminal(), Terminal()

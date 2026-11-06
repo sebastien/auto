@@ -12,6 +12,8 @@ support:
 - *Logic*: support logic operations based on parameters (including inputs)
 - *Composable*: support including assets/files, but also including sub-scripts
   with context inheritance.
+- *Lifecycle*: guard, check and apply the output of a run with shell commands,
+  and run once per item of a list.
 
 ## Conceptual Model
 
@@ -62,6 +64,16 @@ they can be stored as standalone artifacts and shared across scripts.
 
 Template: templated text that supports expansion, transclusion, repetition and
 conditionals.
+
+Lifecycle: shell commands around the run of the template, given in the
+frontmatter (see Lifecycle).
+- `each`: the items to run the script for, one run per item
+- `pre`: commands that must pass for the run to happen
+- `post`: commands that must pass for the output to be accepted
+- `apply`: commands applying the accepted output (eg. saving it)
+
+The frontmatter holds the parameterisable parts of a script, the body its
+template.
 
 Execution: running a script is ephemeral, like running a shell script. It
 streams events and ends with a status and an output, without storage or
@@ -139,6 +151,39 @@ depends on its source:
 | `output.format` | output | string | Output format; default `markdown` |
 | `output.schema` | output | Value | Schema the output must conform to |
 | `output.template` | output | Value | Outline the output follows |
+| `each.{NAME}` | lifecycle | Value | Items to run the script for, bound to the input `NAME` |
+| `pre` | lifecycle | Command(s) | Checks that must pass before the run |
+| `post` | lifecycle | Command(s) | Checks that must pass on the output |
+| `apply` | lifecycle | Command(s) | Effects applying the accepted output |
+
+### Lifecycle
+
+```markdown
+---
+title: Describe empty changes
+each:
+  rev: "!jj log --no-graph -r 'description(exact:\"\")' -T 'change_id ++ \"\\n\"'"
+pre:
+  - r={{ rev }}; test -z "$(jj log --no-graph -r "$r" -T description)"
+post:
+  - grep -qE '^\[[A-Za-z]+\] '
+apply:
+  - jj describe -r {{ rev }} --stdin
+---
+@./summarize_changes.md
+```
+
+- *Commands*: `pre`, `post` and `apply` are a command or a list of commands.
+  As list items, they are not resolved as Values: they run at their step, as
+  shell commands without the `!` prefix.
+- *Variables*: commands use the same template variables as the body, plus
+  `output` (the output data) in `post` and `apply`. Substitutions are quoted as
+  shell data, as for shell transclusions.
+- *Output*: `post` and `apply` commands receive the output on stdin, as text,
+  or as JSON for `json` outputs.
+- *Each*: `each` has a single key, the name of the input bound to each item.
+  Its Value is a list, or text with one item per non-empty line (eg. a Shell
+  value). Items are Literals: they are not resolved as `PATH` or Shell values.
 
 ## Operations
 
@@ -156,8 +201,17 @@ Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
 - `ScriptMessage(content)`: message output by the model (for information).
 - `ScriptQuestion(name,content)`: question raised by the model, answered live
   by the consumer (eg. a CLI prompt). Scripts rarely need questions.
-- `ScriptEnded(status,output)`: ends the stream, with status `Succeeded`,
-  `Failed`, `TimedOut` or `Cancelled`.
+- `ScriptItemStarted(name,value,index,count)`: starts the run of an `each`
+  item, followed by its events.
+- `ScriptItemEnded(name,value,index,status,output,failure?)`: ends the run of
+  an `each` item.
+- `ScriptEnded(status,output,failure?)`: ends the stream, with status
+  `Succeeded`, `Failed`, `TimedOut`, `Cancelled` or `Skipped` (`pre` failed).
+  With `each`, the output is the list of item results
+  (`[{name,value,status,output,failure?}]`).
+
+Lifecycle commands are logged as `ScriptAction(step,command)`, with `step`
+being `pre`, `post` or `apply`.
 
 ## Rules
 
@@ -168,6 +222,21 @@ Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
   2. Explicit values in the transcluded script
   3. Defaults in the current context
   4. Defaults in the transcluded script
+
+  Lifecycle keys are not inherited: the `pre`, `post` and `apply` of a
+  transcluded script are ignored, and a transcluded script with `each` fails
+  the expansion.
+- *Lifecycle*: `ScriptStart` runs the following steps for each item (or once
+  without `each`), stopping at the first failure:
+  1. *Pre*: a failing command (non-zero exit status) ends the run as `Skipped`
+  2. *Run*: the template is run through the model, giving the output
+  3. *Post*: a failing command ends the run as `Failed` (`output` failure)
+  4. *Apply*: a failing command ends the run as `Failed` (`system` failure)
+
+  Items run in order. With `each`, the execution is `Succeeded` when every
+  item is `Succeeded` or `Skipped`, `Failed` otherwise, and stops at the first
+  item `TimedOut` or `Cancelled`. The `each` Value is resolved once, before
+  the first item; inputs are resolved once per item, and shared by its steps.
 - *Output*: the output contract is included in the prompt given to the model.
   The execution fails when the output does not match `output.format` or
   `output.schema`. Conformance is checked here; quality assessment belongs to
@@ -182,7 +251,9 @@ Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
 
 - Task contracts, dependencies and output quality assessment (see Planning)
 - Persistence of executions (see Task runs)
-- Effects of an execution (eg. file system changes), captured by Planning and Orchestration
+- Effects of an execution (eg. file system changes) beyond the declared
+  `apply` commands, captured by Planning and Orchestration
+- Persistence, resumption and parallelism of `each` items (see Task and Plan)
 - Budget allocation (see Planning), tracking across task runs, retries and sequencing (see Orchestration)
 - Shell permission policy (defined by the runtime)
 - Learning capture and storage (see Learning)

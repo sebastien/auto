@@ -91,6 +91,75 @@ class ScriptTests(unittest.TestCase):
 			self.assertIn(value, result)
 			self.assertFalse((self.root / "injected").exists())
 
+	def lifecycleContext(self):
+		class Fake:
+			prompts = []
+			def start(inner, context, request):
+				inner.prompts.append(request["prompt"])
+				yield {"type": "ScriptEnded", "status": "Succeeded", "output": "msg " + request["prompt"].split("\n", 1)[0]}
+		fake = Fake()
+		return fake, self.ctx.derive(engines={"fake": fake}, config={"engine": "fake"})
+
+	def testEachPrePostAndApply(self):
+		fake, ctx = self.lifecycleContext()
+		(self.root / "done").write_text("")
+		meta = {"each": {"rev": "!printf 'a\\nb\\n./c\\ndone\\n'"},
+			"pre": ["test ! -e {{ rev }}"],
+			"post": "grep -q '^msg '",
+			"apply": ["cat > {{ rev }}.out"]}
+		events = list(ScriptStart(ctx, self.script("Describe {{ rev }}", meta)))
+		final = events[-1]
+		self.assertEqual(final["status"], "Succeeded", final)
+		self.assertEqual([item["status"] for item in final["output"]], ["Succeeded", "Succeeded", "Succeeded", "Skipped"])
+		self.assertEqual((self.root / "a.out").read_text(), "msg Describe a")
+		self.assertEqual((self.root / "c.out").read_text(), "msg Describe ./c")
+		self.assertEqual(len(fake.prompts), 3)
+		self.assertEqual([event["type"] for event in events].count("ScriptItemEnded"), 4)
+
+	def testPostFailureSkipsApply(self):
+		_, ctx = self.lifecycleContext()
+		result = list(ScriptStart(ctx, self.script("Hello", {"post": "false", "apply": "touch applied"})))[-1]
+		self.assertEqual(result["status"], "Failed")
+		self.assertEqual(result["failure"]["kind"], "output")
+		self.assertFalse((self.root / "applied").exists())
+		result = list(ScriptStart(ctx, self.script("Hello", {"pre": "false"})))[-1]
+		self.assertEqual(result["status"], "Skipped")
+
+	def testDescribeEmptyPrecondition(self):
+		from auto.features.script.templates import Renderer
+		from auto.runtime.operations import Shell
+		path = Path(__file__).resolve().parents[1] / "examples/action-describe_empty.md"
+		meta, body = document(path.read_text())
+		rev = "'; touch injected; #"
+		renderer = Renderer(self.ctx, Script(body, path, meta))
+		command = renderer.shellArgument(meta["pre"][0], {"rev": rev})
+		# Exercise the actual example command with a fake jj, without touching history.
+		for description, expected in (("", 0), ("Already described", 1)):
+			config = {"env": {"DESCRIPTION": description, "REV": rev}}
+			prefix = 'jj() { test "$4" = "$REV" || exit 99; printf "%s" "$DESCRIPTION"; }; '
+			self.assertEqual(Shell(self.ctx, prefix + command, config)[2], expected)
+		self.assertFalse((self.root / "injected").exists())
+
+	def testDescribeEmptyPostcondition(self):
+		from auto.runtime.operations import Shell
+		path = Path(__file__).resolve().parents[1] / "examples/action-describe_empty.md"
+		meta, _ = document(path.read_text())
+		command = meta["post"][0]
+		self.assertEqual(Shell(self.ctx, command, {}, "[Update] valid\n")[2], 0)
+		_, stderr, code = Shell(self.ctx, command, {}, "invalid\n[Update] later\n")
+		self.assertNotEqual(code, 0)
+		self.assertIn("Expected the first line", stderr)
+
+	def testTranscludedLifecycle(self):
+		_, ctx = self.lifecycleContext()
+		(self.root / "child.md").write_text('---\napply: touch child-applied\n---\nChild')
+		result = list(ScriptStart(ctx, self.script("@./child.md")))[-1]
+		self.assertEqual(result["status"], "Succeeded", result)
+		self.assertFalse((self.root / "child-applied").exists())
+		(self.root / "child.md").write_text('---\neach: {x: [1]}\n---\nChild')
+		with self.assertRaises(AutoError):
+			ScriptExpand(ctx, self.script("@./child.md"))
+
 	def testChildEngineAndOutputDefaults(self):
 		from auto.features.script.operations import prepare
 		(self.root / "child.md").write_text('---\nengine: child\noutput: {format: json, schema: "./schema.json"}\n---\nHello')
