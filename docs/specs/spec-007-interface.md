@@ -117,7 +117,12 @@ flags (eg. `--plan`) as the default context.
 | `PlanCreate` | `plan create` | — | Start a plan from a goal |
 | `PlanRefine` | `plan refine` | — | Refine a plan, or decompose a task, on demand |
 | `PlanStatus` | `plan status` | `plan_status` | Follow a plan; give agents the plan state |
-| `TaskStart` | `task run` | — | Run a task by hand, until Orchestration runs them |
+| `PlanContinue` | `plan continue` | — | Run a plan until it needs a human (see [Orchestration](spec-009-orchestration.md)) |
+| `PlanHold` | `plan hold` | — | Pause or stop a running plan |
+| `PlanRelease` | `plan release` | — | Release a held plan |
+| `PlanEvents` | `plan events` | `plan_events` | Follow a plan, and resume following it, from any interface |
+| `PolicyResolve` | `policy show` | `policy_resolve` | Know what a plan or task may do without confirmation (see [Plan Policy](spec-008-plan-policy.md)) |
+| `TaskStart` | `task run` | — | Run a task by hand, outside a continuation |
 | `RunJournal` | `run journal` | — | Follow a run in progress |
 | `GapList` | `gap list` | `gap_list` | Find what a plan needs |
 | `GapDecide` | `gap decide` | — | Answer a gap; decisions are made by humans through the CLI |

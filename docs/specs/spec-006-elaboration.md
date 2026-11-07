@@ -42,6 +42,7 @@ a shell command.
 | `goal` | TaskGoal of the task to elaborate | Auto |
 | `state` | Plan state: task states, outputs, gaps, failures, and the reason | Auto |
 | `budget` | Budget available to the elaborated tasks | Auto |
+| `policy` | Effective policy and grants (see [Plan Policy](spec-008-plan-policy.md)) | Auto |
 | `context` | Specs, sources, notes | The Elaborator, or plan inputs |
 | `methodology` | Methodology to follow, if any | The Elaborator |
 | `catalogue` | Task templates, artifact types, profiles and checks to use | The Elaborator |

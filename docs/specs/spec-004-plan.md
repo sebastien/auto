@@ -301,6 +301,7 @@ Events, added to the journal of the run concerned, if any:
 ## Out of Scope
 
 - Elaborator interface, TaskElaboration format and framework (see [Elaboration](spec-006-elaboration.md))
-- Selecting which ready task to run, retries and budget enforcement (see Orchestration)
+- Selecting which ready task to run, holds, retries and budget enforcement (see [Orchestration](spec-009-orchestration.md))
+- Effects, rules, grants and checkpoints (see [Plan Policy](spec-008-plan-policy.md))
 - Learning capture, storage and review (separate spec)
 - Storage formats for gaps and decisions (see [Memo integration](spec-005-memo.md))

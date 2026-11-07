@@ -255,7 +255,7 @@ being `pre`, `post` or `apply`.
   `apply` commands, captured by Planning and Orchestration
 - Persistence, resumption and parallelism of `each` items (see Task and Plan)
 - Budget allocation (see Planning), tracking across task runs, retries and sequencing (see Orchestration)
-- Shell permission policy (defined by the runtime)
+- Shell permission policy (defined by the runtime, from the plan policy, see [Plan Policy](spec-008-plan-policy.md))
 - Learning capture and storage (see Learning)
 
 ## References
