@@ -50,9 +50,7 @@ class EngineTests(unittest.TestCase):
 			for temperature in (0, .1):
 				with self.subTest(temperature=temperature):
 					result = list(ScriptStart(ctx.derive(limits=Limits({})), Script("Hello", root / "hello.md", {"temperature": temperature})))
-					self.assertEqual(result[0]["type"], "ScriptMeta")
-					self.assertEqual(result[0]["name"], "warning")
-					self.assertIn("temperature", result[0]["value"])
+					self.assertFalse(any(event.get("name") == "warning" and "temperature" in event.get("value", "") for event in result))
 					self.assertEqual(result[-1]["status"], "Succeeded")
 					self.assertEqual(result[-1]["output"], "Hello")
 			result = list(ScriptStart(ctx.derive(limits=Limits({"tokens": 2})), Script("Hello", root / "hello.md")))[-1]
@@ -82,15 +80,53 @@ class EngineTests(unittest.TestCase):
 		for temperature in (0, .1):
 			with self.subTest(temperature=temperature):
 				result = list(ScriptStart(ctx, Script("Work", Path("work.md"), {"temperature": temperature})))
-				self.assertEqual(result[0]["type"], "ScriptMeta")
-				self.assertEqual(result[0]["name"], "warning")
-				self.assertIn("temperature", result[0]["value"])
+				self.assertFalse(any(event.get("name") == "warning" and "temperature" in event.get("value", "") for event in result))
 				self.assertEqual(result[-1]["status"], "Succeeded")
 				self.assertEqual(result[-1]["output"], "Done")
 		stream = ScriptStart(ctx, Script("Work", Path("work.md")))
 		next(stream)
 		stream.close()
 		self.assertTrue(engine.calls[-1][1].endswith("/interrupt"))
+
+	def testOpenCodeWaitsForSettledOutput(self):
+		class Stub(OpenCode):
+			def __init__(self):
+				self.polls = 0
+			def api(self, context, method, path, data=None, config=None):
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					self.polls += 1
+					text = "Done" if self.polls > 2 else ""
+					return {"data": [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": text}]},
+						{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		engine = Stub()
+		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode"})
+		result = list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]
+		self.assertEqual(result["status"], "Succeeded")
+		self.assertEqual(result["output"], "Done")
+		self.assertGreater(engine.polls, 2)
+
+	def testOpenCodeKeepsOutputSeenBeforeIdle(self):
+		class Stub(OpenCode):
+			def __init__(self):
+				self.polls = 0
+			def api(self, context, method, path, data=None, config=None):
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					self.polls += 1
+					if self.polls == 1:
+						return {"data": [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": "Done"}]}], "cursor": {}}
+					return {"data": [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": ""}]},
+						{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		engine = Stub()
+		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode"})
+		result = list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]
+		self.assertEqual(result["status"], "Succeeded")
+		self.assertEqual(result["output"], "Done")
 
 	def testOpenCodePolicyPermissionAndResume(self):
 		class Stub(OpenCode):

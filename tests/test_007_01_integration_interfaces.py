@@ -6,8 +6,10 @@ import asyncio
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from importlib.metadata import version
+from pathlib import Path
 
 from auto.app.operations import EXPOSURES, exitStatus
 
@@ -30,12 +32,40 @@ class InterfaceTests(unittest.TestCase):
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn(exposure.need, result.stdout)
 
+	def testScriptPathRelativeToWorkingDirectory(self):
+		with tempfile.TemporaryDirectory() as directory:
+			project = Path(directory)
+			(project / ".git").mkdir()
+			nested = project / "nested"
+			nested.mkdir()
+			(nested / "script.md").write_text("From working directory")
+			(project / "script.md").write_text("From project root")
+			for path in ("script.md", "./script.md", "../nested/script.md", str(nested / "script.md")):
+				result = self.cli("script", "expand", path, "--format", "json", cwd=nested)
+				self.assertEqual(result.returncode, 0, result.stderr)
+				self.assertTrue(json.loads(result.stdout).startswith("From working directory"))
+
 	def testVersion(self):
 		packageVersion = version("auto-orchestrator")
 		self.assertIn(f"version {packageVersion}", self.cli("--help").stdout)
 		result = self.cli("--version")
 		self.assertEqual(result.returncode, 0, result.stderr)
 		self.assertEqual(result.stdout.strip(), f"auto {packageVersion}")
+
+	def testScriptPathShorthand(self):
+		with tempfile.TemporaryDirectory() as directory:
+			project = Path(directory)
+			(project / ".git").mkdir()
+			working = project / "working"
+			working.mkdir()
+			(working / "script.md").write_text('---\neach:\n  item: "!pwd > location"\n---\nNo items to run')
+			for path in ("script.md", "./script.md", "../working/script.md", str(working / "script.md")):
+				with self.subTest(path=path):
+					result = self.cli(path, "--engine", "pi", "--format", "json", cwd=working)
+					self.assertEqual(result.returncode, 0, result.stderr)
+					self.assertEqual((project / "location").read_text().strip(), str(project))
+					self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "Succeeded")
+			self.assertEqual(self.cli("./missing.md", cwd=working).returncode, 1)
 
 	def testMcpStdio(self):
 		async def exercise():

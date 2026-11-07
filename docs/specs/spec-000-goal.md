@@ -49,7 +49,7 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
 | Execution | Script | Template + inputs | — (ephemeral: events and output) |
 | Planning | Task, Run, Plan, Gap, Decision | Script + contract; Tasks + Learnings | State, journal, receipt, output assessment |
 | Orchestration | Workflow | Rules acting on a Plan | Budget status, retry count |
-| Learning | Learning | Assessed Runs, Decisions | — |
+| Learning | Agent, Learning | Observations from Runs, Decisions and interfaces ([Memorisation](spec-010-memorisation.md)) | — |
 
 - *Execution*: defines agent work as templated instructions, run as a script
   that outputs a result or produces effects.
@@ -78,8 +78,11 @@ ACTUATION Learnings refine the plan and the elaboration of tasks  ---+
   question, decision to be made), tracked until resolved.
 - *Decision*: the resolution of a gap, with its rationale and author.
 - *Workflow*: rules that drive the creation and updating of a plan.
-- *Learning*: knowledge derived from assessed Runs and Decisions, classified
-  (failure, surprise, discovery) and stored durably for retrieval.
+- *Agent*: a persona with a perspective whose memory (observations,
+  learnings, views of a shared world) is kept in Memo, and whose consolidations
+  Auto runs (see [Memorisation](spec-010-memorisation.md)).
+- *Learning*: knowledge an agent derives from its observations of Runs and
+  conversations, and from Decisions, stored durably for retrieval.
 
 ## References
 

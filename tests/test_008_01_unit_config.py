@@ -87,6 +87,21 @@ class ConfigTests(unittest.TestCase):
 				with self.assertRaisesRegex(AutoError, "runtime keys must be strings"):
 					contextFor(root)
 
+	def testMemorySettingsValidatedAtStartup(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".auto").mkdir()
+			file = root / ".auto/config.toml"
+			with patch.dict(os.environ, {"HOME": directory, "XDG_CONFIG_HOME": str(root / "xdg")}, clear=True):
+				file.write_text('[memory.agents.ux]\nagent = "ux/agent:Designer"\n[housekeeping]\nallowance = {tokens = 1000, per = "day"}\n')
+				self.assertEqual(contextFor(root).defaults["memory"]["agents"]["ux"]["agent"], "ux/agent:Designer")
+				file.write_text('[memory.agents.ux]\nagent = "ux/agent:Designer"\n[memory.agents.other]\nagent = "ux/agent:Designer"\n')
+				with self.assertRaisesRegex(AutoError, "configured more than once"):
+					contextFor(root)
+				file.write_text('[housekeeping]\nallowance = {tokens = 1000}\n')
+				with self.assertRaisesRegex(AutoError, "Allowance requires"):
+					contextFor(root)
+
 	def testRuntimeFileSelectsOpenCodeAndModel(self):
 		class Stub(OpenCode):
 			def api(self, context, method, path, data=None, config=None):

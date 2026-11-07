@@ -65,6 +65,8 @@ class Exposure:
 			properties["budget"] = {"anyOf": [{"type": "string"}, {"type": "object"}]}
 		if "effects" in properties:
 			properties["effects"] = {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
+		if "agents" in properties:
+			properties["agents"] = {"type": "array", "items": {"type": "string"}}
 		if "since" in properties:
 			properties["since"] = {"type": "integer"}
 		if "answer" in properties:
@@ -87,7 +89,7 @@ EXPOSURES = [
 	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone",
 		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
-	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects"), inputs=True),
+	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects", "agents"), inputs=True),
 	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True),
 	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True),
 	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",)),
@@ -103,7 +105,7 @@ EXPOSURES = [
 
 STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,
 	RunStatus.TIMED_OUT: 124, RunStatus.CANCELLED: 130}
-STRUCTURED_ARGUMENTS = ("budget", "filter", "effects")
+STRUCTURED_ARGUMENTS = ("budget", "filter", "effects", "agents")
 
 # -----------------------------------------------------------------------------
 #

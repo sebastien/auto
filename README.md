@@ -6,7 +6,7 @@ live in [`docs/specs`](docs/specs); implementation notes are in
 
 ## Setup
 
-Requires Python 3.14+ and a configured Pi, OpenCode V2 or LLM CLI.
+Requires Python 3.14+ and a configured Pi, OpenCode V2, fx or LLM CLI.
 
 ```sh
 uv sync --extra mcp
@@ -20,6 +20,17 @@ Memo is a separate project, not the unrelated packages sharing its name on
 package indexes. Install it into Auto's environment. A subsequent exact
 `uv sync` can remove it; reinstall it afterwards. Use `.venv/bin/python`
 to run the complete integration suite with this installation.
+
+The OpenCode engine also requires Node.js 22+ and its V2 client bridge dependencies:
+
+```sh
+npm ci --prefix src/py/auto/integration/opencode
+```
+
+For an installed Python package, use its integration directory instead:
+`.venv/bin/python -c 'import auto.integration.opencode as m; print(m.__path__[0])'`.
+The bridge uses `@opencode/client` for background service discovery and
+authentication, and receives request bodies through stdin rather than arguments.
 
 ## Scripts
 
@@ -38,6 +49,8 @@ Greet {{ name }} in one sentence.
 ```sh
 bin/auto script expand ./hello.md --input name=reader
 bin/auto script run ./hello.md --engine pi --format json
+# Shorthand for script run (also accepts absolute paths):
+bin/auto ./hello.md --engine pi --format json
 ```
 
 Pi is the default engine. Set defaults in `~/.auto/config.toml`,
@@ -67,6 +80,19 @@ override script metadata (flags take priority over environment variables).
 OpenCode also accepts the existing `provider/model` form when `provider` is
 unset. Separate provider selection is not supported by the Pi or llm integrations.
 Scripts execute without creating plan/run storage.
+
+Vercel's [fx CLI](https://fx.sh/docs/using-fx/fx-ask) is available with
+`--engine fx`. Install fx separately and authenticate with `fx login` or set
+`AI_GATEWAY_API_KEY`. Auto runs `fx ask --json --no-save`, preserving fx's
+permission checks and ambient project instructions, skills and MCP configuration.
+`provider` selects an fx connection (`gateway`, `codex`, `grok` or a configured
+custom connection); `model` selects its model. System-prompt overrides are
+supported, but named agents, temperature overrides and `isolated: true` are not.
+Output, tool summaries and main-agent token counts arrive only when fx exits;
+cost is not reported. Token/cost budgets are rejected; timeouts and cancellation
+remain supported. Sessions are not saved, so fx subagents are unavailable.
+The adapter does not bridge live permission approvals or enforce Auto effect
+policies. It never enables fx's full-access mode on its own.
 
 Run `auto config` to print the effective configuration and the source of each
 value. Terminal output is shown as a table; set `NO_COLOR` to disable color.

@@ -12,7 +12,7 @@ from auto.runtime.config import validateConfig as validateConfig
 
 
 def commands(value) -> list[str]:
-	"""Normalise a lifecycle key (`pre`, `post`, `apply`, `eval`) to a command list."""
+	"""Normalise a lifecycle key to a command list."""
 	return [] if value is None else [value] if isinstance(value, str) else list(value)
 
 # EOF

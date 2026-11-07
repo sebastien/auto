@@ -98,6 +98,9 @@ src/py/auto/
       operations.py         # Elaboration, plan creation and refinement
       catalogue.py          # Layered framework assets
       materialize.py        # Template instantiation
+    memorisation/
+      model.py              # Agent runtime facet, MemoryConsolidation
+      operations.py         # Consolidation, triggers, decision cursors, wake
   app/
     operations.py           # Exposure metadata shared by interfaces
     cli/

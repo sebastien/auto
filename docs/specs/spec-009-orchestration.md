@@ -71,6 +71,7 @@ The event log records what happens to a plan, after it happened:
 | `RunEnded` | run, status, usage, failure | The receipt is written |
 | `GapRaised` | gap, kind, needed_by | The `raise` revision |
 | `GapResolved` | gap, decision | The `resolve` revision |
+| `DecisionRecorded` | decision | The `record` revision |
 | `GapDismissed` | gap | The `dismiss` revision |
 | `PlanHeld` | mode, reason | The `hold` revision |
 | `PlanReleased` | reason | The `release` revision |
@@ -186,8 +187,8 @@ pending (see [Interface](spec-007-interface.md)).
   reused.
 - *Resumption*: consumers resume from the last `seq` they processed;
   delivery is at least once.
-- *Repair*: the event log is derived from the journal, the runs and the gap
-  records. `PlanRepair` appends the events missing for changes that were made
+- *Repair*: the event log is derived from the journal, the runs, the gap
+  records and the decisions recorded without a gap. `PlanRepair` appends the events missing for changes that were made
   durable without their event, in the order of their records.
 - *Workspace*: continuations of plans sharing a working tree, and writing to
   it (see [Plan Policy](spec-008-plan-policy.md) `repo.write`), are not run

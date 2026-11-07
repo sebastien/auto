@@ -143,7 +143,9 @@ The last five keys are defined by [Elaboration](spec-006-elaboration.md).
 
 ### Run Storage
 
-A run is stored by the runtime within its plan, as files covering:
+A run is stored by the runtime within its scope, its plan or, for
+consolidations, its agent (see [Memorisation](spec-010-memorisation.md)), as
+files covering:
 - The output, as a text or JSON file
 - The journal, as a structured log file
 - The receipt, as structured data
@@ -153,7 +155,8 @@ A run is stored by the runtime within its plan, as files covering:
 > depend on `plan`, although [Structure](spec-001-structure.md) layers
 > `script → task → plan → elaboration`. The dependency is deliberate and
 > limited to storage, run discovery and policy reads; it is the known
-> exception to that ordering.
+> exception to that ordering. The agent scope of consolidation runs is the
+> only other scope, and follows the same storage layout.
 
 ## Operations
 
@@ -238,7 +241,7 @@ Events, added to the run journal after the script events:
 - Budget tracking across runs, retries and sequencing (see Orchestration)
 - Effects of a run (eg. file system changes) beyond the declared `apply`
   commands, captured by Planning and Orchestration
-- Learning capture from evaluations and failures (see Learning)
+- Learning capture from evaluations and failures (see [Memorisation](spec-010-memorisation.md))
 
 ## References
 

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render, resolveContextArguments, resolvePayload, resumeResult
 from auto.app.cli.frontend import Frontend, width
@@ -40,6 +41,7 @@ def parser():
 	except PackageNotFoundError:
 		packageVersion = "unknown"
 	root = argparse.ArgumentParser(prog="auto", description=f"Composable agent scripts, tasks and plans (version {packageVersion})")
+	root.epilog = "Use auto PATH.md [OPTIONS] as shorthand for auto script run PATH.md [OPTIONS]."
 	root.add_argument("--version", action="version", version=f"%(prog)s {packageVersion}")
 	nouns = root.add_subparsers(dest="noun")
 	groups = {}
@@ -74,6 +76,9 @@ def parser():
 def main(argv=None) -> int:
 	"""Run the CLI and return its stable exit status."""
 	cli = parser()
+	argv = list(sys.argv[1:] if argv is None else argv)
+	if argv and not argv[0].startswith("-") and ("/" in argv[0] or Path(argv[0].partition("#")[0]).suffix == ".md"):
+		argv = ["script", "run", *argv]
 	args = cli.parse_args(argv)
 	if args.noun in (None, "help"):
 		cli.print_help()
@@ -96,6 +101,11 @@ def main(argv=None) -> int:
 			return 0
 		exposure = args.exposure
 		arguments = {name: getattr(args, name) for name in (*exposure.arguments, *exposure.optional) if getattr(args, name) is not None}
+		if exposure.payloadKind == "script":
+			script = arguments[exposure.payload]
+			if script != "-" and "\n" not in script and not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", script):
+				path, separator, selector = script.partition("#")
+				arguments[exposure.payload] = str(Path(path).resolve()) + separator + selector
 		if hasattr(args, "input"):
 			context.inputs = assignments(args.input)
 		if hasattr(args, "param"):

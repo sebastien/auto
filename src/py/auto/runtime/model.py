@@ -78,6 +78,7 @@ IN_FLIGHT = frozenset({RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING})
 
 # Engine name to integration entry point, imported lazily to keep runtime free of adapters.
 ENGINES = {
+	"fx": ("auto.integration.fx.engine", "Fx"),
 	"opencode": ("auto.integration.opencode.engine", "OpenCode"),
 	"pi": ("auto.integration.pi.engine", "Pi"),
 	"llm": ("auto.integration.llm.engine", "Llm"),

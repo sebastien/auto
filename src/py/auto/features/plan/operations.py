@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto.features.plan.gaps import GapList, repairLocked
+from auto.features.memory.config import validateAgents
 from auto.features.plan.model import GapState, PlanState, RevisionOp, createPlan
 from auto.features.plan.references import latestRun
 from auto.features.plan.store import commit, journal, locked, planPath, recover
@@ -123,7 +124,15 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 			operations.append({"op": RevisionOp.REMOVE, "task": id})
 		for change in changes:
 			op = change["op"]
-			if op == "remove":
+			if op == "agents":
+				agents = validateAgents(context, change["agents"])
+				root = tasks["root"]
+				root.meta["agents"] = agents
+				meta, body = document(taskText(root))
+				meta["id"] = createPlan(path).id
+				writes["plan.md"] = documentText(meta, body)
+				operations.append({"op": "agents", "agents": agents})
+			elif op == "remove":
 				remove(change["task"])
 			elif op in {"add", "edit", "replace"}:
 				value = change["task"]
@@ -151,6 +160,8 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 			elif op == "update":
 				if latestRun(path, "root"):
 					raise AutoError("Root definition is immutable after a run")
+				if "agents" in change["fields"]:
+					raise AutoError("Use the agents revision operation to change plan agents")
 				root = tasks["root"]
 				root.meta.update(change["fields"])
 				rootText = taskText(root)

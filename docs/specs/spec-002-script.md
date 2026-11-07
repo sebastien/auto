@@ -154,6 +154,7 @@ depends on its source:
 | `each.{NAME}` | lifecycle | Value | Items to run the script for, bound to the input `NAME` |
 | `pre` | lifecycle | Command(s) | Checks that must pass before the run |
 | `post` | lifecycle | Command(s) | Checks that must pass on the output |
+| `transform` | lifecycle | Command(s) | Replace output with command stdout after checks |
 | `apply` | lifecycle | Command(s) | Effects applying the accepted output |
 
 ### Lifecycle
@@ -173,14 +174,23 @@ apply:
 @./summarize_changes.md
 ```
 
-- *Commands*: `pre`, `post` and `apply` are a command or a list of commands.
+- *Commands*: `pre`, `post`, `transform` and `apply` are a command or a list of commands.
   As list items, they are not resolved as Values: they run at their step, as
   shell commands without the `!` prefix.
 - *Variables*: commands use the same template variables as the body, plus
-  `output` (the output data) in `post` and `apply`. Substitutions are quoted as
+  `output` (the current output data) in `post`, `transform` and `apply`. Substitutions are quoted as
   shell data, as for shell transclusions.
-- *Output*: `post` and `apply` commands receive the output on stdin, as text,
+- *Output*: `post`, `transform` and `apply` commands receive the current output on stdin, as text,
   or as JSON for `json` outputs.
+- *Transform*: successful command stdout replaces the output, parsed using the
+  effective `output.format`. For JSON, stdout must be one strict JSON document;
+  invalid JSON, duplicate keys, a nonzero exit or oversized output fails the run
+  without returning raw or partially transformed output. Commands in a list form
+  a pipeline; later commands and `apply` receive the latest value. The original
+  `output.schema` validates the model response, not the transformed result. Any
+  additional result-schema checks belong in the transformation command. `post`
+  and `apply` stdout still do not replace output. The text CLI buffers model text
+  when transformations are declared and prints only the final result.
 - *Each*: `each` has a single key, the name of the input bound to each item.
   Its Value is a list, or text with one item per non-empty line (eg. a Shell
   value). Items are Literals: they are not resolved as `PATH` or Shell values.
@@ -211,7 +221,7 @@ Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
   (`[{name,value,status,output,failure?}]`).
 
 Lifecycle commands are logged as `ScriptAction(step,command)`, with `step`
-being `pre`, `post` or `apply`.
+being `pre`, `post`, `transform` or `apply`.
 
 ## Rules
 
@@ -223,7 +233,7 @@ being `pre`, `post` or `apply`.
   3. Defaults in the current context
   4. Defaults in the transcluded script
 
-  Lifecycle keys are not inherited: the `pre`, `post` and `apply` of a
+  Lifecycle keys are not inherited: the `pre`, `post`, `transform` and `apply` of a
   transcluded script are ignored, and a transcluded script with `each` fails
   the expansion.
 - *Lifecycle*: `ScriptStart` runs the following steps for each item (or once
@@ -231,7 +241,8 @@ being `pre`, `post` or `apply`.
   1. *Pre*: a failing command (non-zero exit status) ends the run as `Skipped`
   2. *Run*: the template is run through the model, giving the output
   3. *Post*: a failing command ends the run as `Failed` (`output` failure)
-  4. *Apply*: a failing command ends the run as `Failed` (`system` failure)
+   4. *Transform*: replace the output with command stdout (`output` failure on error)
+   5. *Apply*: a failing command ends the run as `Failed` (`system` failure)
 
   Items run in order. With `each`, the execution is `Succeeded` when every
   item is `Succeeded` or `Skipped`, `Failed` otherwise, and stops at the first
@@ -256,7 +267,7 @@ being `pre`, `post` or `apply`.
 - Persistence, resumption and parallelism of `each` items (see Task and Plan)
 - Budget allocation (see Planning), tracking across task runs, retries and sequencing (see Orchestration)
 - Shell permission policy (defined by the runtime, from the plan policy, see [Plan Policy](spec-008-plan-policy.md))
-- Learning capture and storage (see Learning)
+- Learning capture and storage (see [Memorisation](spec-010-memorisation.md))
 
 ## References
 

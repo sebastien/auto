@@ -86,16 +86,18 @@ The integration implements the Gap operations of the plan (`GapRaise`,
 - *Write order*: Memo is written before the plan journal (see Plan rules).
   Resolving a gap writes two entries, the Decision then the Gap status; Memo
   gives no atomicity across them.
+  Recording a decision without a gap writes one entry, without a `gap`
+  property and with its `source`.
 - *Repair*: in addition to the plan repair rules, a Decision whose Gap is
   still `Open` completes the Gap update before the journal is appended.
 - *Safe writes*: every update carries the expected Memo revision; a stale
   write is re-read and reconciled, never overwritten.
-- *Learning evidence*: Gap and Decision entries are ordinary Memo entries and
-  may be selected as learning evidence (see Memo learning).
+- *Record for agents*: Gap and Decision entries are ordinary Memo entries;
+  agents cite Decisions as record (see [Memorisation](spec-010-memorisation.md#decisions)).
 
 ## Out of Scope
 
-- Learning records and their mapping (see Learning)
+- Learning records and their mapping (see [Memorisation](spec-010-memorisation.md))
 - Storage of plans, tasks and runs, which stay in the plan directory (see Plan)
 - Memo primitives: identity, revisions, front matter, queries (see Memo specs)
 

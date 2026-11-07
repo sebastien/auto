@@ -67,7 +67,9 @@ specification:
 - `from`: task template it instantiates, with `params`
 - `artifact`: artifact type of its output
 - `profile`: allocation profile, overridden by explicit `engine`, `model`,
-  `agent` or `temperature`
+  `agent` or `temperature` (`agent` is the engine's harness agent, eg. an
+  OpenCode agent; memorisation agents are the plan's `agents`, see
+  [Memorisation](spec-010-memorisation.md))
 - `phase`: methodology phase it belongs to
 - `hints`: advisory flags for Orchestration (see Hints)
 - `replaces`: id of the task it reworks
@@ -109,7 +111,7 @@ optionally shared through the catalogue (see Catalogue).
 | `methodology` | Phases, with their artifacts, templates and gates | Elaborators, conformance check |
 | `artifact` | Output contract (`output.*`) with Post and Evaluation sections | Tasks, with `artifact` |
 | `task` | Task template: a task with parameters | Tasks, with `from` |
-| `profile` | Engine, model, agent, generation settings and default budget | Tasks, with `profile` |
+| `profile` | Engine, model, agent, generation settings, default budget and memory profile | Tasks, with `profile` |
 | `check` | A script with a TaskVerdict or TaskEvaluation output | Post and Evaluation sections |
 
 ### Methodology
@@ -175,8 +177,11 @@ the artifact type:
   expanded with the given `params`, then the elaborated keys and sections take
   precedence. The task records `from` as `{ref,digest}`, so later template
   changes do not affect it (see Plan immutability).
-- A profile gives `engine`, `model`, `agent`, `temperature` and a default
-  `budget`, and a description of its capabilities to guide selection.
+- A profile gives `engine`, `model`, `agent`, `temperature`, a default
+  `budget`, a `memory` profile (`minimal`, `standard` or `full`, see
+  [Memorisation](spec-010-memorisation.md#actuation)), and a description of
+  its capabilities to guide selection. A cheap model usually pairs with
+  `minimal` memory.
   Runtime settings are resolved by decreasing precedence: explicit task
   values, the profile, the script values (see Script composition), then the
   runtime defaults. A profile may leave any setting unset.
@@ -219,7 +224,7 @@ context:
   - ./CHANGELOG.md
   - ./docs/specs/
 learnings:
-  - memo:learning/summaries-need-audience
+  - memo:agent-writer/learning:Summaries node=need_audience
 ---
 ## Rationale
 
@@ -385,7 +390,7 @@ tasks, for a plan run like a script.
 - Assessing elaboration quality against plan outcomes, and triggering
   refinement (see Workflow)
 - Acting on hints, selecting which ready task to run (see Orchestration)
-- Capturing learnings from Elaborator runs (see Learning)
+- Capturing learnings from Elaborator runs (see [Memorisation](spec-010-memorisation.md))
 - The prompts of the built-in Elaborator
 
 ## References

@@ -36,13 +36,12 @@ def permissionEffect(action, resources, project, cwd):
 
 
 class OpenCode:
-	"""Use the authenticated CLI API transport, with server-side cancellation."""
+	"""Use the authenticated V2 client bridge, with server-side cancellation."""
 
 	def api(self, context, method, path, data=None, config=None):
-		args = ["opencode", "api", method, path]
-		if data is not None:
-			args += ["--data", jsonText(data)]
-		stdout, stderr, code = capture(context.process, args, config or {})
+		args = ["node", str(Path(__file__).with_name("bridge.mjs"))]
+		stdin = jsonText({"method": method, "path": path, "data": data})
+		stdout, stderr, code = capture(context.process, args, config or {}, stdin)
 		if code:
 			raise AutoError(f"OpenCode {method} {path} failed: {stderr}", "system")
 		try:
@@ -60,8 +59,6 @@ class OpenCode:
 			raise AutoError("OpenCode API cannot guarantee ambient-context isolation; use isolated: false or an isolating engine")
 		if "prompt" in config:
 			raise AutoError("OpenCode session API does not expose system prompt overrides")
-		if "temperature" in config:
-			yield {"type": Event.SCRIPT_META, "name": "warning", "value": "OpenCode session API does not expose temperature; ignoring temperature setting"}
 		complete = False
 		try:
 			if not request.get("session"):
@@ -99,6 +96,9 @@ class OpenCode:
 					self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
 			seen = request.setdefault("seen", {})
 			accounted = request.setdefault("usage", {"tokens": 0, "cost": 0})
+			# Keep the last text seen across polls: a session can be reported idle
+			# just before the final message content becomes readable.
+			output, settleUntil = "", None
 			while True:
 				if context.cancelled():
 					raise AutoError("Execution cancelled", "cancelled")
@@ -127,13 +127,16 @@ class OpenCode:
 				while response.get("cursor", {}).get("next"):
 					response = self.api(context, "get", base + "/message?cursor=" + quote(response["cursor"]["next"], safe=""), config=config)
 					messages.extend(response.get("data", []))
-				output, cost, tokens = "", 0, 0
+				step, cost, tokens = "", 0, 0
+				lastAssistant, lastText = None, ""
 				for message in messages:
 					if message["type"] != "assistant":
 						continue
+					lastAssistant = message
 					text = "".join(part["text"] for part in message.get("content", []) if part["type"] == "text")
-					if text:
-						output = text
+					lastText = text or seen.get(message["id"], "")
+					if lastText:
+						step = lastText
 					if message.get("model"):
 						yield {"type": Event.SCRIPT_META, "name": "runtime", "value": {"provider": message["model"]["providerID"], "model": message["model"]["id"]}}
 					previous = seen.get(message["id"], "")
@@ -143,6 +146,8 @@ class OpenCode:
 					cost += message.get("cost", 0)
 					usage = message.get("tokens", {})
 					tokens += sum(usage.get(key, 0) for key in ("input", "output", "reasoning")) + sum(usage.get("cache", {}).values())
+				if step:
+					output = step
 				for key, value in (("tokens", tokens), ("cost", cost)):
 					if context.limits:
 						context.limits.usage[key] += value - accounted[key]
@@ -151,6 +156,13 @@ class OpenCode:
 				if context.limits:
 					context.limits.check()
 				if messages and messages[-1]["type"] == "idle":
+					# A session can report idle while its final message is still
+					# content-less in the listing; settle briefly before giving up.
+					if not lastText and lastAssistant is not None:
+						settleUntil = settleUntil if settleUntil is not None else time.monotonic() + 5
+						if time.monotonic() < settleUntil:
+							time.sleep(.2)
+							continue
 					complete = True
 					if messages[-1]["outcome"] != "succeeded":
 						raise AutoError(jsonText(messages[-1].get("error", messages[-1]["outcome"])), "system")

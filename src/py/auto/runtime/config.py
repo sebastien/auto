@@ -42,7 +42,7 @@ def validateConfig(value: dict) -> None:
 		raise AutoError("Environment overrides must be strings")
 	for reserved in {"inputs", "params", "plan", "run", "output"} & value.get("inputs", {}).keys():
 		raise AutoError(f"Input name is reserved: {reserved}")
-	for name in ("pre", "post", "apply", "eval"):
+	for name in ("pre", "post", "transform", "apply", "eval"):
 		if name in value and not (isinstance(value[name], str) or isinstance(value[name], list) and all(isinstance(item, str) for item in value[name])):
 			raise AutoError(f"{name} must be a command or a list of commands")
 	if "each" in value:
@@ -62,6 +62,10 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	runtime = config.pop("runtime", {})
 	validateConfig(runtime)
 	config.update(runtime)
+	from auto.features.memory.config import agentsFor, housekeepingFor
+	settings = Context(project=project, defaults=config, policyLayers=policyLayers)
+	agentsFor(settings)
+	housekeepingFor(settings)
 	selected = plan or os.environ.get("AUTO_PLAN")
 	planPath = None
 	if selected:

@@ -18,6 +18,10 @@ auto = "auto.app.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src/py"]
 namespaces = true
+exclude = ["*.node_modules", "*.node_modules.*"]
+
+[tool.setuptools.package-data]
+"auto.integration.opencode" = ["bridge.mjs", "package.json", "package-lock.json"]
 
 [tool.setuptools.data-files]
 "share/auto/catalogue/task" = ["src/md/auto/catalogue/task/*.md"]

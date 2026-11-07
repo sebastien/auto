@@ -25,8 +25,6 @@ class Pi:
 			raise AutoError("Pi integration does not support a separate provider setting")
 		if config.get("agent"):
 			raise AutoError("Pi CLI does not expose named agents")
-		if "temperature" in config:
-			yield {"type": Event.SCRIPT_META, "name": "warning", "value": "Pi CLI does not expose temperature; ignoring temperature setting"}
 		args = ["pi", "--mode", "json", "--no-session"]
 		if config.get("isolated", False):
 			args += ["--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-mcp", "--no-approve"]

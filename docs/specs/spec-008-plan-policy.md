@@ -38,6 +38,7 @@ Effect: a named class of consequence an action may have, as a dotted name
 | `net.write` | Writing to external services (issues, messages, APIs) |
 | `deploy.{env}` | Deploying to an environment (eg. `deploy.staging`, `deploy.production`) |
 | `data.delete` | Deleting data outside the plan workspace |
+| `memory.{effect}` | Changing agent memory: `observe`, `consolidate`, `promote`, `evolve` (see [Memorisation](spec-010-memorisation.md#policy)) |
 
 Projects may declare further effects. A rule on an effect prefix applies to
 the effects below it (eg. `deploy` covers `deploy.production`), the most
@@ -218,4 +219,4 @@ Events, added to the journal of the run concerned, if any:
 - Classification of arbitrary shell commands into effects, beyond what
   integrations declare
 - Roles and multiple humans with different rights
-- Policy learning: turning recurring approvals into rules (see Learning)
+- Policy learning: turning recurring approvals into rules (see [Memorisation](spec-010-memorisation.md))

@@ -136,7 +136,7 @@ class Frontend:
 	def event(self, event: dict, *, response=False):
 		kind = event.get("type")
 		if kind == Event.EXECUTION_STARTED:
-			self.structured = event.get("output", {}).get("format") == "json"
+			self.structured = event.get("output", {}).get("format") == "json" or bool(event.get("transform"))
 			self.active = True
 			model = event.get("config", {}).get("model") or "engine default"
 			if self.terminal:

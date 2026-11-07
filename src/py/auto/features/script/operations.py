@@ -37,11 +37,11 @@ def loadScript(context: Context, script: Script | str | dict) -> Script:
 	return createScript(content.text, content.path)
 
 
-def prepare(context: Context, script) -> dict:
+def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
 	"""Render a script and its output contract for one engine request."""
 	loaded = loadScript(context, script)
 	try:
-		renderer = Renderer(context, loaded)
+		renderer = renderer or Renderer(context, loaded)
 		prompt = renderer.render()
 		output = dict(renderer.config.get("output", {}))
 		output.setdefault("format", "markdown")
@@ -67,7 +67,14 @@ def conform(output, contract: dict):
 		if contract.get("format") == "json" and isinstance(output, str):
 			def invalidConstant(value):
 				raise ValueError(f"Invalid JSON constant: {value}")
-			output = json.loads(output, parse_constant=invalidConstant)
+			def uniqueKeys(pairs):
+				result = {}
+				for key, value in pairs:
+					if key in result:
+						raise ValueError("Duplicate JSON key")
+					result[key] = value
+				return result
+			output = json.loads(output, parse_constant=invalidConstant, object_pairs_hook=uniqueKeys)
 			jsonText(output)
 		elif contract.get("format", "markdown") in {"text", "markdown"} and not isinstance(output, str):
 			raise AutoError("Expected textual output", "output")
@@ -123,9 +130,9 @@ def relay(stream):
 
 
 def runLifecycle(context: Context, script: Script):
-	"""Run `pre` checks, the prompt, `post` checks then `apply` effects for one item."""
+	"""Run input checks, inference, output checks, transformations and effects."""
 	meta = script.meta
-	if not any(meta.get(name) for name in ("pre", "post", "apply")):
+	if not any(meta.get(name) for name in ("pre", "post", "transform", "apply")):
 		yield from runScript(context, script)
 		return
 	try:
@@ -133,31 +140,41 @@ def runLifecycle(context: Context, script: Script):
 		namespace = renderer.bindings()
 		# Inputs are resolved once, so shell values do not run again for the prompt.
 		context = context.derive(resolvedInputs={**context.resolvedInputs, **namespace["inputs"]})
+		renderer.context = context
 		def shell(step, command, stdin=""):
 			command = renderer.shellArgument(command, namespace)
 			yield {"type": Event.SCRIPT_ACTION, "name": step, "content": command, "lifecycle": True}
 			if context.limits:
 				context.limits.check()
 			stdout, stderr, code = Shell(context, command, renderer.config, stdin)
-			return code, (stdout + stderr).strip() or f"{step} command failed ({code}): {command}"
+			return code, stdout, stderr
 		for command in commands(meta.get("pre")):
-			code, reason = yield from shell("pre", command)
+			code, stdout, stderr = yield from shell("pre", command)
 			if code:
-				yield ended(FailureKind.INPUT, reason, RunStatus.SKIPPED)
+				yield ended(FailureKind.INPUT, (stdout + stderr).strip() or "pre command failed", RunStatus.SKIPPED)
 				return
-		final = yield from relay(runScript(context, script))
+		final = yield from relay(runScript(context, script, renderer))
 		if final["status"] != RunStatus.SUCCEEDED:
 			yield final
 			return
 		output = final["output"]
 		namespace = {**namespace, "output": output}
-		text = output if isinstance(output, str) else jsonText(output)
-		for step, kind in (("post", FailureKind.OUTPUT), ("apply", FailureKind.SYSTEM)):
+		jsonOutput = renderer.config.get("output", {}).get("format") == "json"
+		text = jsonText(output) if jsonOutput else output
+		for step, kind in (("post", FailureKind.OUTPUT), ("transform", FailureKind.OUTPUT), ("apply", FailureKind.SYSTEM)):
 			for command in commands(meta.get(step)):
-				code, reason = yield from shell(step, command, text)
+				code, stdout, stderr = yield from shell(step, command, text)
 				if code:
-					yield {**ended(kind, reason), "output": output}
+					reason = (stderr if meta.get("transform") else stdout + stderr).strip() or f"{step} command failed ({code})"
+					yield {**ended(kind, reason), "output": None if meta.get("transform") else output}
 					return
+				if step == "transform":
+					if len(stdout.encode("utf-8")) > context.maxBytes:
+						raise AutoError("Transformed output exceeds byte limit", FailureKind.OUTPUT)
+					# The schema describes the model response, not the projected result.
+					output = conform(stdout, {"format": renderer.config.get("output", {}).get("format", "markdown")})
+					namespace = {**namespace, "output": output}
+					text = jsonText(output) if jsonOutput else output
 		yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": output}
 	except (AutoError, KeyboardInterrupt) as error:
 		yield ended(error.kind if isinstance(error, AutoError) else FailureKind.CANCELLED, str(error))
@@ -165,13 +182,14 @@ def runLifecycle(context: Context, script: Script):
 		yield ended(FailureKind.INPUT, f"{script.path}: {error}")
 
 
-def runScript(context: Context, script):
+def runScript(context: Context, script, renderer: Renderer | None = None):
 	"""Run the prompt through the engine, streaming its events."""
 	stream = None
 	try:
-		request = prepare(context, script)
+		loaded = loadScript(context, script)
+		request = prepare(context, loaded, renderer)
 		if context.observe:
-			context.observe({"type": Event.EXECUTION_STARTED, "config": request["config"], "output": request["output"]})
+			context.observe({"type": Event.EXECUTION_STARTED, "config": request["config"], "output": request["output"], "transform": bool(loaded.meta.get("transform"))})
 		stream = executePrepared(context, request)
 		answer = None
 		while True:

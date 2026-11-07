@@ -52,6 +52,14 @@ def planContent(context, ref: str) -> Content:
 	"""Resolve a plan-scoped or canonical reference to content."""
 	scheme, _, rest = ref.partition(":")
 	if scheme == "auto":
+		if rest.startswith("agent/"):
+			from auto.features.memory.config import agentsFor
+			name = identifier(rest.removeprefix("agent/"))
+			agents = agentsFor(context)
+			if name not in agents:
+				raise AutoError(f"Unknown Auto agent: {name}")
+			content = Knowledge(context).readReference(agents[name]["agent"])
+			return Content(ref, content.data, content.digest, content.path)
 		parts = rest.split("/")
 		plan = identifier(parts.pop(0))
 		path = context.project / ".auto/plans" / plan

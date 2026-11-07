@@ -6,6 +6,7 @@ import re
 
 from auto.features.elaboration.materialize import materialize
 from auto.features.elaboration.model import TaskElaboration, createElaborationFromDict
+from auto.features.memory.config import validateAgents
 from auto.features.plan.gaps import prepareGap
 from auto.features.plan.model import GAP_KINDS, GapKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanGet, PlanRevise, PlanStatus, dependencyGraph, tasksAt
@@ -303,13 +304,15 @@ def ElaborationApply(context, plan, elaboration, run) -> dict:
 		return _apply(context, path, elaboration, run)
 
 
-def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None) -> dict:
+def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None) -> dict:
 	"""Create a root and run the ordinary Elaborator to produce its first revision."""
 	inputs = context.inputs if inputs is None else inputs
 	if effects is not None and (not isinstance(effects, list) or any(not isinstance(effect, str) or not EFFECT.fullmatch(effect) for effect in effects)):
 		raise AutoError("Requested effects must be a list of dotted effect names")
 	if effects and context.author != "human":
 		raise AutoError("Only a human may request goal effects")
+	if agents is not None:
+		validateAgents(context, agents)
 	name = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:48].rstrip("-") or "plan"
 	if name == "catalogue":
 		name = "plan-catalogue"
@@ -319,6 +322,7 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		path = path.with_name(name)
 	path.mkdir(parents=True, exist_ok=False)
 	root = {"id": name, "goal": goal, **({"requested_effects": effects} if effects else {}),
+		**({"agents": agents} if agents is not None else {}),
 		**relocateMeta({"inputs": inputs or {}}, context.project), "budget": budgetValue(budget)}
 	atomicWrite(path / "plan.md", documentText(root, "# " + goal + "\n"))
 	if effects:

@@ -58,6 +58,9 @@ auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
 
 - *Naming*: nouns and verbs are lowercase, multi-word names separated by `-`
   (eg. `auto script run`, `auto elaboration validate`).
+- *Shorthand*: `auto PATH.md [OPTIONS]` is equivalent to
+  `auto script run PATH.md [OPTIONS]`. Paths resolve from the working directory;
+  execution context discovery is unchanged by the script's location.
 - *Arguments*: required arguments are positional, optional arguments are
   `--{name}` flags. Repeated arguments repeat the flag (eg.
   `--input a=./a.md --input b=./b.md`). A payload is given as a file path, or
@@ -126,6 +129,9 @@ flags (eg. `--plan`) as the default context.
 | `RunJournal` | `run journal` | — | Follow a run in progress |
 | `GapList` | `gap list` | `gap_list` | Find what a plan needs |
 | `GapDecide` | `gap decide` | — | Answer a gap; decisions are made by humans through the CLI |
+| `DecisionRecord` | `decision record` | — | Record a decision made without a gap (eg. in conversation), so that none is lost (see [Plan](spec-004-plan.md)) |
+| `ConsolidationStart` | `consolidation run` | — | Request a consolidation of an agent's memory (see [Memorisation](spec-010-memorisation.md)) |
+| `ConsolidationStatus` | `consolidation status` | `consolidation_status` | Know an agent's due work, open questions and pending proposals |
 | `CatalogueList` | `catalogue list` | `catalogue_list` | List the framework, as an input of Elaborators |
 | `CatalogueGet` | `catalogue get` | `catalogue_get` | Read a framework entry by identity |
 | `ElaborationValidate` | `elaboration validate` | `elaboration_validate` | Post check of Elaborators, and self-check before answering |

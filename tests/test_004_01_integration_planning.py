@@ -9,11 +9,13 @@ from unittest.mock import patch
 from pathlib import Path
 
 from auto.features.elaboration.operations import ElaborationApply, ElaborationParse, ElaborationValidate
+from auto.features.memory.config import agentsFor, housekeepingFor, memoryPolicy, validateAgents
 from auto.features.plan.gaps import GapDecide, GapList, GapRaise, PlanRepair
 from auto.features.plan.operations import PlanRevise, PlanStatus, PlanReady
 from auto.features.plan.store import journal
 from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunCheck
-from auto.runtime.model import Context
+from auto.runtime.model import Content, Context
+from auto.runtime.operations import Resolve
 from auto.utils.data import AutoError, digest, documentText, jsonText
 
 
@@ -70,6 +72,50 @@ class PlanningTests(unittest.TestCase):
 	def add(self, id, process="work", **meta):
 		value = {"id": id, "title": id, "sections": {"Process": process}, **meta}
 		PlanRevise(self.ctx, self.plan, [{"op": "add", "task": value}], "test")
+
+	def testAgentRevisionAndConfiguration(self):
+		self.ctx.defaults = {"memory": {"agents": {"ux": {"agent": "ux/agent:Designer", "budget": {"tokens": 100}}}},
+			"housekeeping": {"allowance": {"tokens": 1000, "per": "day"}}}
+		self.assertEqual(housekeepingFor(self.ctx), {"tokens": 1000, "per": "day"})
+		self.assertEqual(list(agentsFor(self.ctx)), ["ux"])
+		self.assertEqual(validateAgents(self.ctx, ["auto:agent/ux"]), ["auto:agent/ux"])
+		PlanRevise(self.ctx, self.plan, [{"op": "agents", "agents": ["auto:agent/ux"]}], "assign agent")
+		self.assertEqual(PlanStatus(self.ctx)["status"], "Draft")
+		self.assertIn("auto:agent/ux", (self.plan / "plan.md").read_text())
+		with self.assertRaises(AutoError):
+			PlanRevise(self.ctx, self.plan, [{"op": "agents", "agents": ["auto:agent/missing"]}], "invalid agent")
+		with self.assertRaisesRegex(AutoError, "agents revision"):
+			PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {"agents": ["auto:agent/missing"]}}], "bypass")
+		self.assertIn("auto:agent/ux", (self.plan / "plan.md").read_text())
+
+	def testAgentConfigurationRejectsDuplicateArtifactAndBadAllowance(self):
+		self.ctx.defaults = {"memory": {"agents": {"ux": {"agent": "ux/agent:Designer"}, "other": {"agent": "ux/agent:Designer"}}}}
+		with self.assertRaises(AutoError):
+			agentsFor(self.ctx)
+		self.ctx.defaults = {"housekeeping": {"allowance": {"tokens": 100}}}
+		with self.assertRaises(AutoError):
+			housekeepingFor(self.ctx)
+
+	def testAgentMemoryPolicyCannotLoosenUserRestriction(self):
+		self.ctx.defaults = {"memory": {"agents": {"ux": {"agent": "ux/agent:Designer", "policy": {"memory.promote": "allow"}}}}}
+		self.ctx.policyLayers = [("user", {"memory.promote": "deny"})]
+		self.assertEqual(memoryPolicy(self.ctx, "ux")["memory.promote"], "deny")
+		self.assertEqual(memoryPolicy(self.ctx, "ux")["memory.observe"], "allow")
+		self.ctx.policyLayers = []
+		self.assertEqual(memoryPolicy(self.ctx, "ux")["memory.promote"], "allow")
+
+	def testAutoAgentReferenceReadsMemoArtifact(self):
+		class ArtifactKnowledge(MemoryKnowledge):
+			def readReference(self, ref):
+				self.assertedRef = ref
+				return Content("memo:" + ref, b"persona", "revision-1", Path("agent.md"))
+		self.ctx.defaults = {"memory": {"agents": {"ux": {"agent": "ux/agent:Designer"}}}}
+		self.ctx.knowledge = ArtifactKnowledge()
+		content = Resolve(self.ctx, "auto:agent/ux")
+		self.assertEqual(self.ctx.knowledge.assertedRef, "ux/agent:Designer")
+		self.assertEqual((content.ref, content.text, content.digest), ("auto:agent/ux", "persona", "revision-1"))
+		with self.assertRaises(AutoError):
+			Resolve(self.ctx, "auto:agent/unknown")
 
 	def testDependencyLifecycleAndAggregate(self):
 		self.add("first")
