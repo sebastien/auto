@@ -14,6 +14,12 @@ from uuid import uuid4
 
 from ruamel.yaml import YAML
 
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
+
 
 class AutoError(Exception):
 	"""Reports an operation failure with a stable failure kind."""
@@ -22,12 +28,20 @@ class AutoError(Exception):
 		super().__init__(message)
 		self.kind = kind
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def jsonText(value: object) -> str:
+	"""Serialise a value as compact, key-sorted JSON."""
 	return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
 def yamlLoad(text: str) -> object:
+	"""Parse YAML text with safe, pure-Python semantics."""
 	try:
 		return YAML(typ="safe", pure=True).load(text)
 	except Exception as error:
@@ -35,6 +49,7 @@ def yamlLoad(text: str) -> object:
 
 
 def yamlText(value: object) -> str:
+	"""Serialise a value as block-style YAML."""
 	stream = io.StringIO()
 	writer = YAML(typ="safe", pure=True)
 	writer.default_flow_style = False
@@ -43,6 +58,7 @@ def yamlText(value: object) -> str:
 
 
 def document(text: str) -> tuple[dict, str]:
+	"""Split YAML frontmatter from a markdown body."""
 	if not text.startswith("---\n"):
 		return {}, text
 	match = re.search(r"(?m)^---\s*$", text[4:])
@@ -55,10 +71,12 @@ def document(text: str) -> tuple[dict, str]:
 
 
 def documentText(meta: dict, body: str) -> str:
+	"""Join frontmatter and a markdown body into one document."""
 	return "---\n" + yamlText(meta) + "---\n" + body
 
 
 def merge(*layers: dict) -> dict:
+	"""Merge mappings recursively, later layers winning."""
 	result = {}
 	for layer in layers:
 		for key, value in layer.items():
@@ -67,24 +85,29 @@ def merge(*layers: dict) -> dict:
 
 
 def digest(data: bytes) -> str:
+	"""Return the canonical `sha256:` digest of bytes."""
 	return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def timestamp() -> str:
+	"""Return the current UTC datetime in ISO form."""
 	return datetime.now(timezone.utc).isoformat()
 
 
 def identity() -> str:
+	"""Return a sortable, unique record identity."""
 	return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:12]
 
 
 def identifier(value: str) -> str:
+	"""Validate a record identifier and return it."""
 	if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
 		raise AutoError(f"Invalid identifier: {value!r}")
 	return value
 
 
 def atomicWrite(path: Path, text: str) -> None:
+	"""Replace a file atomically, creating its parent directory."""
 	path.parent.mkdir(parents=True, exist_ok=True)
 	fd, temporary = tempfile.mkstemp(prefix=".auto-", dir=path.parent)
 	try:
@@ -103,6 +126,7 @@ def atomicWrite(path: Path, text: str) -> None:
 
 
 def readJson(path: Path, default=None):
+	"""Read JSON from a file, or return the default."""
 	return json.loads(path.read_text()) if path.exists() else default
 
 

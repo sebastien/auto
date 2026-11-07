@@ -9,7 +9,7 @@ from pathlib import Path
 
 from auto.features.plan.gaps import GapRaise, GapDecide, GapList, PlanRepair
 from auto.features.plan.store import journal
-from auto.integration.memo import MemoKnowledge
+from auto.integration.memo.store import MemoKnowledge
 from auto.runtime.model import Context
 from auto.utils.data import documentText
 

@@ -10,6 +10,13 @@ import time
 import unicodedata
 
 from auto.app.operations import render
+from auto.runtime.model import Event, RunStatus
+
+# -----------------------------------------------------------------------------
+#
+# UTILITIES
+#
+# -----------------------------------------------------------------------------
 
 
 def safeText(value) -> str:
@@ -21,11 +28,13 @@ def safeText(value) -> str:
 
 
 def width(text: str) -> int:
+	"""Return the terminal display width of `text`."""
 	# ponytail: codepoint widths overestimate some emoji; use grapheme widths if exact alignment is needed.
 	return sum(0 if unicodedata.combining(char) or char == "\u200d" else 2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
 
 
 def clip(text: str, columns: int) -> str:
+	"""Truncate `text` to `columns`, appending an ellipsis."""
 	if columns <= 0:
 		return ""
 	if width(text) <= columns:
@@ -39,11 +48,18 @@ def clip(text: str, columns: int) -> str:
 
 
 def costText(cost, budget=None) -> str:
+	"""Format a cost and optional budget for terminal output."""
 	def amount(value):
 		if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
 			return "—"
 		return "<$0.0001" if 0 < value < .0001 else f"${value:.4f}"
 	return amount(cost) + (" / " + amount(budget) if budget is not None else "")
+
+# -----------------------------------------------------------------------------
+#
+# API
+#
+# -----------------------------------------------------------------------------
 
 
 class Frontend:
@@ -119,14 +135,14 @@ class Frontend:
 
 	def event(self, event: dict, *, response=False):
 		kind = event.get("type")
-		if kind == "ExecutionStarted":
+		if kind == Event.EXECUTION_STARTED:
 			self.structured = event.get("output", {}).get("format") == "json"
 			self.active = True
 			model = event.get("config", {}).get("model") or "engine default"
 			if self.terminal:
 				self.clear()
 				print("  › model: " + safeText(model), file=self.stderr, flush=True)
-		elif kind == "RunStarted":
+		elif kind == Event.RUN_STARTED:
 			self.active = True
 			self.started = time.monotonic()
 			self.budget = event.get("budget", {})
@@ -136,19 +152,19 @@ class Frontend:
 			self.tokens = usage.get("tokens") or None
 			if self.terminal:
 				print("  › Task: " + safeText(event.get("task", "")), file=self.stderr, flush=True)
-		elif kind == "RunPhase":
+		elif kind == Event.RUN_PHASE:
 			self.operation = safeText(event.get("phase", "Running"))
-		elif kind == "ScriptAction":
+		elif kind == Event.SCRIPT_ACTION:
 			name = safeText(event.get("name", "tool"))
 			self.operation = name + ": " + safeText(event.get("content", "")) if event.get("lifecycle") else "Use " + name
-		elif kind == "ScriptMeta" and event.get("name") == "usage":
+		elif kind == Event.SCRIPT_META and event.get("name") == "usage":
 			self.cost = event.get("value", {}).get("cost")
 			self.tokens = event.get("value", {}).get("tokens")
-		elif kind == "ScriptMeta" and event.get("name") == "warning":
+		elif kind == Event.SCRIPT_META and event.get("name") == "warning":
 			self.clear()
 			marker = "\033[33m!\033[0m" if self.color else "!"
 			print("  " + marker + " " + safeText(event.get("value", "")), file=self.stderr, flush=True)
-		elif kind == "ScriptMessage" and response and not self.structured:
+		elif kind == Event.SCRIPT_MESSAGE and response and not self.structured:
 			self.clear()
 			text = event.get("content", "")
 			self.lastOutput = time.monotonic()
@@ -163,13 +179,15 @@ class Frontend:
 			else:
 				self.stdout.write(text)
 			self.stdout.flush()
-		elif kind == "RunFinished":
+		elif kind == Event.RUN_FINISHED:
 			self.finish(event["run"])
-		elif kind == "ScriptItemStarted":
+		elif kind == Event.SCRIPT_ITEM_STARTED:
 			self.active, self.started = True, time.monotonic()
 			if self.terminal:
-				print(f"  › {safeText(event.get('name', 'item'))}: {safeText(event.get('value', ''))} ({event.get('index', 0) + 1}/{event.get('count', 1)})", file=self.stderr, flush=True)
-		elif kind == "ScriptItemEnded":
+				name, value = safeText(event.get("name", "item")), safeText(event.get("value", ""))
+				progress = f"({event.get('index', 0) + 1}/{event.get('count', 1)})"
+				print(f"  › {name}: {value} {progress}", file=self.stderr, flush=True)
+		elif kind == Event.SCRIPT_ITEM_ENDED:
 			self.finish(event)
 			if self.terminal and event.get("failure"):
 				print("    " + safeText(event["failure"].get("reason", "")), file=self.stderr, flush=True)
@@ -182,14 +200,14 @@ class Frontend:
 			self.stdout.flush()
 			self.lineStart = True
 		if self.terminal and self.active:
-			status = result.get("status", "Failed")
+			status = result.get("status", RunStatus.FAILED)
 			usage = result.get("usage", {})
 			if "cost" in usage and (self.cost is not None or usage["cost"]):
 				self.cost = usage["cost"]
 			if "tokens" in usage and (self.tokens is not None or usage["tokens"]):
 				self.tokens = usage["tokens"]
-			marker = "✓" if status == "Succeeded" else "!"
-			code = "32" if status == "Succeeded" else "31"
+			marker = "✓" if status == RunStatus.SUCCEEDED else "!"
+			code = "32" if status == RunStatus.SUCCEEDED else "31"
 			if self.color:
 				marker = f"\033[{code}m{marker}\033[0m"
 			seconds = max(0, int(self.initialTime + time.monotonic() - self.started))
@@ -198,7 +216,7 @@ class Frontend:
 
 	def scriptEvent(self, event: dict):
 		self.event(event, response=True)
-		if event.get("type") == "ScriptEnded":
+		if event.get("type") == Event.SCRIPT_ENDED:
 			self.finish(event)
 			if event.get("failure"):
 				self.error(event["failure"].get("reason", "Execution failed"))

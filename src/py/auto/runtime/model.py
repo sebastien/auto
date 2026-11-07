@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import os
 import re
@@ -46,8 +47,41 @@ class FailureKind(StrEnum):
 	OUTPUT = "output"
 
 
+class Event(StrEnum):
+	"""Journal and stream event names shared by runtime, features and integrations."""
+
+	EXECUTION_STARTED = "ExecutionStarted"
+	SCRIPT_ACTION = "ScriptAction"
+	SCRIPT_MESSAGE = "ScriptMessage"
+	SCRIPT_META = "ScriptMeta"
+	SCRIPT_QUESTION = "ScriptQuestion"
+	SCRIPT_ITEM_STARTED = "ScriptItemStarted"
+	SCRIPT_ITEM_ENDED = "ScriptItemEnded"
+	SCRIPT_ENDED = "ScriptEnded"
+	RUN_STARTED = "RunStarted"
+	RUN_PHASE = "RunPhase"
+	RUN_FINISHED = "RunFinished"
+	RUN_ENDED = "RunEnded"
+	TASK_CHECKED = "TaskChecked"
+	TASK_EVALUATED = "TaskEvaluated"
+	TASK_EVALUATION_FAILED = "TaskEvaluationFailed"
+	ASSESSMENT_USAGE = "AssessmentUsage"
+	GAP_RAISED = "GapRaised"
+	GAP_RESOLVED = "GapResolved"
+	POLICY_REQUEST = "PolicyRequest"
+	POLICY_REQUESTED = "PolicyRequested"
+	POLICY_DENIED = "PolicyDenied"
+
+
 TERMINAL = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.CANCELLED, RunStatus.BLOCKED, RunStatus.SKIPPED})
 IN_FLIGHT = frozenset({RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING})
+
+# Engine name to integration entry point, imported lazily to keep runtime free of adapters.
+ENGINES = {
+	"opencode": ("auto.integration.opencode.engine", "OpenCode"),
+	"pi": ("auto.integration.pi.engine", "Pi"),
+	"llm": ("auto.integration.llm.engine", "Llm"),
+}
 
 
 @dataclass(slots=True)
@@ -110,6 +144,7 @@ class Context:
 	inputs: dict = field(default_factory=dict)
 	resolvedInputs: dict = field(default_factory=dict)
 	params: dict = field(default_factory=dict)
+	policyLayers: list = field(default_factory=list)
 	environ: dict = field(default_factory=lambda: dict(os.environ))
 	engines: dict = field(default_factory=dict)
 	resolvers: dict = field(default_factory=dict)
@@ -147,21 +182,15 @@ class Runtime:
 	def engine(self, name: str) -> EngineIntegration:
 		if name in self.context.engines:
 			return self.context.engines[name]
-		if name == "opencode":
-			from auto.integration.opencode import OpenCode
-			return OpenCode()
-		if name == "pi":
-			from auto.integration.pi import Pi
-			return Pi()
-		if name == "llm":
-			from auto.integration.llm import Llm
-			return Llm()
-		raise AutoError(f"Unknown engine: {name}")
+		if name not in ENGINES:
+			raise AutoError(f"Unknown engine: {name}")
+		module, attribute = ENGINES[name]
+		return getattr(importlib.import_module(module), attribute)()
 
 	def knowledgeFor(self) -> KnowledgeIntegration:
 		if self.context.knowledge is not None:
 			return self.context.knowledge
-		from auto.integration.memo import MemoKnowledge
+		from auto.integration.memo.store import MemoKnowledge
 		return MemoKnowledge(self.context.project)
 
 	def resolve(self, target: str) -> Content:
@@ -203,6 +232,15 @@ def budgetValue(value: dict | None) -> dict:
 def failureFor(kind: str) -> FailureKind:
 	"""Map a timeout to the enforced budget category."""
 	return FailureKind.BUDGET if kind == FailureKind.TIMEOUT else FailureKind(kind)
+
+
+def kindFor(status: str, failure: dict | None = None) -> FailureKind:
+	"""Map a terminal status to the failure kind it records."""
+	if status == RunStatus.TIMED_OUT:
+		return FailureKind.TIMEOUT
+	if status == RunStatus.CANCELLED:
+		return FailureKind.CANCELLED
+	return (failure or {}).get("kind", FailureKind.SYSTEM)
 
 
 def statusFor(kind: str) -> RunStatus:

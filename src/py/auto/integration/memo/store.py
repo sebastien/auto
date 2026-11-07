@@ -7,6 +7,12 @@ from pathlib import Path
 from auto.runtime.model import Content
 from auto.utils.data import AutoError, documentText
 
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
+
 
 class MemoKnowledge:
 	"""Map canonical Auto identities to ordinary Memo documents."""

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptStart
-from auto.integration.opencode import OpenCode
+from auto.integration.opencode.engine import OpenCode
 from auto.integration.process import capture
 from auto.runtime.model import Context, Limits
 from auto.utils.data import AutoError

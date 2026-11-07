@@ -14,7 +14,7 @@ from unittest.mock import patch
 from auto.app.cli.main import showConfig
 from auto.features.script.model import Script
 from auto.features.script.operations import prepare, ScriptStart
-from auto.integration.opencode import OpenCode
+from auto.integration.opencode.engine import OpenCode
 from auto.runtime.config import contextFor
 from auto.runtime.model import Context
 from auto.utils.data import AutoError

@@ -9,8 +9,15 @@ from pathlib import Path
 from auto.runtime.model import Content
 from auto.utils.data import AutoError, digest, document, identifier
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def layers(context):
+	"""Return catalogue layers in decreasing precedence."""
 	builtin = Path(__file__).resolve().parents[4] / "md/auto/catalogue"
 	if not builtin.is_dir():
 		builtin = Path(sys.prefix) / "share/auto/catalogue"
@@ -19,6 +26,7 @@ def layers(context):
 
 
 def catalogueContent(context, identity):
+	"""Resolve a catalogue reference from the first matching layer."""
 	parts = identity.removeprefix("auto:catalogue/").split("/")
 	if len(parts) != 2:
 		raise AutoError("Catalogue references require kind/name")
@@ -45,7 +53,7 @@ def CatalogueList(context, kind: str | None = None, query: str | None = None) ->
 	if kind:
 		identifier(kind)
 	for _, root in layers(context):
-		for path in sorted(root.glob(f"{kind or '*' }/*.md")):
+		for path in sorted(root.glob(f"{kind or '*'}/*.md")):
 			if "." in path.stem:
 				continue
 			identity = "auto:catalogue/" + path.parent.name + "/" + path.stem

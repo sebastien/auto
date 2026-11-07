@@ -54,19 +54,11 @@ class Run:
 				value[key] = item
 		return value
 
-	@classmethod
-	def fromDict(cls, value: dict) -> Run:
-		core = {"id", "task", "status", "started", "ended", "runtime", "budget", "usage", "inputs", "outputFile", "children", "failure", "gap", "question", "pre", "post", "evaluation"}
-		return cls(value["id"], value["task"], value.get("status", RunStatus.PENDING), value.get("started", ""), value.get("ended"),
-			value.get("runtime", {}), value.get("budget", {}), value.get("usage", {"tokens": 0, "cost": 0.0, "time": 0.0}),
-			list(value.get("inputs", [])), value.get("outputFile", "output.txt"), value.get("children", {}), value.get("failure"),
-			value.get("gap"), value.get("question"), value.get("pre"), value.get("post"), value.get("evaluation"),
-			{key: item for key, item in value.items() if key not in core})
-
 
 @dataclass(slots=True)
 class Task:
 	"""A script decorated with separately executed checks and a plan facet."""
+
 	id: str
 	meta: dict
 	sections: dict
@@ -79,13 +71,27 @@ class Task:
 	def asDict(self) -> dict:
 		return {**self.meta, "id": self.id, "sections": self.sections, "description": self.description, "path": str(self.path)}
 
-	@classmethod
-	def fromDict(cls, value: dict, path: Path) -> Task:
-		meta = {key: item for key, item in value.items() if key not in {"sections", "description", "path"}}
-		return cls(identifier(value["id"]), meta, value.get("sections", {}), path, value.get("description", ""))
+# -----------------------------------------------------------------------------
+#
+# UTILITIES
+#
+# -----------------------------------------------------------------------------
 
 
-def parseTask(text: str, path: Path, root: bool = False) -> Task:
+def taskText(task: Task) -> str:
+	"""Serialise a task back to its markdown document form."""
+	body = task.description + "\n\n" + "\n\n".join(f"## {name}\n\n{content}" for name, content in task.sections.items()) + "\n"
+	return documentText({**task.meta, "id": task.id}, body)
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
+
+def createTaskFromText(text: str, path: Path, root: bool = False) -> Task:
+	"""Create a task from its markdown document, defaulting goal and identifier."""
 	meta, body = document(text)
 	description, parts = sections(body)
 	unknown = set(parts) - {"Pre", "Process", "Post", "Evaluation"}
@@ -96,11 +102,20 @@ def parseTask(text: str, path: Path, root: bool = False) -> Task:
 	return Task(id, meta, parts, path, description.strip())
 
 
-def taskText(task: Task) -> str:
-	return documentText({**task.meta, "id": task.id}, task.description + "\n\n" + "\n\n".join(f"## {name}\n\n{body}" for name, body in task.sections.items()) + "\n")
+def createTaskFromDict(value: dict, path: Path) -> Task:
+	"""Create a task from its serialised definition."""
+	meta = {key: item for key, item in value.items() if key not in {"sections", "description", "path"}}
+	return Task(identifier(value["id"]), meta, value.get("sections", {}), path, value.get("description", ""))
 
 
-def taskFromDict(value: dict, path: Path) -> Task:
-	return Task.fromDict(value, path)
+def createRunFromDict(value: dict) -> Run:
+	"""Create a run from its stored receipt or active state."""
+	core = {"id", "task", "status", "started", "ended", "runtime", "budget", "usage", "inputs", "outputFile",
+		"children", "failure", "gap", "question", "pre", "post", "evaluation"}
+	return Run(value["id"], value["task"], value.get("status", RunStatus.PENDING), value.get("started", ""), value.get("ended"),
+		value.get("runtime", {}), value.get("budget", {}), value.get("usage", {"tokens": 0, "cost": 0.0, "time": 0.0}),
+		list(value.get("inputs", [])), value.get("outputFile", "output.txt"), value.get("children", {}), value.get("failure"),
+		value.get("gap"), value.get("question"), value.get("pre"), value.get("post"), value.get("evaluation"),
+		{key: item for key, item in value.items() if key not in core})
 
 # EOF

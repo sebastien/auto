@@ -10,8 +10,24 @@ from auto.runtime.model import Context
 from auto.utils.config import loadConfig
 from auto.utils.data import AutoError, identifier
 
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
+
+RUNTIME_DEFAULTS = {"engine": "pi", "isolated": False}
+CONTEXT_KEYS = ("plan", "engine", "provider", "model", "agent")
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def validateConfig(value: dict) -> None:
+	"""Validate the runtime settings of one configuration layer."""
 	for name in ("inputs", "params", "output", "env"):
 		if name in value and (not isinstance(value[name], dict) or any(not isinstance(key, str) for key in value[name])):
 			raise AutoError(f"{name} must be a string-keyed mapping")
@@ -38,11 +54,11 @@ def validateConfig(value: dict) -> None:
 
 
 def contextFor(directory: Path | None = None, plan: str | None = None, sources: dict | None = None, **overrides) -> Context:
+	"""Build the operation context from flags, environment and configuration."""
 	cwd = (directory or Path.cwd()).resolve()
 	project = next((p for p in (cwd, *cwd.parents) if (p / ".auto").is_dir() or (p / ".git").exists()), cwd)
 	policyLayers = []
 	config = loadConfig(project, sources, policyLayers)
-	config["_policyLayers"] = policyLayers
 	runtime = config.pop("runtime", {})
 	validateConfig(runtime)
 	config.update(runtime)
@@ -53,7 +69,7 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	else:
 		planPath = next((p for p in (cwd, *cwd.parents) if (p / "plan.md").is_file() and p.parent.name == "plans"), None)
 	explicit = {}
-	for key in ("engine", "provider", "model", "agent"):
+	for key in CONTEXT_KEYS[1:]:
 		value = overrides.get(key) if overrides.get(key) is not None else os.environ.get("AUTO_" + key.upper())
 		if value is not None:
 			explicit[key] = value
@@ -62,6 +78,6 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 					if path[:2] == ("runtime", key):
 						del sources[path]
 				sources[("runtime", key)] = "--" + key if overrides.get(key) is not None else "AUTO_" + key.upper()
-	return Context(project=project, plan=planPath, config=explicit, defaults=config)
+	return Context(project=project, plan=planPath, config=explicit, defaults=config, policyLayers=policyLayers)
 
 # EOF

@@ -8,8 +8,21 @@ from pathlib import Path
 
 from auto.utils.data import AutoError, merge, yamlLoad
 
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
 
-RUNTIME_SETTINGS = {"engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated"}
+
+RUNTIME_KEYS = ("engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated")
+RUNTIME_SETTINGS = frozenset(RUNTIME_KEYS)
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
 
 
 def loadConfig(project: Path, sources: dict | None = None, policyLayers: list | None = None) -> dict:

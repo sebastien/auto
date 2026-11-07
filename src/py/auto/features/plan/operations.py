@@ -4,16 +4,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto.features.plan.model import Plan
+from auto.features.plan.gaps import GapList, repairLocked
+from auto.features.plan.model import GapState, PlanState, RevisionOp, createPlan
 from auto.features.plan.references import latestRun
 from auto.features.plan.store import commit, journal, locked, planPath, recover
-from auto.features.task.model import Task, parseTask, taskFromDict, taskText
+from auto.features.task.model import Task, createTaskFromDict, createTaskFromText, taskText
 from auto.runtime.model import IN_FLIGHT, RunStatus
 from auto.runtime.operations import Resolve
-from auto.utils.data import AutoError, digest, identifier, jsonText
+from auto.utils.data import AutoError, digest, document, documentText, identifier, jsonText
+
+
+# -----------------------------------------------------------------------------
+#
+# UTILITIES
+#
+# -----------------------------------------------------------------------------
 
 
 def tasksAt(path: Path) -> dict[str, Task]:
+	"""Read the root and child tasks of a plan under its lock."""
 	with locked(path):
 		if (path / ".pending.json").exists():
 			raise AutoError("Plan has an interrupted commit; run PlanRepair before reading its tasks", "system")
@@ -21,10 +30,11 @@ def tasksAt(path: Path) -> dict[str, Task]:
 
 
 def _tasksAt(path: Path) -> dict[str, Task]:
-	root = parseTask((path / "plan.md").read_text(), path / "plan.md", True)
+	"""Read plan tasks without acquiring the plan lock."""
+	root = createTaskFromText((path / "plan.md").read_text(), path / "plan.md", True)
 	result = {"root": root}
 	for file in sorted((path / "tasks").glob("*.md")):
-		task = parseTask(file.read_text(), file)
+		task = createTaskFromText(file.read_text(), file)
 		if task.id in result:
 			raise AutoError(f"Duplicate task id: {task.id}")
 		result[task.id] = task
@@ -32,6 +42,7 @@ def _tasksAt(path: Path) -> dict[str, Task]:
 
 
 def dependencyGraph(context, tasks: dict) -> dict[str, set[str]]:
+	"""Return declared dependencies plus parent-child edges, validated acyclic."""
 	from auto.features.task.operations import TaskDependencies
 	graph = {id: set(TaskDependencies(context, task)) for id, task in tasks.items()}
 	for id, task in tasks.items():
@@ -58,35 +69,41 @@ def dependencyGraph(context, tasks: dict) -> dict[str, set[str]]:
 	return graph
 
 
-def PlanJournal(context, plan=None, since: str | None = None) -> list:
-	rows = journal(planPath(context, plan))
-	if since:
-		indices = [index for index, row in enumerate(rows) if row["id"] == since]
-		if not indices:
-			raise AutoError("Unknown revision cursor")
-		rows = rows[indices[0] + 1:]
-	return rows
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
 
 
 def PlanGet(context, id=None) -> dict:
+	"""Return a plan with its task facets and derived status."""
 	path = planPath(context, id)
 	with locked(path):
-		meta = Plan.read(path).meta
+		meta = createPlan(path).meta
 		tasks = tasksAt(path)
 		ctx = context.derive(plan=path)
 		status = PlanStatus(ctx, path)
 		from auto.features.task.operations import RunList
 		runs = RunList(ctx)
-		facets = {id: {**task.asDict(), "state": status["tasks"][id], "attempts": sum(run["task"] == id for run in runs),
-			"children": [child for child in tasks if child != "root" and tasks[child].meta.get("parent", "root") == id]} for id, task in tasks.items()}
-		return {**meta, "root": "root", "path": str(path), "tasks": facets, "revision": status["revision"], "status": status["status"], "usage": status["usage"], "gaps": status["gaps"]}
+		facets = {}
+		for id, task in tasks.items():
+			facets[id] = {**task.asDict(), "state": status["tasks"][id], "attempts": sum(run["task"] == id for run in runs),
+				"children": [child for child in tasks if child != "root" and tasks[child].meta.get("parent", "root") == id]}
+		return {**meta, "root": "root", "path": str(path), "tasks": facets, "revision": status["revision"],
+			"status": status["status"], "usage": status["usage"], "gaps": status["gaps"]}
+
+
+def PlanList(context, filter: dict | None = None) -> list:
+	"""List plans, filtered by status or field."""
+	result = [PlanStatus(context, path) for path in sorted((context.project / ".auto/plans").glob("*")) if (path / "plan.md").is_file()]
+	return [plan for plan in result if all(plan.get(key) == value for key, value in (filter or {}).items())]
 
 
 def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 	"""Apply task edits as one revision; definitions with runs cannot be edited."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
-	from auto.features.plan.gaps import repairLocked
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
@@ -103,7 +120,7 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 			task = tasks.pop(id)
 			writes[f".history/{id}.md"] = task.path.read_text() if task.path.exists() else taskText(task)
 			writes[f"tasks/{id}.md"] = None
-			operations.append({"op": "remove", "task": id})
+			operations.append({"op": RevisionOp.REMOVE, "task": id})
 		for change in changes:
 			op = change["op"]
 			if op == "remove":
@@ -123,22 +140,24 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 					parent = tasks[old].meta.get("parent", "root") if old in tasks else "root"
 					remove(old)
 					value = {**value, "replaces": old, "parent": value.get("parent", parent)}
-				task = taskFromDict(value, path / "tasks" / (id + ".md"))
+				task = createTaskFromDict(value, path / "tasks" / (id + ".md"))
 				tasks[id] = task
 				text = taskText(task)
 				writes[f"tasks/{id}.md"] = text
-				operations.append({"op": op, "task": id, "digest": digest(text.encode()), "parent": task.meta.get("parent", "root"), **({"old": change["old"]} if op == "replace" else {})})
+				operation = {"op": op, "task": id, "digest": digest(text.encode()), "parent": task.meta.get("parent", "root")}
+				if op == "replace":
+					operation["old"] = change["old"]
+				operations.append(operation)
 			elif op == "update":
 				if latestRun(path, "root"):
 					raise AutoError("Root definition is immutable after a run")
 				root = tasks["root"]
 				root.meta.update(change["fields"])
 				rootText = taskText(root)
-				from auto.utils.data import document, documentText
 				meta, body = document(rootText)
-				meta["id"] = Plan.read(path).id
+				meta["id"] = createPlan(path).id
 				writes["plan.md"] = documentText(meta, body)
-				operations.append({"op": "update", "field": list(change["fields"])})
+				operations.append({"op": RevisionOp.UPDATE, "field": list(change["fields"])})
 			else:
 				raise AutoError(f"Unsupported revision operation: {op}")
 		dependencyGraph(context, tasks)
@@ -152,33 +171,43 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 
 
 def PlanReady(context, plan=None) -> list:
+	"""Return the tasks whose dependencies and gaps allow a run."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
-	from auto.features.plan.gaps import GapList
 	from auto.features.plan.policy import taskPolicyBlocked
-	gaps = GapList(context, path, {"status": "Open"})
+	gaps = GapList(context, path, {"status": GapState.OPEN})
 	tasks = tasksAt(path)
 	graph = dependencyGraph(context, tasks)
-	return [id for id, deps in graph.items() if not taskPolicyBlocked(context, tasks[id]) and not any(id in gap["needed_by"] for gap in gaps) and all(latestRun(path, dep, True) for dep in deps) and (latestRun(path, id) or {}).get("status") not in {RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)]
+	def ready(id, dependencies):
+		run = latestRun(path, id)
+		return not taskPolicyBlocked(context, tasks[id]) and not any(id in gap["needed_by"] for gap in gaps) \
+			and all(latestRun(path, dependency, True) for dependency in dependencies) \
+			and (run or {}).get("status") not in {RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)
+	return [id for id, dependencies in graph.items() if ready(id, dependencies)]
 
 
 def PlanStatus(context, plan=None) -> dict:
+	"""Return the derived progress, gaps, budget and policy of a plan."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
-	from auto.features.plan.gaps import GapList
 	from auto.features.plan.policy import PolicyResolve, taskPolicyBlocked
 	from auto.features.task.operations import RunList
-	meta = Plan.read(path).meta
+	meta = createPlan(path).meta
 	tasks, runs = tasksAt(path), RunList(context)
 	graph = dependencyGraph(context, tasks)
-	gaps = GapList(context, path, {"status": "Open"})
+	gaps = GapList(context, path, {"status": GapState.OPEN})
 	states, policyTasks = {}, {}
+	def state(id, run):
+		if any(id in gap["needed_by"] for gap in gaps):
+			return "Open"
+		if policyTasks[id]["blocked"] or any(not latestRun(path, dependency, True) for dependency in graph[id]):
+			return RunStatus.BLOCKED
+		status = run["status"] if run else "Ready"
+		return "Ready" if status == RunStatus.SUCCEEDED and not latestRun(path, id, True) else status
 	for id in tasks:
 		run = latestRun(path, id)
 		policyTasks[id] = {"effects": tasks[id].meta.get("effects", []), "blocked": taskPolicyBlocked(context, tasks[id])}
-		states[id] = "Open" if any(id in gap["needed_by"] for gap in gaps) else RunStatus.BLOCKED if policyTasks[id]["blocked"] or any(not latestRun(path, dep, True) for dep in graph[id]) else run["status"] if run else "Ready"
-		if states[id] == RunStatus.SUCCEEDED and not latestRun(path, id, True):
-			states[id] = "Ready"
+		states[id] = state(id, run)
 	usage = {key: sum(run["usage"].get(key, 0) for run in runs) for key in ("tokens", "cost", "time")}
 	stale, staleRuns = [], []
 	for revision in journal(path):
@@ -200,32 +229,46 @@ def PlanStatus(context, plan=None) -> dict:
 			changed.append(pin)
 		if changed:
 			staleRuns.append({"run": run["id"], "inputs": changed})
-	abandoned = any(op["op"] == "abandon" for row in journal(path) for op in row["operations"])
-	status = "Abandoned" if abandoned else "Succeeded" if states.get("root") == RunStatus.SUCCEEDED else "Failed" if states.get("root") in {RunStatus.FAILED, RunStatus.TIMED_OUT} else "Active" if any(run["task"] in tasks for run in runs) else "Draft"
+	abandoned = any(op["op"] == RevisionOp.ABANDON for row in journal(path) for op in row["operations"])
+	if abandoned:
+		status = PlanState.ABANDONED
+	elif states.get("root") == RunStatus.SUCCEEDED:
+		status = PlanState.SUCCEEDED
+	elif states.get("root") in {RunStatus.FAILED, RunStatus.TIMED_OUT}:
+		status = PlanState.FAILED
+	elif any(run["task"] in tasks for run in runs):
+		status = PlanState.ACTIVE
+	else:
+		status = PlanState.DRAFT
 	policy = PolicyResolve(context, path)
 	policy["tasks"] = policyTasks
 	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage,
 		"failures": [run["id"] for run in runs if run.get("failure")], "stale": stale, "staleRuns": staleRuns, "revision": (journal(path) or [{}])[-1].get("id")}
 
 
-def PlanList(context, filter: dict | None = None) -> list:
-	result = [PlanStatus(context, path) for path in sorted((context.project / ".auto/plans").glob("*")) if (path / "plan.md").is_file()]
-	return [plan for plan in result if all(plan.get(key) == value for key, value in (filter or {}).items())]
+def PlanJournal(context, plan=None, since: str | None = None) -> list:
+	"""Return plan revisions, optionally after a cursor."""
+	rows = journal(planPath(context, plan))
+	if since:
+		indices = [index for index, row in enumerate(rows) if row["id"] == since]
+		if not indices:
+			raise AutoError("Unknown revision cursor")
+		rows = rows[indices[0] + 1:]
+	return rows
 
 
 def PlanAbandon(context, plan, reason: str) -> dict:
+	"""End a plan as abandoned and cancel its active runs."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	with locked(path):
 		recover(context, path)
-		from auto.features.plan.gaps import repairLocked
 		repairLocked(context, path)
-		revision = commit(context, path, [{"op": "abandon"}], reason=reason)
+		revision = commit(context, path, [{"op": RevisionOp.ABANDON}], reason=reason)
 	from auto.features.task.operations import RunList, RunCancel
 	for run in RunList(context):
 		if run["status"] in IN_FLIGHT:
 			RunCancel(context, run)
 	return revision
-
 
 # EOF

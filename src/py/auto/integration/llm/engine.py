@@ -5,7 +5,14 @@ from __future__ import annotations
 import codecs
 
 from auto.integration.process import streamProcess
+from auto.runtime.model import Event, RunStatus
 from auto.utils.data import AutoError
+
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
 
 
 class Llm:
@@ -33,14 +40,14 @@ class Llm:
 				if number == 0:
 					text = decoder.decode(chunk)
 					parts.append(text)
-					yield {"type": "ScriptMessage", "content": text}
+					yield {"type": Event.SCRIPT_MESSAGE, "content": text}
 				elif number == 1:
 					errors.append(chunk.decode("utf-8", errors="replace"))
 				else:
 					parts.append(decoder.decode(b"", final=True))
 					if chunk:
 						raise AutoError("llm failed: " + "".join(errors), "system")
-					yield {"type": "ScriptEnded", "status": "Succeeded", "output": "".join(parts)}
+					yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": "".join(parts)}
 		finally:
 			stream.close()
 

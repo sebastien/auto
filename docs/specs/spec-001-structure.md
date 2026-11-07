@@ -87,12 +87,14 @@ src/py/auto/
       model.py              # Task and Run models
       operations.py         # Task and run operations
     plan/
-      model.py              # Plan, Revision, Gap and Decision models
+      model.py              # Plan, Revision, Gap and Decision models, vocabularies
       operations.py         # Plan graphs, revisions and status
       store.py              # Journal, lock and recovery
-      references.py         # Plan-scoped reference resolution
+      references.py         # Plan-scoped references and run discovery
       gaps.py               # Gap operations and Memo reconciliation
+      policy.py             # Plan policy: effects, rules and grants
     elaboration/
+      model.py              # TaskElaboration model
       operations.py         # Elaboration, plan creation and refinement
       catalogue.py          # Layered framework assets
       materialize.py        # Template instantiation
@@ -123,5 +125,10 @@ tests/
   `camelCase`. Model payloads serialise to the snake_case keys defined by the
   specifications.
 - Entities with a specification model have a dataclass: `Script`, `Task`, `Run`,
-  `Plan`, `Revision`, `Gap` and `Decision`. Operations may return their
-  serialised form at the interface boundary.
+  `Plan`, `Revision`, `Gap`, `Decision` and `TaskElaboration`. Operations may
+  return their serialised form at the interface boundary.
+- Model construction goes through factories named `create{Noun}From{Source}`,
+  in the model module: `createPlan`, `createScript`, `createTaskFromText`,
+  `createTaskFromDict`, `createRunFromDict`, `createGapFromDict`,
+  `createDecisionFromDict`, `createRevisionFromDict` and
+  `createElaborationFromDict`.

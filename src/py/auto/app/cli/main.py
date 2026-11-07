@@ -7,18 +7,23 @@ import json
 import os
 import re
 import sys
-import unicodedata
 from importlib.metadata import PackageNotFoundError, version
-from pathlib import Path
 
-from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render
-from auto.app.cli.frontend import Frontend
-from auto.runtime.config import contextFor
-from auto.utils.config import RUNTIME_SETTINGS
+from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render, resolveContextArguments, resolvePayload, resumeResult
+from auto.app.cli.frontend import Frontend, width
+from auto.runtime.config import CONTEXT_KEYS, RUNTIME_DEFAULTS, contextFor
+from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, merge, yamlLoad
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
 
 
 def assignments(items):
+	"""Parse repeated `name=value` arguments into a mapping."""
 	result = {}
 	for item in items:
 		key, separator, value = item.partition("=")
@@ -29,6 +34,7 @@ def assignments(items):
 
 
 def parser():
+	"""Build the CLI argument parser from operation metadata."""
 	try:
 		packageVersion = version("auto-orchestrator")
 	except PackageNotFoundError:
@@ -47,7 +53,7 @@ def parser():
 			command.add_argument(argument)
 		for argument in exposure.optional:
 			command.add_argument("--" + argument)
-		for name in ("plan", "engine", "provider", "model", "agent"):
+		for name in CONTEXT_KEYS:
 			command.add_argument("--" + name)
 		command.add_argument("--format", choices=("text", "markdown", "json"), default="text")
 		properties = exposure.schema["properties"]
@@ -56,16 +62,17 @@ def parser():
 		if "params" in properties:
 			command.add_argument("--param", action="append", default=[])
 	mcp = nouns.add_parser("mcp", help="Serve the exposed MCP tools over stdio")
-	for name in ("plan", "engine", "provider", "model", "agent"):
+	for name in CONTEXT_KEYS:
 		mcp.add_argument("--" + name)
 	config = nouns.add_parser("config", help="Show effective configuration and its sources")
-	for name in ("plan", "engine", "provider", "model", "agent"):
+	for name in CONTEXT_KEYS:
 		config.add_argument("--" + name)
 	nouns.add_parser("help", help="Show the operation reference")
 	return root
 
 
 def main(argv=None) -> int:
+	"""Run the CLI and return its stable exit status."""
 	cli = parser()
 	args = cli.parse_args(argv)
 	if args.noun in (None, "help"):
@@ -79,9 +86,8 @@ def main(argv=None) -> int:
 			for key in ("engine", "isolated"):
 				if key not in context.defaults and key not in context.config:
 					sources[("runtime", key)] = "built-in"
-			settings = merge({"engine": "pi", "isolated": False}, context.defaults, context.config)
-			settings.pop("_policyLayers", None)
-			runtime = {key: settings.pop(key) for key in RUNTIME_SETTINGS if key in settings}
+			settings = merge(RUNTIME_DEFAULTS, context.defaults, context.config)
+			runtime = {key: settings.pop(key) for key in RUNTIME_KEYS if key in settings}
 			showConfig({**settings, "runtime": runtime}, sources)
 			return 0
 		if args.noun == "mcp":
@@ -94,13 +100,9 @@ def main(argv=None) -> int:
 			context.inputs = assignments(args.input)
 		if hasattr(args, "param"):
 			context.params = assignments(args.param)
-		arguments = coerceArguments(exposure, arguments, context)
-		if exposure.payload:
-			name = exposure.payload
-			value = arguments[name]
-			if value == "-" or name == "elaboration":
-				text = sys.stdin.read() if value == "-" else Path(value).read_text()
-				arguments[name] = {"content": text, "path": str(Path.cwd() / "stdin.md")} if name == "script" else text
+		arguments = coerceArguments(exposure, arguments)
+		arguments = resolveContextArguments(context, exposure, arguments)
+		arguments = resolvePayload(context, exposure, arguments)
 		if args.format == "text":
 			frontend = Frontend(args.format)
 			context.observe = frontend.event
@@ -111,27 +113,12 @@ def main(argv=None) -> int:
 			return inputQuestion(event)
 		context.question = question if sys.stdin.isatty() and sys.stderr.isatty() else None
 		result = exposure.call(context, arguments)
-		if exposure.name in {"TaskStart", "PlanCreate", "PlanRefine"} and context.question:
-			from auto.features.task.operations import RunAnswer, RunGet
-			run = result if exposure.name == "TaskStart" else result["run"]
-			if exposure.name != "TaskStart":
-				context = context.derive(plan=Path(result["plan"]))
-			while run["status"] == "Waiting":
-				RunAnswer(context, run, context.question(run["question"]), "Answered interactively")
-				run = RunGet(context, run)
-			if exposure.name == "TaskStart":
-				result = run
-			else:
-				from auto.features.plan.store import journal
-				revision = next((row for row in journal(context.plan) if row.get("elaborationRun") == run["id"]), None)
-				result = {**result, "run": run, "applied": revision is not None}
-				if revision:
-					result["revision"] = revision
+		result = resumeResult(context, exposure, result, context.question)
 		if exposure.stream:
 			stream = result
 			try:
 				for result in stream:
-					if frontend and exposure.name == "ScriptStart":
+					if frontend and exposure.messages:
 						frontend.scriptEvent(result)
 					else:
 						print(render(result, args.format), flush=True)
@@ -142,7 +129,7 @@ def main(argv=None) -> int:
 				frontend.result(result)
 			else:
 				print(render(result, args.format))
-		return exitStatus(result, exposure.name)
+		return exitStatus(result, exposure)
 	except (AutoError, OSError, ValueError) as error:
 		if frontend and frontend.terminal:
 			frontend.error(error)
@@ -173,8 +160,6 @@ def showConfig(config: dict, sources: dict, prefix: tuple = ()) -> None:
 		for name, value, source in items:
 			print(f"{name} = {value} # source={source}")
 		return
-	def width(text):
-		return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text)
 	nameWidth = max([len("SETTING"), *(width(name) for name, _, _ in items)])
 	valueWidth = max([len("VALUE"), *(width(value) for _, value, _ in items)])
 	color = "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
@@ -186,6 +171,7 @@ def showConfig(config: dict, sources: dict, prefix: tuple = ()) -> None:
 
 
 def inputQuestion(event):
+	"""Prompt for the answer to a script question."""
 	print(event["content"], file=sys.stderr)
 	if event.get("fields"):
 		print("Answer as a YAML mapping keyed by form field id:", event["fields"], file=sys.stderr)

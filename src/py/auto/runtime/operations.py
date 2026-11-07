@@ -15,6 +15,7 @@ from auto.utils.data import AutoError, digest, jsonText
 #
 # -----------------------------------------------------------------------------
 
+
 PATH_PATTERN = re.compile(r"^(?:\./|\.\./|/|[a-zA-Z][a-zA-Z0-9+.-]*:)")
 
 
@@ -40,7 +41,11 @@ def Resolve(context: Context, ref: str, base: Path | None = None) -> Content:
 		try:
 			if path.is_dir():
 				# A directory reference pins a sorted content manifest, not mtimes.
-				manifest = {str(p.relative_to(path)): digest(p.read_bytes()) for p in sorted(path.rglob("*")) if p.is_file() and not p.is_symlink() and not any(x in {".git", ".auto", ".venv"} for x in p.relative_to(path).parts)}
+				manifest = {}
+				for file in sorted(path.rglob("*")):
+					relative = file.relative_to(path)
+					if file.is_file() and not file.is_symlink() and not any(part in {".git", ".auto", ".venv"} for part in relative.parts):
+						manifest[str(relative)] = digest(file.read_bytes())
 				data = jsonText(manifest).encode()
 			else:
 				with path.open("rb") as stream:

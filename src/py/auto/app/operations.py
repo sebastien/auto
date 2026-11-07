@@ -3,23 +3,43 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
-from auto.utils.data import AutoError, jsonText, yamlLoad
+from auto.runtime.model import Event, RunStatus
+from auto.runtime.operations import Resolve, isReference
+from auto.utils.data import AutoError, document, jsonText, yamlLoad
+
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class Exposure:
 	"""Describe one exposed operation and the need it serves."""
+
 	name: str
 	module: str
 	arguments: tuple[str, ...]
 	need: str
 	mcp: bool = False
 	payload: str | None = None
+	payloadKind: str = "text"
 	stream: bool = False
 	optional: tuple[str, ...] = ()
+	inputs: bool = False
+	params: bool = False
+	valueArguments: tuple[str, ...] = ()
+	resumable: bool = False
+	passPlan: bool = False
+	violations: bool = False
+	messages: bool = False
 	noun: str = ""
 	verb: str = ""
 
@@ -51,9 +71,9 @@ class Exposure:
 			properties["answer"] = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "object"}, {"type": "array"}]}
 		if self.payload:
 			properties[self.payload] = {"anyOf": [{"type": "string"}, {"type": "object"}]}
-		if self.name in {"ScriptStart", "ScriptExpand", "TaskStart", "PlanCreate"}:
+		if self.inputs:
 			properties["inputs"] = {"type": "object"}
-		if self.name in {"ScriptStart", "ScriptExpand"}:
+		if self.params:
 			properties["params"] = {"type": "object"}
 		return {"type": "object", "properties": properties, "required": list(self.arguments), "additionalProperties": False}
 
@@ -62,70 +82,127 @@ class Exposure:
 		return getattr(module, self.name)(context, **arguments)
 
 
+# Exposure order follows the interface specification table (see spec-007).
 EXPOSURES = [
-	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone", True, "script", True),
-	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script"),
-	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects")),
-	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",)),
-	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", True),
-	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand"),
+	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone",
+		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True),
+	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
+	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects"), inputs=True),
+	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True),
+	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True),
+	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",)),
+	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True),
 	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",)),
-	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", True, optional=("filter",)),
-	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision"),
-	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", optional=("task",)),
-	Exposure("PolicyGrant", "plan.policy", ("effect", "scope", "decision"), "Grant an effect from a human decision"),
-	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", True, optional=("kind", "query")),
-	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", True),
-	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it", True, "elaboration"),
+	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",)),
+	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",)),
+	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", mcp=True, optional=("kind", "query")),
+	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", mcp=True),
+	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
+		mcp=True, payload="elaboration", passPlan=True, violations=True),
 ]
 
+STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,
+	RunStatus.TIMED_OUT: 124, RunStatus.CANCELLED: 130}
+STRUCTURED_ARGUMENTS = ("budget", "filter", "effects")
 
-def coerceArguments(exposure: Exposure, arguments: dict, context=None) -> dict:
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
+
+def coerceArguments(exposure: Exposure, arguments: dict) -> dict:
 	"""Apply interface-neutral coercions before calling an operation."""
 	result = dict(arguments)
-	for name in ("budget", "filter", "effects"):
+	for name in STRUCTURED_ARGUMENTS:
 		if name in result and isinstance(result[name], str):
+			result[name] = yamlLoad(result[name])
+	for name in exposure.valueArguments:
+		if isinstance(result.get(name), str):
 			result[name] = yamlLoad(result[name])
 	if "since" in result and isinstance(result["since"], str):
 		try:
 			result["since"] = int(result["since"])
 		except ValueError as error:
 			raise AutoError("since must be an integer") from error
-	if exposure.name == "GapDecide" and isinstance(result.get("answer"), str):
-		result["answer"] = yamlLoad(result["answer"])
-	if context is not None:
-		if exposure.name == "PlanCreate" and context.inputs:
-			result["inputs"] = context.inputs
-		if exposure.name in {"PlanRefine", "ElaborationValidate", "PolicyGrant"}:
-			result["plan"] = context.plan
 	return result
 
 
-def exitStatus(result, operation: str = "") -> int:
-	if operation == "ElaborationValidate":
+def resolveContextArguments(context, exposure: Exposure, arguments: dict) -> dict:
+	"""Pass the resolved plan to operations that require it explicitly."""
+	if not exposure.passPlan:
+		return arguments
+	return {**arguments, "plan": context.plan}
+
+
+def resolvePayload(context, exposure: Exposure, arguments: dict) -> dict:
+	"""Resolve a payload given as content, a file path or `-` for stdin."""
+	name = exposure.payload
+	value = arguments.get(name) if name else None
+	if not name or not isinstance(value, str):
+		return arguments
+	result = dict(arguments)
+	if exposure.payloadKind == "script":
+		# Scripts keep a path so their relative transclusions resolve at their origin.
+		if value == "-" or "\n" in value:
+			meta, body = document(sys.stdin.read() if value == "-" else value)
+			result[name] = {"content": body, "meta": meta, "path": str(Path.cwd() / "stdin.md")}
+		return result
+	if value == "-" or "\n" in value:
+		result[name] = sys.stdin.read() if value == "-" else value
+	else:
+		result[name] = Resolve(context, value if isReference(value) else "./" + value).text
+	return result
+
+
+def exitStatus(result, exposure: Exposure | None = None) -> int:
+	"""Map an operation result to the stable interface exit status."""
+	if exposure is not None and exposure.violations:
 		return 1 if result else 0
 	if isinstance(result, dict):
-		if "run" in result and isinstance(result["run"], dict):
+		if isinstance(result.get("run"), dict):
 			return exitStatus(result["run"])
 		if result.get("failure") or result.get("pass") is False:
-			return {"TimedOut": 124, "Cancelled": 130, "Skipped": 3, "Blocked": 3, "Waiting": 3}.get(result.get("status"), 1)
-		return {"Failed": 1, "Waiting": 3, "Blocked": 3, "Skipped": 3, "TimedOut": 124, "Cancelled": 130}.get(result.get("status"), 0)
+			return STATUS_EXIT.get(result.get("status"), 1)
+		return STATUS_EXIT.get(result.get("status"), 0)
 	return 0
 
 
 def render(result, format: str = "text") -> str:
+	"""Render a result in `format` for an interface."""
 	if format == "json":
 		return jsonText(result)
 	if isinstance(result, str):
 		return result
-	if isinstance(result, dict) and result.get("type") == "ScriptMessage":
+	if isinstance(result, dict) and result.get("type") == Event.SCRIPT_MESSAGE:
 		return result["content"]
-	if isinstance(result, dict) and result.get("type") == "ScriptEnded" and result.get("output") is not None:
+	if isinstance(result, dict) and result.get("type") == Event.SCRIPT_ENDED and result.get("output") is not None:
 		return render(result["output"], format)
 	if format == "markdown":
 		from auto.features.script.templates import fence
 		return fence(jsonText(result), "json")
-	import json
 	return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+def resumeResult(context, exposure: Exposure, result, ask):
+	"""Answer a nested Waiting run when the interface can ask the user."""
+	if not ask or not exposure.resumable:
+		return result
+	from auto.features.plan.store import journal
+	from auto.features.task.operations import RunAnswer, RunGet
+	nested = isinstance(result, dict) and isinstance(result.get("run"), dict)
+	if nested:
+		run = result["run"]
+		context = context.derive(plan=Path(result["plan"]))
+	else:
+		run = result
+	while run["status"] == RunStatus.WAITING:
+		RunAnswer(context, run, ask(run["question"]), "Answered interactively")
+		run = RunGet(context, run)
+	if not nested:
+		return run
+	revision = next((row for row in journal(context.plan) if row.get("elaborationRun") == run["id"]), None)
+	return {**result, "run": run, "applied": revision is not None, **({"revision": revision} if revision else {})}
 
 # EOF

@@ -2,33 +2,32 @@
 
 from __future__ import annotations
 
-from auto.features.plan.model import Decision, Gap, Plan
+from auto.features.plan.model import GAP_KINDS, Decision, Gap, GapKind, GapState, RevisionOp, createGapFromDict, createPlan
 from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.runtime.model import RunStatus
 from auto.runtime.operations import Knowledge, Resolve
 from auto.utils.data import AutoError, identity, readJson, timestamp
 
 
+# -----------------------------------------------------------------------------
+#
+# UTILITIES
+#
+# -----------------------------------------------------------------------------
+
+
 def planRef(path):
-	return "auto:" + Plan.read(path).id
-
-
-def GapList(context, plan=None, filter: dict | None = None) -> list:
-	path = planPath(context, plan)
-	if context.knowledge is None and not (context.project / ".memo").exists():
-		return []
-	result = [Gap.fromDict(gap).asDict() for gap in Knowledge(context).list(planRef(path), "gap")]
-	for gap in result:
-		gap["kind"] = gap.get("gap_kind", gap.get("kind"))
-	return [gap for gap in result if all((value in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
+	"""Return the canonical reference of a plan."""
+	return "auto:" + createPlan(path).id
 
 
 def prepareGap(context, path, gap: dict, revision: str, staged: dict | None = None) -> dict:
+	"""Validate and expand a gap definition with a generated identity."""
 	id = identity()
-	kind = gap.get("kind", gap.get("gap_kind", "information"))
-	if kind not in {"input", "information", "decision", "approval"} or not gap.get("question") or not gap.get("needed_by"):
+	kind = gap.get("kind", gap.get("gap_kind", GapKind.INFORMATION))
+	if kind not in GAP_KINDS or not gap.get("question") or not gap.get("needed_by"):
 		raise AutoError("Gap requires a valid kind, question and needed_by tasks")
-	if kind == "approval" and not gap.get("subjects"):
+	if kind == GapKind.APPROVAL and not gap.get("subjects"):
 		raise AutoError("Approval requires pinned subjects")
 	for subject in gap.get("subjects", []):
 		expected = (staged or {}).get(subject["ref"])
@@ -40,18 +39,8 @@ def prepareGap(context, path, gap: dict, revision: str, staged: dict | None = No
 		extra={key: value for key, value in gap.items() if key not in {"kind", "question", "needed_by", "subjects", "options", "raised_by"}}).asDict()
 
 
-def GapRaise(context, plan, gap: dict) -> str:
-	path = planPath(context, plan)
-	with locked(path):
-		recover(context, path)
-		repairLocked(context, path)
-		revision = identity()
-		value = prepareGap(context, path, gap, revision)
-		commit(context, path, [{"op": "raise", "gap": value["id"]}], records=[{"kind": "gap", "value": value}], revision=revision, reason=value["question"])
-	return value["id"]
-
-
 def repairLocked(context, path) -> None:
+	"""Reconcile journal operations with stored gaps and decisions."""
 	if context.knowledge is None and not (context.project / ".memo").exists():
 		return
 	store = Knowledge(context)
@@ -65,49 +54,76 @@ def repairLocked(context, path) -> None:
 		if record:
 			group["records"].append(record)
 	for gap in store.list(planRef(path), "gap"):
-		if ("raise", gap["id"]) not in seen:
-			stage(gap["revision"], {"op": "raise", "gap": gap["id"]})
+		if (RevisionOp.RAISE, gap["id"]) not in seen:
+			stage(gap["revision"], {"op": RevisionOp.RAISE, "gap": gap["id"]})
 		matching = [decision for decision in decisions if decision["gap"] == gap["id"]]
 		if len(matching) > 1:
 			raise AutoError("Conflicting decisions require reconciliation")
-		if matching and ("resolve", gap["id"]) not in seen:
+		if matching and (RevisionOp.RESOLVE, gap["id"]) not in seen:
 			decision = matching[0]
-			value = {**gap, "status": "Resolved", "decision": decision["id"], "resolved_revision": decision["revision"]}
-			stage(decision["revision"], {"op": "resolve", "gap": gap["id"], "decision": decision["id"]},
+			value = {**gap, "status": GapState.RESOLVED, "decision": decision["id"], "resolved_revision": decision["revision"]}
+			stage(decision["revision"], {"op": RevisionOp.RESOLVE, "gap": gap["id"], "decision": decision["id"]},
 				{"kind": "gap", "value": value, "expected": gap["digest"], "base": gap})
-		elif gap["status"] == "Dismissed" and ("dismiss", gap["id"]) not in seen:
-			stage(gap["resolved_revision"], {"op": "dismiss", "gap": gap["id"]})
+		elif gap["status"] == GapState.DISMISSED and (RevisionOp.DISMISS, gap["id"]) not in seen:
+			stage(gap["resolved_revision"], {"op": RevisionOp.DISMISS, "gap": gap["id"]})
 	for revision, group in repairs.items():
 		commit(context, path, group["operations"], records=group["records"], revision=revision if not any(row["id"] == revision for row in rows) else None,
 			reason="Repair Memo records", repairedRevision=revision)
 
 
-def PlanRepair(context, plan=None) -> dict:
+def applyPending(context, run) -> dict | None:
+	"""Apply the elaboration a succeeded run left pending, once."""
+	if run["status"] != RunStatus.SUCCEEDED:
+		return None
+	from auto.features.task.operations import runDirectory
+	if not readJson(runDirectory(context, run) / "state.json", {}).get("applyElaboration"):
+		return None
+	from auto.features.elaboration.operations import ElaborationApply, ElaborationParse
+	from auto.features.task.operations import RunOutput
+	return ElaborationApply(context, context.plan, ElaborationParse(context, RunOutput(context, run)), run)
+
+
+
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
+
+def GapRaise(context, plan, gap: dict) -> str:
+	"""Raise a gap in the plan, returning its id."""
 	path = planPath(context, plan)
-	context = context.derive(plan=path)
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
-	from auto.features.task.operations import resumeGap, RunList, RunOutput, runDirectory
-	for gap in GapList(context, path, {"status": "Resolved"}):
-		decision = Knowledge(context).get(f"{planRef(path)}/decision/{gap['decision']}")
-		resumeGap(context, gap["id"], decision["answer"])
-	from auto.features.elaboration.operations import ElaborationApply, ElaborationParse
-	for run in RunList(context, {"status": "Succeeded"}):
-		state = readJson(runDirectory(context, run) / "state.json", {})
-		if state.get("applyElaboration"):
-			ElaborationApply(context, path, ElaborationParse(context, RunOutput(context, run)), run)
-	return {"revision": (journal(path) or [{}])[-1].get("id")}
+		revision = identity()
+		value = prepareGap(context, path, gap, revision)
+		commit(context, path, [{"op": RevisionOp.RAISE, "gap": value["id"]}], records=[{"kind": "gap", "value": value}], revision=revision, reason=value["question"])
+	return value["id"]
+
+
+def GapList(context, plan=None, filter: dict | None = None) -> list:
+	"""List the gaps of a plan, filtered by status, kind or task."""
+	path = planPath(context, plan)
+	if context.knowledge is None and not (context.project / ".memo").exists():
+		return []
+	result = [createGapFromDict(gap).asDict() for gap in Knowledge(context).list(planRef(path), "gap")]
+	for gap in result:
+		gap["kind"] = gap.get("gap_kind", gap.get("kind"))
+	return [gap for gap in result if all((value in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
 
 
 def GapDecide(context, gap: str, answer, rationale: str) -> dict:
+	"""Resolve a gap with a decision, resuming its waiting run."""
 	path = planPath(context)
 	store = Knowledge(context)
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
 		value = store.get(f"{planRef(path)}/gap/{gap}")
-		if value["status"] != "Open":
+		if value["status"] != GapState.OPEN:
 			raise AutoError("Gap is not open")
 		if value.get("runtime_policy") and context.author != "human":
 			raise AutoError("Runtime policy requests require a human decision")
@@ -117,35 +133,49 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 		revision, id = identity(), identity()
 		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=gap, answer=answer,
 			rationale=rationale, author=context.author, date=timestamp(), revision=revision).asDict()
-		updated = {**value, "status": "Resolved", "decision": id, "resolved_revision": revision}
-		operations = [{"op": "resolve", "gap": gap, "decision": id}]
+		updated = {**value, "status": GapState.RESOLVED, "decision": id, "resolved_revision": revision}
+		operations = [{"op": RevisionOp.RESOLVE, "gap": gap, "decision": id}]
 		request = value.get("runtime_policy")
 		if request and request["rule"] == "deny" and answer == {"grant": request["effect"], "scope": request["scope"]}:
-			operations.append({"op": "grant", "effect": request["effect"], "scope": request["scope"], "source": decision["identity"]})
+			operations.append({"op": RevisionOp.GRANT, "effect": request["effect"], "scope": request["scope"], "source": decision["identity"]})
 		commit(context, path, operations, revision=revision, reason=rationale,
 			records=[{"kind": "decision", "value": decision}, {"kind": "gap", "value": updated, "expected": value["digest"], "base": value}])
 	# Resume only after leaving the commit lock; model checks can call Auto themselves.
-	from auto.features.task.operations import resumeGap, runDirectory
+	from auto.features.task.operations import resumeGap
 	result = resumeGap(context, gap, answer)
-	if result and result["status"] == RunStatus.SUCCEEDED:
-		state = readJson(runDirectory(context, result) / "state.json", {})
-		if state.get("applyElaboration"):
-			from auto.features.elaboration.operations import ElaborationApply, ElaborationParse
-			from auto.features.task.operations import RunOutput
-			ElaborationApply(context, context.plan, ElaborationParse(context, RunOutput(context, result)), result)
+	if result:
+		applyPending(context, result)
 	return decision
 
 
 def GapDismiss(context, gap: str, rationale: str) -> dict:
+	"""Dismiss a gap as no longer relevant."""
 	path = planPath(context)
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
 		value = Knowledge(context).get(f"{planRef(path)}/gap/{gap}")
-		if value["status"] != "Open":
+		if value["status"] != GapState.OPEN:
 			raise AutoError("Gap is not open")
 		revision = identity()
-		updated = {**value, "status": "Dismissed", "rationale": rationale, "resolved_revision": revision}
-		return commit(context, path, [{"op": "dismiss", "gap": gap}], records=[{"kind": "gap", "value": updated, "expected": value["digest"], "base": value}], revision=revision, reason=rationale)
+		updated = {**value, "status": GapState.DISMISSED, "rationale": rationale, "resolved_revision": revision}
+		records = [{"kind": "gap", "value": updated, "expected": value["digest"], "base": value}]
+		return commit(context, path, [{"op": RevisionOp.DISMISS, "gap": gap}], records=records, revision=revision, reason=rationale)
+
+
+def PlanRepair(context, plan=None) -> dict:
+	"""Reconcile the journal with storage and resume pending work."""
+	path = planPath(context, plan)
+	context = context.derive(plan=path)
+	with locked(path):
+		recover(context, path)
+		repairLocked(context, path)
+	from auto.features.task.operations import resumeGap, RunList
+	for gap in GapList(context, path, {"status": GapState.RESOLVED}):
+		decision = Knowledge(context).get(f"{planRef(path)}/decision/{gap['decision']}")
+		resumeGap(context, gap["id"], decision["answer"])
+	for run in RunList(context, {"status": RunStatus.SUCCEEDED}):
+		applyPending(context, run)
+	return {"revision": (journal(path) or [{}])[-1].get("id")}
 
 # EOF

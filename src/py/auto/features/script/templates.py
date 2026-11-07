@@ -9,10 +9,18 @@ from pathlib import Path
 from liquid import Environment, Node, StrictUndefined, Tag
 from liquid.token import TOKEN_TAG
 
-from auto.features.script.model import Script
 from auto.features.script.config import validateConfig
+from auto.features.script.model import Script
+from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.operations import Resolve, Shell, Value, isReference
+from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, document, jsonText, merge
+
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
 
 
 class AutoEnvironment(Environment):
@@ -30,8 +38,15 @@ class TransclusionNode(Node):
 	def render_to_output(self, context, buffer):
 		return buffer.write(self.renderer.insert(self.directive, dict(context.scope)))
 
+# -----------------------------------------------------------------------------
+#
+# UTILITIES
+#
+# -----------------------------------------------------------------------------
+
 
 def fence(text: str, language: str = "") -> str:
+	"""Wrap text in a fence longer than any backtick run it contains."""
 	marker = "`" * max(3, max((len(m[0]) + 1 for m in re.finditer(r"`+", text)), default=3))
 	return f"{marker}{language}\n{text}" + ("" if text.endswith("\n") else "\n") + f"{marker}\n"
 
@@ -76,6 +91,13 @@ def directives(source: str) -> tuple[str, list[tuple[str, str, bool]]]:
 	return "".join(parts), items
 
 
+# -----------------------------------------------------------------------------
+#
+# API
+#
+# -----------------------------------------------------------------------------
+
+
 class Renderer:
 	"""Keep origins, caller values and defaults distinct across composition."""
 
@@ -90,7 +112,7 @@ class Renderer:
 				self.defaults["output"][key] = str((script.path.parent / value).resolve())
 		if isinstance(self.defaults.get("cwd"), str) and not Path(self.defaults["cwd"]).is_absolute():
 			self.defaults["cwd"] = str((script.path.parent / self.defaults["cwd"]).resolve())
-		self.config = merge({"isolated": False}, context.defaults, self.defaults, context.config)
+		self.config = merge(RUNTIME_DEFAULTS, context.defaults, self.defaults, context.config)
 		validateConfig(self.config)
 		if "cwd" in self.config:
 			path = Path(self.config["cwd"])
@@ -115,8 +137,17 @@ class Renderer:
 	def bindings(self, inherited: dict | None = None) -> dict:
 		inherited = inherited or {}
 		inherited = {**inherited, "inputs": {**inherited.get("inputs", {}), **self.context.resolvedInputs}}
-		inputs = {key: inherited.get("inputs", {})[key] if key in inherited.get("inputs", {}) else Value(self.context, value, self.context.project if key in self.context.inputs else self.script.path.parent, self.config) for key, value in merge(self.defaults.get("inputs", {}), self.context.inputs).items()}
-		params = {key: inherited.get("params", {})[key] if key in inherited.get("params", {}) else Value(self.context, value, self.context.project if key in self.context.params else self.script.path.parent, self.config) for key, value in merge(self.defaults.get("params", {}), self.context.params).items()}
+		def resolve(group):
+			inheritedValues, current = inherited.get(group, {}), getattr(self.context, group)
+			result = {}
+			for key, value in merge(self.defaults.get(group, {}), current).items():
+				if key in inheritedValues:
+					result[key] = inheritedValues[key]
+				else:
+					origin = self.context.project if key in current else self.script.path.parent
+					result[key] = Value(self.context, value, origin, self.config)
+			return result
+		inputs, params = resolve("inputs"), resolve("params")
 		return {**inputs, "inputs": inputs, "params": params, **self.context.variables}
 
 	def render(self, namespace: dict | None = None) -> str:
@@ -152,9 +183,9 @@ class Renderer:
 		childNamespace = merge(childNamespace, namespace)
 		result = child.render(childNamespace)
 		# A transcluded script supplies otherwise unset execution/output settings.
-		keys = {"engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated", "output"}
+		keys = {*RUNTIME_KEYS, "output"}
 		self.defaults = merge({key: value for key, value in child.defaults.items() if key in keys}, self.defaults)
-		self.config = merge({"isolated": False}, self.context.defaults, self.defaults, self.context.config)
+		self.config = merge(RUNTIME_DEFAULTS, self.context.defaults, self.defaults, self.context.config)
 		return result
 
 	def shellArgument(self, source: str, namespace: dict) -> str:

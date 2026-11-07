@@ -9,6 +9,12 @@ from __future__ import annotations
 
 from auto.runtime.model import Context
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def installResolvers(context: Context) -> None:
 	"""Install the built-in reference schemes once per context."""

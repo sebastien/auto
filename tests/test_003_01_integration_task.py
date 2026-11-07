@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from auto.features.task.model import Task, parseTask, taskText
+from auto.features.task.model import Task, createTaskFromDict, createTaskFromText, taskText
 from auto.features.task.operations import TaskDependencies, TaskExpand, TaskGet, TaskValidate
 from auto.runtime.model import Context
 from auto.utils.data import documentText
@@ -31,15 +31,15 @@ class TaskTests(unittest.TestCase):
 
 	def add(self, id: str, **meta) -> None:
 		value = {"id": id, "title": id, "sections": {"Process": "Work"}, **meta}
-		(self.plan / "tasks" / (id + ".md")).write_text(taskText(Task.fromDict(value, self.plan / "tasks" / (id + ".md"))))
+		(self.plan / "tasks" / (id + ".md")).write_text(taskText(createTaskFromDict(value, self.plan / "tasks" / (id + ".md"))))
 
 	def testParseAndRoundTrip(self):
-		task = parseTask(self.text, self.plan / "tasks/build.md")
+		task = createTaskFromText(self.text, self.plan / "tasks/build.md")
 		self.assertEqual(task.id, "build")
 		self.assertEqual(task.meta["title"], "Build the artefact")
 		self.assertIn("Process", task.sections)
 		self.assertIn("Evaluation", task.sections)
-		again = parseTask(taskText(task), self.plan / "tasks/build.md")
+		again = createTaskFromText(taskText(task), self.plan / "tasks/build.md")
 		self.assertEqual(again.id, task.id)
 		self.assertEqual(again.meta, task.meta)
 		self.assertEqual(again.sections, task.sections)

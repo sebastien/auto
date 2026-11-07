@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Iterator, Protocol, runtime_checkable
 
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
+
 
 @runtime_checkable
 class EngineIntegration(Protocol):

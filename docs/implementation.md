@@ -12,6 +12,22 @@ entities. `integration` adapts subprocesses, engines and Memo. `app` projects
 shared operation metadata into CLI and MCP. V1 informed adapter behaviour,
 rather than determining the new architecture.
 
+Runtime vocabulary is declared once, in `runtime/model.py` (event names, run
+states, failure kinds) and in `features/plan/model.py` (plan, gap and revision
+vocabularies). Features, interfaces and adapters reference those symbols
+instead of repeating literals. Deferred imports are reserved for the
+runtime-to-adapter boundary, the composition root, interface startup, and the
+plan/task cycle; other imports stay at module top. Task runs belong to plans
+(spec-003), so task operations use plan storage and policy directly.
+
+Model construction goes through `create*` factories in the model modules
+(`createPlan`, `createScript`, `createTaskFromText`, `createTaskFromDict`,
+`createRunFromDict`, `createGapFromDict`, `createDecisionFromDict`,
+`createRevisionFromDict`, `createElaborationFromDict`), which keeps text,
+mapping and storage decoding in one predictable place. Run directory discovery
+and receipt reads are shared from `plan/references.py` by both plan references
+and task operations.
+
 YAML uses YAML 1.2 semantics; templates use Python Liquid with lazy Auto
 transclusions; JSON output is checked with JSON Schema. Shell interpolation
 quotes values as data. Interpolation inside escapes, heredocs and shell

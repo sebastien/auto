@@ -393,7 +393,7 @@ Work
 		self.assertEqual(GapList(self.ctx), [])
 
 	def testOpenCodePermissionRequestCreatesCheckpoint(self):
-		from auto.integration.opencode import OpenCode
+		from auto.integration.opencode.engine import OpenCode
 		class Stub(OpenCode):
 			def __init__(inner):
 				inner.calls = []

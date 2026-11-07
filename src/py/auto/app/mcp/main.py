@@ -5,11 +5,19 @@ from __future__ import annotations
 import asyncio
 import threading
 
-from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render
+from auto.app.operations import EXPOSURES, coerceArguments, exitStatus, render, resolveContextArguments, resolvePayload
+from auto.runtime.config import CONTEXT_KEYS
 from auto.utils.data import AutoError
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
 
 
 def createServer(context):
+	"""Build the MCP server exposing the shared operation metadata."""
 	from mcp import types
 	from mcp.server import Server
 	server = Server("auto")
@@ -23,7 +31,7 @@ def createServer(context):
 	async def callTool(name, arguments):
 		item = exposed[name]
 		arguments = dict(arguments)
-		config = {key: arguments.pop(key) for key in ("engine", "provider", "model", "agent") if key in arguments}
+		config = {key: arguments.pop(key) for key in CONTEXT_KEYS if key != "plan" and key in arguments}
 		plan = arguments.pop("plan", None)
 		if plan:
 			from auto.features.plan.store import planPath
@@ -31,16 +39,9 @@ def createServer(context):
 		cancel = threading.Event()
 		ctx = context.derive(plan=plan or context.plan, config={**context.config, **config}, question=None,
 			inputs=arguments.pop("inputs", {}), params=arguments.pop("params", {}), cancelled=cancel.is_set)
-		arguments = coerceArguments(item, arguments, ctx)
-		if item.name == "ElaborationValidate":
-			value = arguments["elaboration"]
-			if isinstance(value, str) and value.startswith(("./", "../", "/", "auto:", "run:")) and "\n" not in value:
-				from auto.runtime.operations import Resolve
-				arguments["elaboration"] = Resolve(ctx, value).text
-		if item.name == "ScriptStart" and isinstance(arguments["script"], str) and "\n" in arguments["script"]:
-			from auto.utils.data import document
-			meta, body = document(arguments["script"])
-			arguments["script"] = {"content": body, "meta": meta, "path": str(ctx.project / "mcp.md")}
+		arguments = coerceArguments(item, arguments)
+		arguments = resolveContextArguments(ctx, item, arguments)
+		arguments = resolvePayload(ctx, item, arguments)
 		try:
 			result = await asyncio.to_thread(item.call, ctx, arguments)
 			if item.stream:
@@ -65,11 +66,13 @@ def createServer(context):
 		except AutoError as error:
 			result = {"failure": {"kind": error.kind, "reason": str(error)}}
 		structured = result if isinstance(result, dict) else {"result": result}
-		return types.CallToolResult(content=[types.TextContent(type="text", text=render(result, "markdown"))], structuredContent=structured, isError=exitStatus(result, item.name) != 0)
+		return types.CallToolResult(content=[types.TextContent(type="text", text=render(result, "markdown"))],
+			structuredContent=structured, isError=exitStatus(result, item) != 0)
 	return server
 
 
 def serve(context):
+	"""Serve the MCP server over stdio."""
 	from mcp.server.stdio import stdio_server
 	server = createServer(context)
 	async def run():

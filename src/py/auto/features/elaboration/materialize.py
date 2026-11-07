@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-from auto.features.task.model import Task, parseTask
+from auto.features.task.model import Task, createTaskFromText
 from auto.runtime.operations import Resolve
 from auto.utils.data import merge
 from auto.utils.references import relocate, relocateMeta
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def materialize(context, value: dict, parent: str) -> Task:
+	"""Instantiate a task from its template and elaborated fields."""
 	definition = dict(value)
 	meta, parts, description = {}, {}, ""
 	if definition.get("from"):
 		ref = definition["from"]
 		ref = ref["ref"] if isinstance(ref, dict) else ref
 		content = Resolve(context, ref)
-		template = parseTask(content.text, content.path)
+		template = createTaskFromText(content.text, content.path)
 		meta = relocateMeta(template.meta, content.path.parent)
 		parts = {name: relocate(body, content.path.parent) for name, body in template.sections.items()}
 		description = template.description

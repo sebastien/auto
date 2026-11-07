@@ -11,6 +11,12 @@ import time
 from auto.runtime.model import ProcessOptions
 from auto.utils.data import AutoError
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def streamProcess(options: ProcessOptions, args: list[str], config: dict, stdin: str = ""):
 	"""Yield stdout/stderr byte chunks and a final exit code; close kills descendants."""
@@ -75,6 +81,7 @@ def streamProcess(options: ProcessOptions, args: list[str], config: dict, stdin:
 
 
 def capture(options: ProcessOptions, args: list[str], config: dict, stdin: str = "") -> tuple[str, str, int]:
+	"""Run a process and return its stdout, stderr and exit status."""
 	chunks, code = [bytearray(), bytearray()], 0
 	for number, chunk in streamProcess(options, args, config, stdin):
 		if number == 2:

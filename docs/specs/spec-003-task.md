@@ -148,6 +148,13 @@ A run is stored by the runtime within its plan, as files covering:
 - The journal, as a structured log file
 - The receipt, as structured data
 
+> **Note (structure).** Because a run has no meaning outside its plan, the
+> task operations read and write plan storage directly. This makes `task`
+> depend on `plan`, although [Structure](spec-001-structure.md) layers
+> `script → task → plan → elaboration`. The dependency is deliberate and
+> limited to storage, run discovery and policy reads; it is the known
+> exception to that ordering.
+
 ## Operations
 
 Task:

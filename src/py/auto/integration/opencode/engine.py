@@ -6,18 +6,33 @@ import json
 import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 from auto.integration.process import capture
+from auto.runtime.model import Event, RunStatus
 from auto.utils.data import AutoError, jsonText
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
 
 
 def permissionEffect(action, resources, project, cwd):
 	"""Map known tool actions; unknown plugin actions require confirmation."""
-	known = {"read": "repo.read", "glob": "repo.read", "grep": "repo.read", "edit": "repo.write", "shell": "shell.run", "webfetch": "net.read", "websearch": "net.read"}
+	known = {"read": "repo.read", "glob": "repo.read", "grep": "repo.read", "edit": "repo.write",
+		"shell": "shell.run", "webfetch": "net.read", "websearch": "net.read"}
 	if action in {"read", "edit"} and any(not (Path(cwd) / resource).resolve().is_relative_to(Path(project).resolve()) for resource in resources):
 		return "engine.external-" + action
 	return known.get(action, "engine.tool-" + (re.sub(r"[^a-z0-9_-]+", "-", action.lower()).strip("-") or "unknown"))
+
+# -----------------------------------------------------------------------------
+#
+# DEFINITIONS
+#
+# -----------------------------------------------------------------------------
 
 
 class OpenCode:
@@ -46,7 +61,7 @@ class OpenCode:
 		if "prompt" in config:
 			raise AutoError("OpenCode session API does not expose system prompt overrides")
 		if "temperature" in config:
-			yield {"type": "ScriptMeta", "name": "warning", "value": "OpenCode session API does not expose temperature; ignoring temperature setting"}
+			yield {"type": Event.SCRIPT_META, "name": "warning", "value": "OpenCode session API does not expose temperature; ignoring temperature setting"}
 		complete = False
 		try:
 			if not request.get("session"):
@@ -54,7 +69,11 @@ class OpenCode:
 				payload = {"id": request["session"], "location": {"directory": str(config.get("cwd", context.project))}}
 				if "policy" in request:
 					# Subagents use independent rules and cannot inherit this session's policy.
-					payload["permissions"] = [{"action": "*", "resource": "*", "effect": "ask"}, {"action": "question", "resource": "*", "effect": "allow"}, {"action": "subagent", "resource": "*", "effect": "deny"}]
+					payload["permissions"] = [
+						{"action": "*", "resource": "*", "effect": "ask"},
+						{"action": "question", "resource": "*", "effect": "allow"},
+						{"action": "subagent", "resource": "*", "effect": "deny"},
+					]
 				if config.get("agent"):
 					payload["agent"] = config["agent"]
 				if config.get("provider") or config.get("model"):
@@ -68,13 +87,14 @@ class OpenCode:
 							raise AutoError("OpenCode model must be provider/model")
 					payload["model"] = {"providerID": provider, "id": model}
 				self.api(context, "post", "/api/session", payload, config)
-				yield {"type": "ScriptMeta", "name": "session", "value": request["session"]}
+				yield {"type": Event.SCRIPT_META, "name": "session", "value": request["session"]}
 				request["message"] = "msg_" + uuid4().hex
 				self.api(context, "post", f"/api/session/{request['session']}/prompt", {"id": request["message"], "text": request["prompt"]}, config)
 			base = f"/api/session/{request['session']}"
 			if "answer" in request:
 				if "permission" in request:
-					self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": "once" if request.pop("answer") is True else "reject"}, config)
+					decision = "once" if request.pop("answer") is True else "reject"
+					self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": decision}, config)
 				else:
 					self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
 			seen = request.setdefault("seen", {})
@@ -91,20 +111,20 @@ class OpenCode:
 						request["permission"] = permission["id"]
 						action = permission["action"]
 						resources = permission.get("resources", [])
-						answer = yield {"type": "PolicyRequest", "effect": permissionEffect(action, resources, context.project, config.get("cwd", context.project)), "action": action + ": " + ", ".join(resources)}
+						effect = permissionEffect(action, resources, context.project, config.get("cwd", context.project))
+						answer = yield {"type": Event.POLICY_REQUEST, "effect": effect, "action": action + ": " + ", ".join(resources)}
 						self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": "once" if answer is True else "reject"}, config)
 				forms = self.api(context, "get", base + "/form", config=config).get("data", [])
 				if forms:
 					form = forms[0]
 					request["form"] = form["id"]
-					answer = yield {"type": "ScriptQuestion", "name": form["id"], "content": form["title"], "fields": form["fields"]}
+					answer = yield {"type": Event.SCRIPT_QUESTION, "name": form["id"], "content": form["title"], "fields": form["fields"]}
 					if answer is None:
 						raise AutoError("Question requires an answer", "input")
 					self.api(context, "post", base + f"/form/{form['id']}/reply", {"answer": answer}, config)
 				response = self.api(context, "get", base + "/message?order=asc&limit=100", config=config)
 				messages = list(response.get("data", []))
 				while response.get("cursor", {}).get("next"):
-					from urllib.parse import quote
 					response = self.api(context, "get", base + "/message?cursor=" + quote(response["cursor"]["next"], safe=""), config=config)
 					messages.extend(response.get("data", []))
 				output, cost, tokens = "", 0, 0
@@ -115,11 +135,11 @@ class OpenCode:
 					if text:
 						output = text
 					if message.get("model"):
-						yield {"type": "ScriptMeta", "name": "runtime", "value": {"provider": message["model"]["providerID"], "model": message["model"]["id"]}}
+						yield {"type": Event.SCRIPT_META, "name": "runtime", "value": {"provider": message["model"]["providerID"], "model": message["model"]["id"]}}
 					previous = seen.get(message["id"], "")
 					if text != previous:
 						seen[message["id"]] = text
-						yield {"type": "ScriptMessage", "content": text[len(previous):] if text.startswith(previous) else text}
+						yield {"type": Event.SCRIPT_MESSAGE, "content": text[len(previous):] if text.startswith(previous) else text}
 					cost += message.get("cost", 0)
 					usage = message.get("tokens", {})
 					tokens += sum(usage.get(key, 0) for key in ("input", "output", "reasoning")) + sum(usage.get("cache", {}).values())
@@ -127,14 +147,14 @@ class OpenCode:
 					if context.limits:
 						context.limits.usage[key] += value - accounted[key]
 					accounted[key] = value
-				yield {"type": "ScriptMeta", "name": "usage", "value": dict(accounted)}
+				yield {"type": Event.SCRIPT_META, "name": "usage", "value": dict(accounted)}
 				if context.limits:
 					context.limits.check()
 				if messages and messages[-1]["type"] == "idle":
 					complete = True
 					if messages[-1]["outcome"] != "succeeded":
 						raise AutoError(jsonText(messages[-1].get("error", messages[-1]["outcome"])), "system")
-					yield {"type": "ScriptEnded", "status": "Succeeded", "output": output}
+					yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": output}
 					return
 				time.sleep(.2)
 		finally:

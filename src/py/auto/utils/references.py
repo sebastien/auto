@@ -7,6 +7,12 @@ from pathlib import Path
 
 from auto.utils.data import merge
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def relocate(text: str, base: Path) -> str:
 	"""Rewrite source-relative transclusions to absolute paths from `base`."""

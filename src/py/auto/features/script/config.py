@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from auto.runtime.config import validateConfig as validateConfig
 
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
 
 def commands(value) -> list[str]:
 	"""Normalise a lifecycle key (`pre`, `post`, `apply`, `eval`) to a command list."""
