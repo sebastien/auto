@@ -59,7 +59,7 @@ class MemoKnowledge:
 		if "needed_by" in stored:
 			stored["needed_by"] = [ref if ref.startswith("auto:") else stored["plan"] + "/task/" + ref for ref in stored["needed_by"]]
 		try:
-			self.backend.put(current.clone(meta={**current.meta, **stored}, body=body, metaFormat="yaml"), expected=expected)
+			self.backend.put(current.clone(meta={**current.meta, **stored}, body=body), expected=expected)
 		except Exception as error:
 			raise AutoError(f"Memo write failed: {error}", "system") from error
 

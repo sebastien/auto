@@ -98,6 +98,13 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(run["evaluation"]["score"], .2)
 		self.assertGreater(run["usage"]["time"], 0)
 
+	def testFailedEvaluationDoesNotChangeRunStatus(self):
+		self.add("evaluated", eval="false")
+		run = TaskStart(self.ctx, "evaluated")
+		self.assertEqual(run["status"], "Succeeded")
+		self.assertEqual(run["evaluation_failure"]["kind"], "output")
+		self.assertIn("TaskEvaluationFailed", (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
+
 	def testFrontmatterChecksAddToBodyAndApply(self):
 		self.add("front", pre="true", sections={"Pre": "!?false", "Process": "never"})
 		self.assertEqual(TaskStart(self.ctx, "front")["status"], "Skipped")
@@ -171,6 +178,41 @@ Work
 		self.assertEqual(len(GapList(self.ctx)), 1)
 		self.assertEqual(len(journal(self.plan)), 1)
 
+	def testRepairReconcilesConcurrentMemoChanges(self):
+		gap = GapRaise(self.ctx, self.plan, {"kind": "decision", "question": "Which?", "needed_by": ["root"]})
+		ref = f"auto:demo/gap/{gap}"
+		write = self.store.write
+		def concurrent(kind, value, expected=""):
+			if kind == "gap" and expected:
+				self.store.records[ref][1]["note"] = "Added independently"
+				raise AutoError("stale write")
+			write(kind, value, expected)
+		with patch.object(self.store, "write", side_effect=concurrent):
+			with self.assertRaises(AutoError):
+				GapDecide(self.ctx, gap, "yes", "Choice")
+		PlanRepair(self.ctx)
+		value = self.store.get(ref)
+		self.assertEqual(value["status"], "Resolved")
+		self.assertEqual(value["note"], "Added independently")
+		self.assertEqual([op["op"] for row in journal(self.plan) for op in row["operations"]], ["raise", "resolve"])
+
+	def testRepairRejectsConflictingMemoChanges(self):
+		gap = GapRaise(self.ctx, self.plan, {"kind": "decision", "question": "Which?", "needed_by": ["root"]})
+		ref = f"auto:demo/gap/{gap}"
+		write = self.store.write
+		def concurrent(kind, value, expected=""):
+			if kind == "gap" and expected:
+				self.store.records[ref][1]["status"] = "Dismissed"
+				raise AutoError("stale write")
+			write(kind, value, expected)
+		with patch.object(self.store, "write", side_effect=concurrent):
+			with self.assertRaises(AutoError):
+				GapDecide(self.ctx, gap, "yes", "Choice")
+		with self.assertRaisesRegex(AutoError, "Conflicting Memo update"):
+			PlanRepair(self.ctx)
+		self.assertEqual(self.store.get(ref)["status"], "Dismissed")
+		self.assertTrue((self.plan / ".pending.json").exists())
+
 	def testRepairGroupsOrphanGaps(self):
 		from auto.features.plan.gaps import prepareGap
 		for question in ("First?", "Second?"):
@@ -219,6 +261,22 @@ Work
 		run = TaskStart(self.ctx, "zero")
 		self.assertEqual(run["status"], "TimedOut")
 		self.assertEqual(len(self.engine.calls), 0)
+
+	def testParentBudgetAndPlanIdentity(self):
+		self.add("parent", budget={"tokens": 5})
+		elaboration = {"task": "parent", "tasks": [{"id": "child", "title": "Child", "budget": {"tokens": 100}, "sections": {"Process": "work"}}]}
+		self.assertTrue(ElaborationValidate(self.ctx, self.plan, elaboration))
+		PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {"goal": "Updated"}}], "Change goal")
+		self.assertEqual(PlanStatus(self.ctx)["id"], "demo")
+
+	def testElaboratorBudgetIsClamped(self):
+		from auto.features.elaboration.operations import ElaborationStart
+		elaborator = self.root / "elaborator.md"
+		elaborator.write_text(documentText({"title": "Elaborator"}, "## Process\n\nWork"))
+		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 10},
+			"elaborator": {"task": str(elaborator), "budget": {"tokens": 100}}}, "# Demo"))
+		run = ElaborationStart(self.ctx, self.plan, "root")
+		self.assertEqual(run["budget"]["tokens"], 10)
 
 	def testApprovalPinsAndReassessment(self):
 		self.add("first", hints={"gate": "approval"})

@@ -73,7 +73,7 @@ def repairLocked(context, path) -> None:
 			decision = matching[0]
 			value = {**gap, "status": "Resolved", "decision": decision["id"], "resolved_revision": decision["revision"]}
 			stage(decision["revision"], {"op": "resolve", "gap": gap["id"], "decision": decision["id"]},
-				{"kind": "gap", "value": value, "expected": gap["digest"]})
+				{"kind": "gap", "value": value, "expected": gap["digest"], "base": gap})
 		elif gap["status"] == "Dismissed" and ("dismiss", gap["id"]) not in seen:
 			stage(gap["resolved_revision"], {"op": "dismiss", "gap": gap["id"]})
 	for revision, group in repairs.items():
@@ -116,7 +116,7 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 			rationale=rationale, author=context.author, date=timestamp(), revision=revision).asDict()
 		updated = {**value, "status": "Resolved", "decision": id, "resolved_revision": revision}
 		commit(context, path, [{"op": "resolve", "gap": gap, "decision": id}], revision=revision, reason=rationale,
-			records=[{"kind": "decision", "value": decision}, {"kind": "gap", "value": updated, "expected": value["digest"]}])
+			records=[{"kind": "decision", "value": decision}, {"kind": "gap", "value": updated, "expected": value["digest"], "base": value}])
 	# Resume only after leaving the commit lock; model checks can call Auto themselves.
 	from auto.features.task.operations import resumeGap, runDirectory
 	result = resumeGap(context, gap, answer)
@@ -139,6 +139,6 @@ def GapDismiss(context, gap: str, rationale: str) -> dict:
 			raise AutoError("Gap is not open")
 		revision = identity()
 		updated = {**value, "status": "Dismissed", "rationale": rationale, "resolved_revision": revision}
-		return commit(context, path, [{"op": "dismiss", "gap": gap}], records=[{"kind": "gap", "value": updated, "expected": value["digest"]}], revision=revision, reason=rationale)
+		return commit(context, path, [{"op": "dismiss", "gap": gap}], records=[{"kind": "gap", "value": updated, "expected": value["digest"], "base": value}], revision=revision, reason=rationale)
 
 # EOF

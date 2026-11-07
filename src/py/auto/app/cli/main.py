@@ -110,11 +110,22 @@ def main(argv=None) -> int:
 			return inputQuestion(event)
 		context.question = question if sys.stdin.isatty() and sys.stderr.isatty() else None
 		result = exposure.call(context, arguments)
-		if exposure.name == "TaskStart" and context.question:
+		if exposure.name in {"TaskStart", "PlanCreate", "PlanRefine"} and context.question:
 			from auto.features.task.operations import RunAnswer, RunGet
-			while result["status"] == "Waiting":
-				RunAnswer(context, result, context.question(result["question"]), "Answered interactively")
-				result = RunGet(context, result)
+			run = result if exposure.name == "TaskStart" else result["run"]
+			if exposure.name != "TaskStart":
+				context = context.derive(plan=Path(result["plan"]))
+			while run["status"] == "Waiting":
+				RunAnswer(context, run, context.question(run["question"]), "Answered interactively")
+				run = RunGet(context, run)
+			if exposure.name == "TaskStart":
+				result = run
+			else:
+				from auto.features.plan.store import journal
+				revision = next((row for row in journal(context.plan) if row.get("elaborationRun") == run["id"]), None)
+				result = {**result, "run": run, "applied": revision is not None}
+				if revision:
+					result["revision"] = revision
 		if exposure.stream:
 			stream = result
 			try:

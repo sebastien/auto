@@ -94,6 +94,11 @@ def TaskValidate(context, task, graph: bool = True, aggregate: bool = False) -> 
 		task = effectiveTask(context, resolveTask(context, task))
 		identifier(task.id)
 		budgetValue(task.meta.get("budget"))
+		if task.meta.get("output", {}).get("format", "markdown") not in {"markdown", "text", "json"}:
+			raise AutoError("Unsupported output format")
+		if task.meta.get("engine"):
+			from auto.runtime.operations import Engine
+			Engine(context, task.meta["engine"])
 		if "Process" not in task.sections and task.id != "root" and not aggregate and task.meta.get("hints", {}).get("elaborate") != "later":
 			raise AutoError("Task requires Process unless it is an aggregate or deferred")
 		TaskDependencies(context, task)
@@ -335,23 +340,33 @@ def _continue(context, path, run, state, answer=UNSET):
 				context.variables["run"]["output"] = str(path / run["outputFile"])
 			request = state.get("request")
 			value = None
-			if request is None:
-				if phase == "Process":
-					if not task.sections.get("Process"):
-						value = context.inputs.get("children", {})
-						from auto.features.script.operations import conform
-						contract = prepare(context, task.script())["output"] if task.meta.get("output") else {"format": "json"}
-						value = conform(value, contract)
+			try:
+				if request is None:
+					if phase == "Process":
+						if not task.sections.get("Process"):
+							value = context.inputs.get("children", {})
+							from auto.features.script.operations import conform
+							contract = prepare(context, task.script())["output"] if task.meta.get("output") else {"format": "json"}
+							value = conform(value, contract)
+						else:
+							request = prepare(context, task.script())
+					elif phase == "Apply":
+						value = applyEffects(context, task)
 					else:
-						request = prepare(context, task.script())
-				elif phase == "Apply":
-					value = applyEffects(context, task)
-				else:
-					request, value = checkRequest(context, task, phase)
-			if request:
-				value, waiting = _drive(context, path, run, state, request)
-				if waiting:
-					return run
+						request, value = checkRequest(context, task, phase)
+				if request:
+					value, waiting = _drive(context, path, run, state, request)
+					if waiting:
+						return run
+			except AutoError as error:
+				if phase != "Evaluation" or error.kind in {FailureKind.TIMEOUT, FailureKind.BUDGET, FailureKind.CANCELLED}:
+					raise
+				run["evaluation_failure"] = {"kind": error.kind, "reason": str(error)}
+				emit(path, {"type": "TaskEvaluationFailed", "failure": run["evaluation_failure"]})
+				state.pop("request", None)
+				state["completed"].append(phase)
+				saveRun(path, run, state)
+				continue
 			state.pop("request", None)
 			state["completed"].append(phase)
 			if phase == "Process":

@@ -133,7 +133,11 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 					raise AutoError("Root definition is immutable after a run")
 				root = tasks["root"]
 				root.meta.update(change["fields"])
-				writes["plan.md"] = taskText(root)
+				rootText = taskText(root)
+				from auto.utils.data import document, documentText
+				meta, body = document(rootText)
+				meta["id"] = Plan.read(path).id
+				writes["plan.md"] = documentText(meta, body)
 				operations.append({"op": "update", "field": list(change["fields"])})
 			else:
 				raise AutoError(f"Unsupported revision operation: {op}")

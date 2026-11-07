@@ -59,7 +59,9 @@ def ScriptExpand(context: Context, script) -> str:
 def ScriptInputs(context: Context, script) -> dict:
 	"""Discover declared/implicit inputs and transitive references without shell effects."""
 	names, references, unresolved, visited = set(), set(), [], set()
-	def visit(loaded, depth=0):
+	def visit(loaded, depth=0, stack=()):
+		if str(loaded.path) in stack:
+			raise AutoError(f"Recursive transclusion: {loaded.path}")
 		if str(loaded.path) in visited:
 			return
 		if depth >= context.maxDepth:
@@ -69,11 +71,13 @@ def ScriptInputs(context: Context, script) -> dict:
 		names.update(loaded.meta.get("inputs", {}))
 		names.update(loaded.meta.get("each", {}) if depth == 0 else {})
 		names.update(name for name in renderer.template.global_variable_paths(include_partials=False) if not name.startswith(("params", "run", "plan", "forloop")))
-		values = list(loaded.meta.get("inputs", {}).values())
+		values = list(loaded.meta.get("inputs", {}).values()) + list(loaded.meta.get("params", {}).values())
 		values += list(loaded.meta.get("output", {}).values())
+		transclusions = set()
 		for kind, argument, inline in renderer.items:
 			if kind == "file":
-				values.append(argument.strip('"'))
+				transclusions.add(argument.strip('"'))
+		values += list(transclusions)
 		for value in values:
 			if not isReference(value):
 				continue
@@ -82,12 +86,12 @@ def ScriptInputs(context: Context, script) -> dict:
 				continue
 			references.add(value)
 			# Task outputs may not exist yet; graph validation checks their identity.
-			if value.startswith(("task:", "run:", "plan:", "gap:", "decision:")):
+			if value.startswith("task:"):
 				continue
 			content = Resolve(context, value, loaded.path.parent)
-			if content.path.suffix == ".md":
+			if value in transclusions and content.path.suffix == ".md":
 				meta, body = document(content.text)
-				visit(Script(body, content.path, meta), depth + 1)
+				visit(Script(body, content.path, meta), depth + 1, (*stack, str(loaded.path)))
 	visit(loadScript(context, script))
 	return {"inputs": sorted(names), "references": sorted(references), "unresolved": unresolved}
 

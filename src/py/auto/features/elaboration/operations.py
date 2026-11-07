@@ -75,8 +75,8 @@ def proposed(context, elaboration):
 	planBudget = budgetValue(tasks["root"].meta.get("budget"))
 	parentBudget = budgetValue(tasks[target].meta.get("budget"))
 	runs = RunList(context)
-	for key, maximum in planBudget.items():
-		remaining = min(maximum - sum(run["usage"].get(key, 0) for run in runs), parentBudget.get(key, maximum))
+	for key in planBudget.keys() | parentBudget.keys():
+		remaining = min(planBudget.get(key, float("inf")) - sum(run["usage"].get(key, 0) for run in runs), parentBudget.get(key, float("inf")))
 		retained = [task for task in tasks.values() if task.id != "root" and task.meta.get("parent", "root") == target and task not in new]
 		remaining -= sum(max(0, budgetValue(task.meta.get("budget")).get(key, 0) - sum(run["usage"].get(key, 0) for run in runs if run["task"] == task.id)) for task in retained)
 		explicit = sum(budgetValue(task.meta.get("budget")).get(key, 0) for task in new)
@@ -117,8 +117,8 @@ def ElaborationValidate(context, plan, elaboration) -> list:
 		usage = {key: sum(run["usage"].get(key, 0) for run in RunList(context)) for key in limits}
 		parent = tasks[elaboration["task"]]
 		parentBudget = budgetValue(parent.meta.get("budget"))
-		for key, maximum in limits.items():
-			available = min(maximum - usage[key], parentBudget.get(key, maximum))
+		for key in limits.keys() | parentBudget.keys():
+			available = min(limits.get(key, float("inf")) - usage.get(key, 0), parentBudget.get(key, float("inf")))
 			allocated = sum(budgetValue(effectiveTask(context, task).meta.get("budget")).get(key, 0) for task in new)
 			retained = [task for task in tasks.values() if task.id != "root" and task.meta.get("parent", "root") == elaboration["task"] and task not in new]
 			allocated += sum(max(0, budgetValue(task.meta.get("budget")).get(key, 0) - sum(run["usage"].get(key, 0) for run in RunList(context) if run["task"] == task.id)) for task in retained)
@@ -201,6 +201,11 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 	remaining = {key: max(0, amount - planData["usage"].get(key, 0)) for key, amount in budgetValue(planData.get("budget")).items()}
 	for key, amount in budgetValue(definition.meta.get("budget")).items():
 		remaining[key] = min(remaining.get(key, amount), amount)
+	elaboratorBudget = budgetValue(effectiveTask(context, elaborator).meta.get("budget"))
+	for key, amount in remaining.items():
+		elaboratorBudget[key] = min(elaboratorBudget.get(key, amount), amount)
+	if elaboratorBudget:
+		elaborator.meta["budget"] = elaboratorBudget
 	from auto.features.plan.operations import PlanStatus
 	from auto.features.plan.references import latestRun
 	state = {"task": task, "plan": planData, "status": PlanStatus(context), "reason": reason,

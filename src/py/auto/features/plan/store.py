@@ -73,7 +73,28 @@ def recover(context, path: Path) -> None:
 		from auto.runtime.operations import Knowledge
 		store = Knowledge(context)
 		for record in pending["records"]:
-			store.write(record["kind"], record["value"], record.get("expected", ""))
+			for attempt in range(3):
+				value, expected = record["value"], record.get("expected", "")
+				if expected and record.get("base"):
+					current = store.get(value["identity"])
+					if current["digest"] != expected:
+						base = record["base"]
+						missing = object()
+						keys = (base.keys() | value.keys()) - {"digest"}
+						changed = {key for key in keys if base.get(key, missing) != value.get(key, missing)}
+						if any(current.get(key, missing) != base.get(key, missing) and current.get(key, missing) != value.get(key, missing) for key in changed):
+							raise AutoError("Conflicting Memo update requires reconciliation", "system")
+						removed = changed - value.keys()
+						value = {**current, **{key: value[key] for key in changed if key in value}}
+						for key in removed:
+							value.pop(key, None)
+						expected = current["digest"]
+				try:
+					store.write(record["kind"], value, expected)
+					break
+				except AutoError:
+					if not expected or attempt == 2 or store.get(value["identity"])["digest"] == expected:
+						raise
 	for name, content in pending["writes"].items():
 		file = path / name
 		if not file.resolve().is_relative_to(path):

@@ -60,4 +60,18 @@ class TaskTests(unittest.TestCase):
 		self.assertEqual(len(violations), 1)
 		self.assertIn("Process", violations[0]["message"])
 
+	def testValidationRejectsUnresolvableContracts(self):
+		context = self.context()
+		base = {"id": "invalid", "title": "Invalid", "sections": {"Process": "Work"}}
+		for fields in ({"inputs": {"x": "plan:missing"}}, {"inputs": {"x": "run:missing"}},
+			{"params": {"x": "./missing"}}, {"output": {"format": "bogus"}}, {"engine": "missing"}):
+			with self.subTest(fields=fields):
+				self.assertTrue(TaskValidate(context, {**base, **fields}))
+		cycle = self.root / "cycle.md"
+		cycle.write_text("@./cycle.md")
+		self.assertTrue(TaskValidate(context, {**base, "sections": {"Process": "@" + str(cycle)}}))
+		data = self.root / "data.md"
+		data.write_text("---\ninputs: [not, script, metadata]\n---\nData")
+		self.assertEqual(TaskValidate(context, {**base, "inputs": {"x": str(data)}}), [])
+
 # EOF
