@@ -90,7 +90,7 @@ class Renderer:
 				self.defaults["output"][key] = str((script.path.parent / value).resolve())
 		if isinstance(self.defaults.get("cwd"), str) and not Path(self.defaults["cwd"]).is_absolute():
 			self.defaults["cwd"] = str((script.path.parent / self.defaults["cwd"]).resolve())
-		self.config = merge({"isolated": True}, context.defaults, self.defaults, context.config)
+		self.config = merge({"isolated": False}, context.defaults, self.defaults, context.config)
 		validateConfig(self.config)
 		if "cwd" in self.config:
 			path = Path(self.config["cwd"])
@@ -154,7 +154,7 @@ class Renderer:
 		# A transcluded script supplies otherwise unset execution/output settings.
 		keys = {"engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated", "output"}
 		self.defaults = merge({key: value for key, value in child.defaults.items() if key in keys}, self.defaults)
-		self.config = merge({"isolated": True}, self.context.defaults, self.defaults, self.context.config)
+		self.config = merge({"isolated": False}, self.context.defaults, self.defaults, self.context.config)
 		return result
 
 	def shellArgument(self, source: str, namespace: dict) -> str:

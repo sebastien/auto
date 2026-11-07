@@ -145,7 +145,7 @@ depends on its source:
 | `temperature` | config | number | Generation settings, where supported |
 | `cwd`, `env.*` | config | string | Working directory and environment overrides |
 | `prompt` | config | string | Replace system instructions |
-| `isolated` | config | boolean | Isolate ambient context where supported; default `true` |
+| `isolated` | config | boolean | Isolate ambient context where supported; default `false` |
 | `inputs.*` | input | Value | Input data |
 | `params.*` | param | Value | Behaviour parameters |
 | `output.format` | output | string | Output format; default `markdown` |

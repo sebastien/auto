@@ -79,7 +79,7 @@ def main(argv=None) -> int:
 			for key in ("engine", "isolated"):
 				if key not in context.defaults and key not in context.config:
 					sources[("runtime", key)] = "built-in"
-			settings = merge({"engine": "pi", "isolated": True}, context.defaults, context.config)
+			settings = merge({"engine": "pi", "isolated": False}, context.defaults, context.config)
 			runtime = {key: settings.pop(key) for key in RUNTIME_SETTINGS if key in settings}
 			showConfig({**settings, "runtime": runtime}, sources)
 			return 0

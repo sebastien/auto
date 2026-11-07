@@ -21,7 +21,7 @@ class Pi:
 		if "temperature" in config:
 			yield {"type": "ScriptMeta", "name": "warning", "value": "Pi CLI does not expose temperature; ignoring temperature setting"}
 		args = ["pi", "--mode", "json", "--no-session"]
-		if config.get("isolated", True):
+		if config.get("isolated", False):
 			args += ["--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-mcp", "--no-approve"]
 		if config.get("model"):
 			args += ["--model", config["model"]]

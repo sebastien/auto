@@ -31,7 +31,7 @@ class OpenCode:
 
 	def start(self, context, request):
 		config = request["config"]
-		if config.get("isolated", True):
+		if config.get("isolated", False):
 			raise AutoError("OpenCode API cannot guarantee ambient-context isolation; use isolated: false or an isolating engine")
 		if "prompt" in config:
 			raise AutoError("OpenCode session API does not expose system prompt overrides")

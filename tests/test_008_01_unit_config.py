@@ -141,7 +141,7 @@ class ConfigTests(unittest.TestCase):
 			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "config", "--model", "flag"], cwd=project, env=environ, text=True, capture_output=True)
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn('runtime.engine = "pi" # source=built-in', result.stdout)
-			self.assertIn('runtime.isolated = true # source=built-in', result.stdout)
+			self.assertIn('runtime.isolated = false # source=built-in', result.stdout)
 			self.assertNotIn('isololated', result.stdout)
 			self.assertIn('runtime.model = "flag" # source=--model', result.stdout)
 			self.assertIn(f'runtime.provider = "openai" # source={project / ".auto/config.toml"}', result.stdout)

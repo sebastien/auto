@@ -37,11 +37,15 @@ class EngineTests(unittest.TestCase):
 				{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}], "usage": {"totalTokens": 4, "cost": {"total": .01}}, "stopReason": "stop"}},
 				{"type": "agent_settled", "aborted": False},
 			]
-			pi.write_text("#!/usr/bin/env python3\nimport sys\nsys.stdin.read()\nprint(" + repr("\n".join(json.dumps(event) for event in events)) + ")\n")
+			pi.write_text("#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\nPath('args').write_text('\\n'.join(sys.argv[1:]))\nsys.stdin.read()\nprint(" + repr("\n".join(json.dumps(event) for event in events)) + ")\n")
 			pi.chmod(0o755)
 			ctx = Context(project=root, config={"engine": "pi"}, limits=Limits({"tokens": 10}), environ={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]})
 			result = list(ScriptStart(ctx, Script("Hello", root / "hello.md")))[-1]
 			self.assertEqual(result["status"], "Succeeded")
+			self.assertNotIn("--no-context-files", (root / "args").read_text())
+			result = list(ScriptStart(ctx.derive(limits=Limits({})), Script("Hello", root / "hello.md", {"isolated": True})))[-1]
+			self.assertEqual(result["status"], "Succeeded")
+			self.assertIn("--no-context-files", (root / "args").read_text())
 			self.assertEqual(ctx.limits.usage["tokens"], 4)
 			for temperature in (0, .1):
 				with self.subTest(temperature=temperature):
@@ -68,7 +72,7 @@ class EngineTests(unittest.TestCase):
 					return {"data": [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": "Done"}]}, {"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
 				return {}
 		engine = Stub()
-		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode", "isolated": False}, question=lambda event: {"answer": "yes"})
+		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode"}, question=lambda event: {"answer": "yes"})
 		result = list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]
 		self.assertEqual(result["output"], "Done")
 		prompt = next(data for method, path, data in engine.calls if path.endswith("/prompt"))

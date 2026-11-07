@@ -38,8 +38,8 @@ the pinned subject digest before acceptance.
 
 | Engine | Behaviour |
 | --- | --- |
-| Pi | Default; isolated JSONL execution, tools and reported token/cost usage. Named agents and temperature overrides are rejected. |
-| OpenCode V2 | Authenticated `opencode api` transport; durable sessions and forms. Requires `isolated: false`; isolation, system-prompt and temperature overrides cannot be provided by this transport. |
+| Pi | Default; JSONL execution, optional ambient-context isolation, tools and reported token/cost usage. Named agents are rejected; temperature overrides are ignored with a warning. |
+| OpenCode V2 | Authenticated `opencode api` transport; durable sessions and forms. Isolation and system-prompt overrides cannot be provided by this transport; temperature overrides are ignored with a warning. |
 | LLM CLI | Ephemeral text execution. Named agents and token/cost budgets are rejected because the adapter lacks live usage reporting. |
 
 Usage limits are checked when the engine reports usage; they cannot guarantee
