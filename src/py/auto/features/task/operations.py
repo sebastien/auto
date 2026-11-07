@@ -93,6 +93,10 @@ def TaskValidate(context, task, graph: bool = True, aggregate: bool = False) -> 
 	try:
 		task = effectiveTask(context, resolveTask(context, task))
 		identifier(task.id)
+		from auto.features.plan.policy import EFFECT
+		effects = task.meta.get("effects", [])
+		if not isinstance(effects, list) or any(not isinstance(effect, str) or not EFFECT.fullmatch(effect) for effect in effects):
+			raise AutoError("effects must be a list of dotted effect names")
 		budgetValue(task.meta.get("budget"))
 		if task.meta.get("output", {}).get("format", "markdown") not in {"markdown", "text", "json"}:
 			raise AutoError("Unsupported output format")
@@ -272,6 +276,16 @@ def applyEffects(context, task) -> dict:
 
 
 def _drive(context, path, run, state, request, answer=None):
+	from auto.features.plan.policy import PolicyResolve, runtimeRule, taskPolicyBlocked
+	taskId = run["task"] if run["task"] != "elaborator" else state.get("target", "root")
+	definition = TaskGet(context, taskId)
+	request["policy"] = PolicyResolve(context, context.plan, taskId)
+	if run["task"] == "elaborator":
+		definition = taskFromDict({**state["task"], "id": "elaborator", "effects": []}, Path(state["task"]["path"]))
+		base = "auto:" + Plan.read(context.plan).id
+		request["policy"]["grants"] = [grant for grant in request["policy"]["grants"] if grant["scope"] == base]
+	request["policy"]["effects"] = definition.meta.get("effects", [])
+	request["policy"]["blocked"] = taskPolicyBlocked(context, definition)
 	state["request"] = request
 	run["runtime"].update({key: request["config"][key] for key in ("engine", "model") if key in request["config"]})
 	saveRun(path, run, state)
@@ -280,7 +294,8 @@ def _drive(context, path, run, state, request, answer=None):
 		while True:
 			event = stream.send(answer)
 			answer = None
-			emit(path, event)
+			if event["type"] != "PolicyRequest":
+				emit(path, event)
 			if context.observe:
 				observed = {**event, "value": dict(context.limits.usage)} if event.get("type") == "ScriptMeta" and event.get("name") == "usage" else event
 				context.observe(observed)
@@ -289,6 +304,32 @@ def _drive(context, path, run, state, request, answer=None):
 				run["runtime"]["session"] = event["value"]
 			if event["type"] == "ScriptMeta" and event["name"] == "runtime":
 				run["runtime"].update(event["value"])
+			if event["type"] == "PolicyRequest":
+				effect, action = event.get("effect"), event.get("action")
+				if not isinstance(action, str) or not action:
+					raise AutoError("Runtime policy request requires an action")
+				rule, covered = runtimeRule(context, definition, effect)
+				if covered:
+					answer = True
+					continue
+				if run["task"] == "elaborator":
+					emit(path, {"type": "PolicyDenied", "effect": effect, "action": action})
+					answer = False
+					continue
+				from auto.features.plan.gaps import GapRaise
+				base = "auto:" + Plan.read(context.plan).id
+				ref = f"{base}/task/{taskId}/definition"
+				pin = Resolve(context, ref)
+				question = f"{rule.capitalize()} {effect} for action: {action}?"
+				policyRequest = {"effect": effect, "action": action, "rule": rule, "scope": f"{base}/task/{taskId}"}
+				gap = GapRaise(context, context.plan, {"kind": "approval" if rule == "confirm" else "decision", "question": question, "needed_by": [taskId], "effects": [effect], "subjects": [{"ref": ref, "digest": pin.digest}], "runtime_policy": policyRequest, "raised_by": run["id"]})
+				run.update(status=RunStatus.WAITING, gap=gap, question={"type": "PolicyRequest", "content": question, **policyRequest})
+				state["question"] = run["question"]
+				context.variables["_detach"] = True
+				emit(path, {"type": "PolicyRequested", "effect": effect, "action": action})
+				emit(path, {"type": "GapRaised", "gap": gap})
+				saveRun(path, run, state)
+				return None, True
 			if event["type"] == "ScriptQuestion":
 				from auto.features.plan.gaps import GapRaise
 				gap = GapRaise(context, context.plan, {"kind": "information", "question": event["content"], "needed_by": [run["task"] if run["task"] != "elaborator" else state.get("target", "root")], "raised_by": run["id"]})
@@ -315,6 +356,8 @@ def _continue(context, path, run, state, answer=UNSET):
 	variables = {"plan": Plan.read(context.plan).id, "run": {"id": run["id"], "output": str(path / run.get("outputFile", "output.txt"))}}
 	context = context.derive(config=state["config"], defaults=state.get("defaults", {}), inputs=state["inputs"], params=state.get("params", {}), variables=variables,
 		limits=limits, evidence=run["inputs"], cancelled=lambda: (path / "cancel").exists())
+	from auto.features.plan.policy import shellPermitted
+	context = context.derive(allowShell=context.allowShell and shellPermitted(context, task))
 	if context.observe:
 		context.observe({"type": "RunStarted", "task": run["task"], "budget": run["budget"], "usage": run["usage"]})
 	run["status"] = RunStatus.RUNNING
@@ -395,6 +438,8 @@ def _continue(context, path, run, state, answer=UNSET):
 				GapRaise(context, context.plan, {"kind": "approval", "question": f"Approve output of {task.id}?", "needed_by": needed,
 					"subjects": [{"ref": content.ref, "digest": content.digest}], "raised_by": run["id"]})
 	except (AutoError, KeyboardInterrupt) as error:
+		if "_policyDeniedAction" in context.variables:
+			emit(path, {"type": "PolicyDenied", "effect": "shell.run", "action": context.variables.pop("_policyDeniedAction")})
 		kind = error.kind if isinstance(error, AutoError) else FailureKind.CANCELLED
 		run["status"] = statusFor(kind)
 		run["failure"] = {"kind": failureFor(kind), "reason": str(error)}
@@ -440,9 +485,13 @@ def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: b
 		run = Run(id=path.name, task=task.id, status=RunStatus.PENDING, started=timestamp(),
 			runtime={"engine": context.config.get("engine", task.meta.get("engine", context.defaults.get("engine", "pi"))), "provider": context.config.get("provider", task.meta.get("provider", context.defaults.get("provider"))), "model": context.config.get("model", task.meta.get("model", context.defaults.get("model")))},
 			budget=budget, usage={"tokens": 0, "cost": 0, "time": 0}, inputs=context.evidence).asDict()
-		blocked = not metaTask and (not TaskReady(context, task) or any(task.id in gap["needed_by"] for gap in GapList(context, plan, {"status": "Open"})))
+		from auto.features.plan.policy import taskPolicyBlocked
+		policyBlocked = taskPolicyBlocked(context, task) if not metaTask else {}
+		blocked = not metaTask and (bool(policyBlocked) or not TaskReady(context, task) or any(task.id in gap["needed_by"] for gap in GapList(context, plan, {"status": "Open"})))
 		if blocked:
 			run.update(status=RunStatus.BLOCKED, ended=timestamp())
+			if policyBlocked:
+				run["failure"] = {"kind": FailureKind.INPUT, "reason": f"Policy authorization required: {policyBlocked}"}
 			saveRun(path, run)
 			return run
 		from auto.features.plan.operations import tasksAt
@@ -470,6 +519,25 @@ def resumeGap(context, gap, answer):
 			with locked(path):
 				run = RunGet(context, run)
 				if run["status"] == RunStatus.WAITING:
+					from auto.runtime.operations import Knowledge
+					from auto.features.plan.gaps import planRef
+					value = Knowledge(context).get(f"{planRef(context.plan)}/gap/{gap}")
+					policy = value.get("runtime_policy")
+					if policy:
+						decision = Knowledge(context).get(f"{planRef(context.plan)}/decision/{value['decision']}")
+						answer = decision.get("answer")
+						approved = decision.get("author") == "human" and (answer is True or isinstance(answer, str) and answer.lower() in {"approve", "approved", "yes"}) if policy["rule"] == "confirm" else decision.get("author") == "human" and answer == {"grant": policy["effect"], "scope": policy["scope"]}
+						from auto.features.plan.policy import runtimeRule
+						from auto.features.plan.store import journal
+						currentRule, _ = runtimeRule(context, TaskGet(context, value["needed_by"][0]), policy["effect"])
+						grant = any(op.get("op") == "grant" and op.get("source") == decision["identity"] and op.get("effect") == policy["effect"] and op.get("scope") == policy["scope"] for row in journal(context.plan) for op in row["operations"])
+						try:
+							pinned = all(Resolve(context, pin["ref"]).digest == pin["digest"] for pin in value.get("subjects", []))
+						except AutoError:
+							pinned = False
+						answer = bool(approved and pinned and (currentRule != "deny" or grant))
+						if not answer:
+							emit(path, {"type": "PolicyDenied", "effect": policy["effect"], "action": policy["action"]})
 					emit(path, {"type": "GapResolved", "gap": gap})
 					state = readJson(path / "state.json")
 					return _continue(context, path, run, state, answer)

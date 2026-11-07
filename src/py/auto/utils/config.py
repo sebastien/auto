@@ -12,7 +12,7 @@ from auto.utils.data import AutoError, merge, yamlLoad
 RUNTIME_SETTINGS = {"engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated"}
 
 
-def loadConfig(project: Path, sources: dict | None = None) -> dict:
+def loadConfig(project: Path, sources: dict | None = None, policyLayers: list | None = None) -> dict:
 	"""Merge home, XDG and project configuration, preferring TOML at each location."""
 	xdg = os.environ.get("XDG_CONFIG_HOME")
 	configHome = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
@@ -41,6 +41,8 @@ def loadConfig(project: Path, sources: dict | None = None) -> dict:
 				raise AutoError(f"{file}: unknown runtime settings: {', '.join(sorted(unknown))}")
 			if sources is not None:
 				updateSources(result, value, sources, str(file))
+			if policyLayers is not None and "policy" in value:
+				policyLayers.append((str(file), value["policy"]))
 			result = merge(result, value)
 	return result
 

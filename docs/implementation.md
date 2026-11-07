@@ -34,6 +34,12 @@ child runs require a new aggregate attempt. Changed input content is reported
 as stale; it does not rewrite historical success. Approval decisions verify
 the pinned subject digest before acceptance.
 
+`auto plan create 'Write notes and commit them' --effects '[vcs.commit]'`
+records the human's explicit effect request against the root definition. The
+grant stops applying if that definition changes. Free-form goal text is not
+automatically classified as an authorization: ambiguous language must not
+silently grant a consequential effect.
+
 ## Engine capabilities
 
 | Engine | Behaviour |
@@ -46,6 +52,22 @@ Usage limits are checked when the engine reports usage; they cannot guarantee
 that a provider stops before an in-flight generation exceeds a limit. Time
 limits and cancellation terminate subprocess groups; OpenCode also receives
 a server-side interrupt.
+
+An engine that enforces policy declares exact effect names in its optional
+`enforceableEffects` collection and receives the resolved rules, grants,
+declared effects and blocked effects in `request["policy"]`. It may yield a
+`PolicyRequest` event with `effect` and `action` before performing an action.
+It must wait for the boolean response, and on a detached run read the response
+from `request["answer"]` when restarted. Unknown effects default to `confirm`.
+Denied effects need a human decision whose answer is
+`{"grant": "effect.name", "scope": "auto:plan/task/id"}`; a plain approval is
+not a grant. OpenCode sessions ask Auto about tool permissions and disallow
+subagents, whose independent rules cannot inherit the session policy. OpenCode
+still claims no fully enforced effects: its shell and extensible tools can have
+consequences that cannot be inferred reliably from their permission action.
+Pi and LLM CLI do not implement this contract. Auto's own shell boundary
+separately blocks restricted shell commands; it does not constrain shell
+tools launched by an engine.
 
 ## Scope and verification
 

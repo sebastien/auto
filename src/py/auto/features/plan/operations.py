@@ -155,24 +155,28 @@ def PlanReady(context, plan=None) -> list:
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	from auto.features.plan.gaps import GapList
+	from auto.features.plan.policy import taskPolicyBlocked
 	gaps = GapList(context, path, {"status": "Open"})
-	graph = dependencyGraph(context, tasksAt(path))
-	return [id for id, deps in graph.items() if not any(id in gap["needed_by"] for gap in gaps) and all(latestRun(path, dep, True) for dep in deps) and (latestRun(path, id) or {}).get("status") not in {RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)]
+	tasks = tasksAt(path)
+	graph = dependencyGraph(context, tasks)
+	return [id for id, deps in graph.items() if not taskPolicyBlocked(context, tasks[id]) and not any(id in gap["needed_by"] for gap in gaps) and all(latestRun(path, dep, True) for dep in deps) and (latestRun(path, id) or {}).get("status") not in {RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)]
 
 
 def PlanStatus(context, plan=None) -> dict:
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	from auto.features.plan.gaps import GapList
+	from auto.features.plan.policy import PolicyResolve, taskPolicyBlocked
 	from auto.features.task.operations import RunList
 	meta = Plan.read(path).meta
 	tasks, runs = tasksAt(path), RunList(context)
 	graph = dependencyGraph(context, tasks)
 	gaps = GapList(context, path, {"status": "Open"})
-	states = {}
+	states, policyTasks = {}, {}
 	for id in tasks:
 		run = latestRun(path, id)
-		states[id] = "Open" if any(id in gap["needed_by"] for gap in gaps) else RunStatus.BLOCKED if any(not latestRun(path, dep, True) for dep in graph[id]) else run["status"] if run else "Ready"
+		policyTasks[id] = {"effects": tasks[id].meta.get("effects", []), "blocked": taskPolicyBlocked(context, tasks[id])}
+		states[id] = "Open" if any(id in gap["needed_by"] for gap in gaps) else RunStatus.BLOCKED if policyTasks[id]["blocked"] or any(not latestRun(path, dep, True) for dep in graph[id]) else run["status"] if run else "Ready"
 		if states[id] == RunStatus.SUCCEEDED and not latestRun(path, id, True):
 			states[id] = "Ready"
 	usage = {key: sum(run["usage"].get(key, 0) for run in runs) for key in ("tokens", "cost", "time")}
@@ -198,7 +202,9 @@ def PlanStatus(context, plan=None) -> dict:
 			staleRuns.append({"run": run["id"], "inputs": changed})
 	abandoned = any(op["op"] == "abandon" for row in journal(path) for op in row["operations"])
 	status = "Abandoned" if abandoned else "Succeeded" if states.get("root") == RunStatus.SUCCEEDED else "Failed" if states.get("root") in {RunStatus.FAILED, RunStatus.TIMED_OUT} else "Active" if any(run["task"] in tasks for run in runs) else "Draft"
-	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "budget": meta.get("budget", {}), "usage": usage,
+	policy = PolicyResolve(context, path)
+	policy["tasks"] = policyTasks
+	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage,
 		"failures": [run["id"] for run in runs if run.get("failure")], "stale": stale, "staleRuns": staleRuns, "revision": (journal(path) or [{}])[-1].get("id")}
 
 

@@ -92,6 +92,36 @@ class EngineTests(unittest.TestCase):
 		stream.close()
 		self.assertTrue(engine.calls[-1][1].endswith("/interrupt"))
 
+	def testOpenCodePolicyPermissionAndResume(self):
+		class Stub(OpenCode):
+			def __init__(self):
+				self.calls = []
+				self.replied = False
+			def api(self, context, method, path, data=None, config=None):
+				self.calls.append((method, path, data))
+				if "/permission/" in path and path.endswith("/reply"):
+					self.replied = True
+				if path.endswith("/permission"):
+					return {"data": [] if self.replied else [{"id": "per1", "action": "edit", "resources": ["a.txt"]}]}
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					return {"data": [{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		engine = Stub()
+		context = Context(variables={"_detach": True})
+		request = {"config": {}, "prompt": "Work", "policy": {}}
+		stream = engine.start(context, request)
+		self.assertEqual(next(stream)["type"], "ScriptMeta")
+		self.assertEqual(next(stream), {"type": "PolicyRequest", "effect": "repo.write", "action": "edit: a.txt"})
+		stream.close()
+		create = next(data for method, path, data in engine.calls if path == "/api/session")
+		self.assertEqual(create["permissions"][0]["effect"], "ask")
+		self.assertEqual(create["permissions"][-1]["action"], "subagent")
+		request["answer"] = True
+		self.assertEqual(list(engine.start(context, request))[-1]["status"], "Succeeded")
+		self.assertTrue(any(path.endswith("/permission/per1/reply") and data == {"decision": "once"} for _, path, data in engine.calls))
+
 	def testUnsupportedExecutionSettingsStillFail(self):
 		for config, reason in (
 			({"engine": "pi", "agent": "custom", "temperature": .1}, "named agents"),

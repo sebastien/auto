@@ -23,7 +23,7 @@ def GapList(context, plan=None, filter: dict | None = None) -> list:
 	return [gap for gap in result if all((value in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
 
 
-def prepareGap(context, path, gap: dict, revision: str) -> dict:
+def prepareGap(context, path, gap: dict, revision: str, staged: dict | None = None) -> dict:
 	id = identity()
 	kind = gap.get("kind", gap.get("gap_kind", "information"))
 	if kind not in {"input", "information", "decision", "approval"} or not gap.get("question") or not gap.get("needed_by"):
@@ -31,7 +31,8 @@ def prepareGap(context, path, gap: dict, revision: str) -> dict:
 	if kind == "approval" and not gap.get("subjects"):
 		raise AutoError("Approval requires pinned subjects")
 	for subject in gap.get("subjects", []):
-		if Resolve(context, subject["ref"]).digest != subject["digest"]:
+		expected = (staged or {}).get(subject["ref"])
+		if (expected if expected is not None else Resolve(context, subject["ref"]).digest) != subject["digest"]:
 			raise AutoError("Approval subject has changed")
 	return Gap(id=id, identity=f"{planRef(path)}/gap/{id}", plan=planRef(path), kind=kind, question=gap["question"],
 		neededBy=list(gap["needed_by"]), revision=revision, raisedBy=gap.get("raised_by", context.author),
@@ -108,6 +109,8 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 		value = store.get(f"{planRef(path)}/gap/{gap}")
 		if value["status"] != "Open":
 			raise AutoError("Gap is not open")
+		if value.get("runtime_policy") and context.author != "human":
+			raise AutoError("Runtime policy requests require a human decision")
 		for pin in value.get("subjects", []):
 			if Resolve(context, pin["ref"]).digest != pin["digest"]:
 				raise AutoError("Pinned subject changed; raise a new approval gap")
@@ -115,7 +118,11 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=gap, answer=answer,
 			rationale=rationale, author=context.author, date=timestamp(), revision=revision).asDict()
 		updated = {**value, "status": "Resolved", "decision": id, "resolved_revision": revision}
-		commit(context, path, [{"op": "resolve", "gap": gap, "decision": id}], revision=revision, reason=rationale,
+		operations = [{"op": "resolve", "gap": gap, "decision": id}]
+		request = value.get("runtime_policy")
+		if request and request["rule"] == "deny" and answer == {"grant": request["effect"], "scope": request["scope"]}:
+			operations.append({"op": "grant", "effect": request["effect"], "scope": request["scope"], "source": decision["identity"]})
+		commit(context, path, operations, revision=revision, reason=rationale,
 			records=[{"kind": "decision", "value": decision}, {"kind": "gap", "value": updated, "expected": value["digest"], "base": value}])
 	# Resume only after leaving the commit lock; model checks can call Auto themselves.
 	from auto.features.task.operations import resumeGap, runDirectory

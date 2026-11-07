@@ -91,6 +91,7 @@ def Resolve(context: Context, ref: str, base: Path | None = None) -> Content:
 def Shell(context: Context, command: str, config: dict | None = None, stdin: str = "") -> tuple[str, str, int]:
 	"""Run `command` through the shell unless policy disables effects."""
 	if not context.allowShell:
+		context.variables["_policyDeniedAction"] = command
 		raise AutoError("Shell execution is disabled by runtime policy")
 	from auto.integration.process import capture
 	return capture(context.process, ["/bin/sh", "-c", command], config or {}, stdin)

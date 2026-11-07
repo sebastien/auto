@@ -7,10 +7,10 @@ from typing import Iterator, Protocol, runtime_checkable
 
 @runtime_checkable
 class EngineIntegration(Protocol):
-	"""Minimal contract of an agent execution backend."""
+	"""Engine backend. Optional `enforceableEffects` declares exact effect names."""
 
 	def start(self, context, request: dict) -> Iterator[dict]:
-		"""Stream script events for `request` until a terminal event."""
+		"""Stream events; a PolicyRequest accepts a boolean, also in request['answer'] on resume."""
 		...
 
 

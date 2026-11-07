@@ -12,6 +12,7 @@ inputs:
   goal: ""
   state: ""
   budget: ""
+  policy: ""
   context: []
   methodology: ""
   catalogue: "!auto catalogue list --format markdown"
@@ -87,6 +88,17 @@ of the task it affects.
 ### Budget
 
 {% if budget != blank %}{{ budget }}{% else %}No budget was given.{% endif %}
+
+### Policy
+
+{{ policy }}
+
+Declare each task's expected effects. Do not plan around denied effects;
+request a human decision for a grant. Effects requiring confirmation need an
+approval checkpoint pinned to the task definition. Each policy gap must list
+its effects in `effects`, name the affected task in `needed_by`, and mention
+each effect and its rule (`confirm` or `deny`) in its question. For an approval,
+include `subjects: ["task:ID/definition"]`; Auto pins the proposed definition.
 
 @./elaborate.instructions.md
 

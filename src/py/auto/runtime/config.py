@@ -40,7 +40,9 @@ def validateConfig(value: dict) -> None:
 def contextFor(directory: Path | None = None, plan: str | None = None, sources: dict | None = None, **overrides) -> Context:
 	cwd = (directory or Path.cwd()).resolve()
 	project = next((p for p in (cwd, *cwd.parents) if (p / ".auto").is_dir() or (p / ".git").exists()), cwd)
-	config = loadConfig(project, sources)
+	policyLayers = []
+	config = loadConfig(project, sources, policyLayers)
+	config["_policyLayers"] = policyLayers
 	runtime = config.pop("runtime", {})
 	validateConfig(runtime)
 	config.update(runtime)

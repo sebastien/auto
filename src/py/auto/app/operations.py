@@ -43,6 +43,8 @@ class Exposure:
 			properties["filter"] = {"type": "object"}
 		if "budget" in properties:
 			properties["budget"] = {"anyOf": [{"type": "string"}, {"type": "object"}]}
+		if "effects" in properties:
+			properties["effects"] = {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
 		if "since" in properties:
 			properties["since"] = {"type": "integer"}
 		if "answer" in properties:
@@ -63,13 +65,15 @@ class Exposure:
 EXPOSURES = [
 	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone", True, "script", True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script"),
-	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget",)),
+	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects")),
 	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",)),
 	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", True),
 	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand"),
 	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",)),
 	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", True, optional=("filter",)),
 	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision"),
+	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", optional=("task",)),
+	Exposure("PolicyGrant", "plan.policy", ("effect", "scope", "decision"), "Grant an effect from a human decision"),
 	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", True, optional=("kind", "query")),
 	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", True),
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it", True, "elaboration"),
@@ -79,7 +83,7 @@ EXPOSURES = [
 def coerceArguments(exposure: Exposure, arguments: dict, context=None) -> dict:
 	"""Apply interface-neutral coercions before calling an operation."""
 	result = dict(arguments)
-	for name in ("budget", "filter"):
+	for name in ("budget", "filter", "effects"):
 		if name in result and isinstance(result[name], str):
 			result[name] = yamlLoad(result[name])
 	if "since" in result and isinstance(result["since"], str):
@@ -92,7 +96,7 @@ def coerceArguments(exposure: Exposure, arguments: dict, context=None) -> dict:
 	if context is not None:
 		if exposure.name == "PlanCreate" and context.inputs:
 			result["inputs"] = context.inputs
-		if exposure.name in {"PlanRefine", "ElaborationValidate"}:
+		if exposure.name in {"PlanRefine", "ElaborationValidate", "PolicyGrant"}:
 			result["plan"] = context.plan
 	return result
 

@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from pathlib import Path
 from uuid import uuid4
 
 from auto.integration.process import capture
 from auto.utils.data import AutoError, jsonText
+
+
+def permissionEffect(action, resources, project, cwd):
+	"""Map known tool actions; unknown plugin actions require confirmation."""
+	known = {"read": "repo.read", "glob": "repo.read", "grep": "repo.read", "edit": "repo.write", "shell": "shell.run", "webfetch": "net.read", "websearch": "net.read"}
+	if action in {"read", "edit"} and any(not (Path(cwd) / resource).resolve().is_relative_to(Path(project).resolve()) for resource in resources):
+		return "engine.external-" + action
+	return known.get(action, "engine.tool-" + (re.sub(r"[^a-z0-9_-]+", "-", action.lower()).strip("-") or "unknown"))
 
 
 class OpenCode:
@@ -42,6 +52,9 @@ class OpenCode:
 			if not request.get("session"):
 				request["session"] = "ses" + uuid4().hex
 				payload = {"id": request["session"], "location": {"directory": str(config.get("cwd", context.project))}}
+				if "policy" in request:
+					# Subagents use independent rules and cannot inherit this session's policy.
+					payload["permissions"] = [{"action": "*", "resource": "*", "effect": "ask"}, {"action": "question", "resource": "*", "effect": "allow"}, {"action": "subagent", "resource": "*", "effect": "deny"}]
 				if config.get("agent"):
 					payload["agent"] = config["agent"]
 				if config.get("provider") or config.get("model"):
@@ -60,7 +73,10 @@ class OpenCode:
 				self.api(context, "post", f"/api/session/{request['session']}/prompt", {"id": request["message"], "text": request["prompt"]}, config)
 			base = f"/api/session/{request['session']}"
 			if "answer" in request:
-				self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
+				if "permission" in request:
+					self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": "once" if request.pop("answer") is True else "reject"}, config)
+				else:
+					self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
 			seen = request.setdefault("seen", {})
 			accounted = request.setdefault("usage", {"tokens": 0, "cost": 0})
 			while True:
@@ -68,6 +84,15 @@ class OpenCode:
 					raise AutoError("Execution cancelled", "cancelled")
 				if context.limits:
 					context.limits.check()
+				if "policy" in request:
+					permissions = self.api(context, "get", base + "/permission", config=config).get("data", [])
+					if permissions:
+						permission = permissions[0]
+						request["permission"] = permission["id"]
+						action = permission["action"]
+						resources = permission.get("resources", [])
+						answer = yield {"type": "PolicyRequest", "effect": permissionEffect(action, resources, context.project, config.get("cwd", context.project)), "action": action + ": " + ", ".join(resources)}
+						self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": "once" if answer is True else "reject"}, config)
 				forms = self.api(context, "get", base + "/form", config=config).get("data", [])
 				if forms:
 					form = forms[0]

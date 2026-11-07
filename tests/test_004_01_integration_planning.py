@@ -292,6 +292,133 @@ Work
 			GapDecide(self.ctx, gap["id"], "approve", "Approved")
 		self.assertEqual(GapList(self.ctx)[0]["status"], "Open")
 
+	def testPolicyCheckpointAndRework(self):
+		elaboration = {"task": "root", "tasks": [{"id": "publish", "title": "Publish", "effects": ["vcs.push"], "sections": {"Process": "work"}}]}
+		self.assertIn("checkpoint", str(ElaborationValidate(self.ctx, self.plan, elaboration)))
+		elaboration["gaps"] = [{"name": "checkpoint", "kind": "approval", "question": "Confirm vcs.push (confirm)?", "needed_by": ["publish"], "effects": ["vcs.push"], "subjects": ["task:publish/definition"]}]
+		self.assertEqual(ElaborationValidate(self.ctx, self.plan, elaboration), [])
+		ElaborationApply(self.ctx, self.plan, elaboration, "elaborator-run")
+		gap = GapList(self.ctx)[0]
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+		GapDecide(self.ctx, gap["id"], "no", "Rejected")
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+		from auto.runtime.operations import Resolve
+		ref = "auto:demo/task/publish/definition"
+		gapId = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Confirm vcs.push (confirm)?", "needed_by": ["publish"], "effects": ["vcs.push"], "subjects": [{"ref": ref, "digest": Resolve(self.ctx, ref).digest}]})
+		GapDecide(self.ctx, gapId, "approve", "Approved")
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Succeeded")
+
+	def testDeniedEffectRequiresExplicitGrant(self):
+		from auto.features.plan.policy import PolicyGrant
+		self.ctx.defaults["policy"] = {"vcs": "deny"}
+		elaboration = {"task": "root", "tasks": [{"id": "draft", "title": "Draft", "effects": ["vcs.push"], "sections": {"Process": "work"}}]}
+		self.assertIn("grant decision gap", str(ElaborationValidate(self.ctx, self.plan, elaboration)))
+		self.add("publish", effects=["vcs.push"])
+		gap = GapRaise(self.ctx, self.plan, {"kind": "decision", "question": "Grant vcs.push (deny)?", "needed_by": ["publish"]})
+		decision = GapDecide(self.ctx, gap, {"grant": "vcs.push", "scope": "auto:demo/task/publish"}, "Approved")
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+		PolicyGrant(self.ctx, self.plan, "vcs.push", "auto:demo/task/publish", decision["id"])
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Succeeded")
+
+	def testChangedDefinitionInvalidatesCheckpoint(self):
+		from auto.runtime.operations import Resolve
+		self.add("publish", effects=["vcs.push"])
+		ref = "auto:demo/task/publish/definition"
+		gap = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Confirm vcs.push (confirm)?", "needed_by": ["publish"], "effects": ["vcs.push"], "subjects": [{"ref": ref, "digest": Resolve(self.ctx, ref).digest}]})
+		GapDecide(self.ctx, gap, "approve", "Approved")
+		self.assertIn("publish", PlanReady(self.ctx))
+		TaskUpdate(self.ctx, "publish", {"title": "Changed"})
+		self.assertNotIn("publish", PlanReady(self.ctx))
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+
+	def testShellPolicyAppliesToLifecycleCommands(self):
+		self.ctx.defaults["policy"] = {"shell.run": "deny"}
+		self.add("shell", apply="touch should-not-exist", sections={"Process": "work"})
+		run = TaskStart(self.ctx, "shell")
+		self.assertEqual(run["status"], "Failed")
+		self.assertIn('"PolicyDenied"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
+		self.assertFalse((self.root / "should-not-exist").exists())
+
+	def testRuntimePolicyRequestsWaitAndResume(self):
+		class PolicyEngine:
+			enforceableEffects = {"net.write"}
+			def start(inner, context, request):
+				if "answer" not in request:
+					request["session"] = "policy-session"
+					yield {"type": "PolicyRequest", "effect": "net.write", "action": "post message"}
+				else:
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": str(request["answer"])}
+		self.ctx.engines["fake"] = PolicyEngine()
+		self.add("notify")
+		from auto.features.plan.policy import PolicyResolve
+		self.assertNotIn("net.write", PolicyResolve(self.ctx, self.plan, "notify")["unenforceable"])
+		self.assertIn("vcs.push", PolicyResolve(self.ctx, self.plan, "notify")["unenforceable"])
+		run = TaskStart(self.ctx, "notify")
+		self.assertEqual(run["status"], "Waiting")
+		with self.assertRaises(AutoError):
+			GapDecide(self.ctx.derive(author="agent"), run["gap"], "approve", "Not human")
+		GapDecide(self.ctx, run["gap"], "approve", "Approved")
+		self.assertEqual(RunOutput(self.ctx, run), "True")
+		self.assertIn('"PolicyRequested"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
+
+	def testRuntimeDeniedEffectNeedsStructuredGrant(self):
+		class PolicyEngine:
+			def start(inner, context, request):
+				if "answer" not in request:
+					yield {"type": "PolicyRequest", "effect": "vcs.push", "action": "push"}
+				else:
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": str(request["answer"])}
+		self.ctx.engines["fake"] = PolicyEngine()
+		self.ctx.defaults["policy"] = {"vcs": "deny"}
+		self.add("notify")
+		run = TaskStart(self.ctx, "notify")
+		GapDecide(self.ctx, run["gap"], "approve", "Insufficient")
+		self.assertEqual(RunOutput(self.ctx, run), "False")
+		self.assertIn('"PolicyDenied"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
+		run = TaskStart(self.ctx, "notify")
+		decision = GapDecide(self.ctx, run["gap"], {"grant": "vcs.push", "scope": "auto:demo/task/notify"}, "Explicit grant")
+		self.assertEqual(RunOutput(self.ctx, run), "True")
+		self.assertTrue(any(op.get("source") == decision["identity"] for row in journal(self.plan) for op in row["operations"] if op["op"] == "grant"))
+
+	def testAllowedRuntimeEffectDoesNotWait(self):
+		class PolicyEngine:
+			def start(inner, context, request):
+				answer = yield {"type": "PolicyRequest", "effect": "repo.read", "action": "read"}
+				yield {"type": "ScriptEnded", "status": "Succeeded", "output": str(answer)}
+		self.ctx.engines["fake"] = PolicyEngine()
+		self.add("reader")
+		run = TaskStart(self.ctx, "reader")
+		self.assertEqual(run["status"], "Succeeded")
+		self.assertEqual(RunOutput(self.ctx, run), "True")
+		self.assertEqual(GapList(self.ctx), [])
+
+	def testOpenCodePermissionRequestCreatesCheckpoint(self):
+		from auto.integration.opencode import OpenCode
+		class Stub(OpenCode):
+			def __init__(inner):
+				inner.calls = []
+				inner.replied = False
+			def api(inner, context, method, path, data=None, config=None):
+				inner.calls.append((method, path, data))
+				if "/permission/" in path and path.endswith("/reply"):
+					inner.replied = True
+				if path.endswith("/permission"):
+					return {"data": [] if inner.replied else [{"id": "per1", "action": "edit", "resources": ["file.txt"]}]}
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					return {"data": [{"id": "msg", "type": "assistant", "content": [{"type": "text", "text": "Done"}]}, {"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		engine = Stub()
+		self.ctx.engines["fake"] = engine
+		self.add("edit")
+		run = TaskStart(self.ctx, "edit")
+		self.assertEqual(run["status"], "Waiting")
+		self.assertEqual(GapList(self.ctx)[0]["effects"], ["repo.write"])
+		GapDecide(self.ctx, run["gap"], "approve", "Approved")
+		self.assertEqual(RunOutput(self.ctx, run), "Done")
+		self.assertTrue(any("/permission/per1/reply" in path and data == {"decision": "once"} for _, path, data in engine.calls))
+
 	def testRepairAfterMemoCommittedBeforeJournal(self):
 		gap = GapRaise(self.ctx, self.plan, {"kind": "decision", "question": "Which?", "needed_by": ["root"]})
 		with patch("auto.features.plan.store.append", side_effect=OSError("crash")):
