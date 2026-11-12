@@ -46,6 +46,7 @@ def repairLocked(context, path) -> None:
 	store = Knowledge(context)
 	rows = journal(path)
 	seen = {(op["op"], op.get("gap")) for row in rows for op in row["operations"]}
+	recorded = {op["decision"] for row in rows for op in row["operations"] if op["op"] == RevisionOp.RECORD}
 	decisions = store.list(planRef(path), "decision")
 	repairs = {}
 	def stage(revision, operation, record=None):
@@ -56,7 +57,7 @@ def repairLocked(context, path) -> None:
 	for gap in store.list(planRef(path), "gap"):
 		if (RevisionOp.RAISE, gap["id"]) not in seen:
 			stage(gap["revision"], {"op": RevisionOp.RAISE, "gap": gap["id"]})
-		matching = [decision for decision in decisions if decision["gap"] == gap["id"]]
+		matching = [decision for decision in decisions if decision.get("gap") == gap["id"]]
 		if len(matching) > 1:
 			raise AutoError("Conflicting decisions require reconciliation")
 		if matching and (RevisionOp.RESOLVE, gap["id"]) not in seen:
@@ -66,6 +67,9 @@ def repairLocked(context, path) -> None:
 				{"kind": "gap", "value": value, "expected": gap["digest"], "base": gap})
 		elif gap["status"] == GapState.DISMISSED and (RevisionOp.DISMISS, gap["id"]) not in seen:
 			stage(gap["resolved_revision"], {"op": RevisionOp.DISMISS, "gap": gap["id"]})
+	for decision in decisions:
+		if not decision.get("gap") and decision["id"] not in recorded:
+			stage(decision["revision"], {"op": RevisionOp.RECORD, "decision": decision["id"]})
 	for revision, group in repairs.items():
 		commit(context, path, group["operations"], records=group["records"], revision=revision if not any(row["id"] == revision for row in rows) else None,
 			reason="Repair Memo records", repairedRevision=revision)
@@ -132,7 +136,8 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 				raise AutoError("Pinned subject changed; raise a new approval gap")
 		revision, id = identity(), identity()
 		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=gap, answer=answer,
-			rationale=rationale, author=context.author, date=timestamp(), revision=revision).asDict()
+			rationale=rationale, author=context.author, date=timestamp(), revision=revision,
+			extra={"concerns": list(value.get("concerns", []))}).asDict()
 		updated = {**value, "status": GapState.RESOLVED, "decision": id, "resolved_revision": revision}
 		operations = [{"op": RevisionOp.RESOLVE, "gap": gap, "decision": id}]
 		request = value.get("runtime_policy")
@@ -145,6 +150,28 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 	result = resumeGap(context, gap, answer)
 	if result:
 		applyPending(context, result)
+	return decision
+
+
+def DecisionRecord(context, plan, question: str, answer, rationale: str, concerns: list | None = None, source: str | None = None) -> dict:
+	"""Record a decision made without a gap, including on an ended plan."""
+	if not isinstance(question, str) or not question.strip() or not isinstance(rationale, str):
+		raise AutoError("Decision requires a question and text rationale")
+	if concerns is not None and (not isinstance(concerns, list) or any(not isinstance(label, str) for label in concerns)):
+		raise AutoError("Decision concerns must be a list of labels")
+	if source is not None and not isinstance(source, str):
+		raise AutoError("Decision source must be text")
+	path = planPath(context, plan)
+	context = context.derive(plan=path)
+	with locked(path):
+		recover(context, path)
+		repairLocked(context, path)
+		revision, id = identity(), identity()
+		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=None,
+			answer=answer, rationale=rationale, author=context.author, date=timestamp(), revision=revision,
+			extra={"question": question, "concerns": list(concerns or []), **({"source": source} if source is not None else {})}).asDict()
+		commit(context, path, [{"op": RevisionOp.RECORD, "decision": id}], revision=revision, reason=rationale,
+			records=[{"kind": "decision", "value": decision}])
 	return decision
 
 

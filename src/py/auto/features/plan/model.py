@@ -56,6 +56,7 @@ class RevisionOp(StrEnum):
 	RAISE = "raise"
 	RESOLVE = "resolve"
 	DISMISS = "dismiss"
+	RECORD = "record"
 	GRANT = "grant"
 	ABANDON = "abandon"
 
@@ -142,7 +143,7 @@ class Decision:
 	id: str
 	identity: str
 	plan: str
-	gap: str
+	gap: str | None
 	answer: object
 	rationale: str
 	author: str
@@ -151,7 +152,7 @@ class Decision:
 	extra: dict = field(default_factory=dict)
 
 	def asDict(self) -> dict:
-		return {**self.extra, "id": self.id, "identity": self.identity, "plan": self.plan, "gap": self.gap, "answer": self.answer,
+		return {**self.extra, "id": self.id, "identity": self.identity, "plan": self.plan, **({"gap": self.gap} if self.gap else {}), "answer": self.answer,
 			"rationale": self.rationale, "author": self.author, "date": self.date, "revision": self.revision}
 
 # -----------------------------------------------------------------------------
@@ -191,7 +192,7 @@ def createGapFromDict(value: dict) -> Gap:
 def createDecisionFromDict(value: dict) -> Decision:
 	"""Create a decision from its stored record."""
 	core = {"id", "identity", "plan", "gap", "answer", "rationale", "author", "date", "revision"}
-	return Decision(value["id"], value["identity"], value["plan"], value["gap"], value.get("answer"), value.get("rationale", ""),
+	return Decision(value["id"], value["identity"], value["plan"], value.get("gap"), value.get("answer"), value.get("rationale", ""),
 		value.get("author", "human"), value.get("date", ""), value.get("revision", ""),
 		{key: item for key, item in value.items() if key not in core})
 

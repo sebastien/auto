@@ -89,6 +89,9 @@ DESCRIPTORS = {
 	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="List gaps with auto gap list."),
 	"answer": Descriptor("value", "The decision, as a YAML value", candidates=answerCandidates),
 	"rationale": Descriptor("text", "Why this decision"),
+	"question": Descriptor("multiline", "What was decided"),
+	"concerns": Descriptor("structured", "YAML list of labels describing what the decision affects"),
+	"source": Descriptor("text", "Where the decision was made, eg. a conversation reference"),
 	"identity": Descriptor("choice", "A catalogue entry", candidates=catalogueCandidates),
 	"script": Descriptor("path", "A markdown script", suffix=".md"),
 	"elaboration": Descriptor("path", "A task elaboration document", suffix=".md"),
@@ -151,6 +154,8 @@ class Exposure:
 			properties["effects"] = {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
 		if "agents" in properties:
 			properties["agents"] = {"type": "array", "items": {"type": "string"}}
+		if "concerns" in properties:
+			properties["concerns"] = {"type": "array", "items": {"type": "string"}}
 		if "since" in properties:
 			properties["since"] = {"type": "integer"}
 		if "answer" in properties:
@@ -187,6 +192,8 @@ EXPOSURES = [
 	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",), needsPlan=True),
 	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",),
 		effects=True, needsPlan=True),
+	Exposure("DecisionRecord", "plan.gaps", ("question", "answer", "rationale"), "Record a decision made without a gap",
+		optional=("concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
 	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", mcp=True, optional=("kind", "query")),
 	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", mcp=True),
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
@@ -196,7 +203,7 @@ EXPOSURES = [
 
 STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,
 	RunStatus.TIMED_OUT: 124, RunStatus.CANCELLED: 130}
-STRUCTURED_ARGUMENTS = ("budget", "filter", "effects", "agents")
+STRUCTURED_ARGUMENTS = ("budget", "filter", "effects", "agents", "concerns")
 
 # -----------------------------------------------------------------------------
 #

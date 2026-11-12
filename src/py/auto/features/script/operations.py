@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -296,7 +297,7 @@ def ScriptInputs(context: Context, script) -> dict:
 				continue
 			references.add(value)
 			# Task outputs may not exist yet; graph validation checks their identity.
-			if value.startswith("task:"):
+			if value.startswith("task:") or re.fullmatch(r"auto:[^/#]+/task/[^/#]+(?:/definition)?(?:#.*)?", value):
 				continue
 			content = Resolve(context, value, loaded.path.parent)
 			if value in transclusions and content.path.suffix == ".md":

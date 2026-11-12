@@ -508,6 +508,9 @@ def TaskDependencies(context, task) -> list:
 	refs = set()
 	for section in task.sections or {"Process": ""}:
 		refs.update(ScriptInputs(context, task.script(section))["references"])
+	if context.plan:
+		prefix = "auto:" + createPlan(planPath(context)).id + "/task/"
+		refs = {"task:" + ref[len(prefix):] if ref.startswith(prefix) else ref for ref in refs}
 	return sorted({ref[5:].split("/", 1)[0].split("#", 1)[0] for ref in refs if ref.startswith("task:")})
 
 

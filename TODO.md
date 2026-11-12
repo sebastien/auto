@@ -1,10 +1,13 @@
 # TODO
 
-The implementation is in place; validation and hardening remain.
+Core execution and planning are implemented; specification coverage, validation
+and hardening remain.
 
 ## Priorities
 
 - [ ] Review specs 000–007 systematically against the implementation. Passing tests do not establish complete conformance.
+  - [x] Recognise canonical same-plan task references during dependency discovery and cycle validation (specs 003–004).
+  - [x] Record decisions without gaps through the operation and CLI, repair missing journal entries, preserve gap concerns, and allow records on ended plans (specs 004–005, 007).
 - [ ] Test real Pi, OpenCode and LLM executions, especially OpenCode questions/resume and cancellation.
 
 ## Draft specs
@@ -26,3 +29,5 @@ The implementation is in place; validation and hardening remain.
 - Automatic retries
 - Learning capture
 - Refinement-hint execution
+- Memorisation operations and wake integration (spec 010); runnable consolidation
+  also depends on Memo's required agent operations and reconciliation contract.

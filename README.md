@@ -107,6 +107,7 @@ bin/auto plan status --plan document-the-project-architecture
 bin/auto task run TASK_ID --plan document-the-project-architecture
 bin/auto gap list --plan document-the-project-architecture
 bin/auto gap decide GAP_ID 'answer' 'Reason for the choice' --plan document-the-project-architecture
+bin/auto decision record 'Which document format?' 'markdown' 'Easy to review' --concerns '[documentation]' --source 'conversation:review' --plan document-the-project-architecture
 bin/auto plan refine 'Address the review findings' --plan document-the-project-architecture
 ```
 
@@ -115,6 +116,10 @@ Plans live under `.auto/plans/`; gaps and decisions are Memo records under
 and refinement execute the built-in Elaborator and its checks. A Waiting
 result requires a decision before execution can resume. Run ready tasks
 explicitly, then run their aggregate parent (including `root`).
+
+Use `decision record` for choices made outside a gap. It records the question,
+answer, rationale, author and optional concerns and source in Memo and the plan
+journal. Decisions can be recorded after a plan ends without reopening it.
 
 `--format json` provides structured output. Exit statuses: `0` success,
 `1` failure, `2` invalid CLI usage, `3` Waiting/Blocked/Skipped, `124` timeout,

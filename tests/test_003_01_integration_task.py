@@ -53,6 +53,16 @@ class TaskTests(unittest.TestCase):
 		self.assertIn("Generate sample", TaskExpand(context, "build"))
 		self.assertIn("Output contract", TaskExpand(context, "build"))
 
+	def testCanonicalTaskReferencesUsePlanIdentity(self):
+		# The canonical plan ID comes from plan.md, independently of its directory.
+		(self.plan / "plan.md").write_text(documentText({"id": "renamed", "goal": "Demo"}, "# Demo"))
+		self.add("assemble", inputs={"part": "auto:renamed/task/build/definition#Process",
+			"external": "auto:other/task/build"})
+		self.assertEqual(TaskDependencies(self.context(), "assemble"), ["build"])
+		self.assertEqual(TaskValidate(self.context(), "assemble"), [])
+		self.add("missing", inputs={"part": "auto:renamed/task/absent"})
+		self.assertIn("Missing dependency", TaskValidate(self.context(), "missing")[0]["message"])
+
 	def testInvalidTaskReportsViolation(self):
 		context = self.context()
 		invalid = Task("empty", {"id": "empty"}, {}, self.plan / "tasks/empty.md")

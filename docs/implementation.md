@@ -45,6 +45,16 @@ forward, reconciles orphan Memo records, resumes resolved questions and applies
 successful pending Elaborators. Elaborator application is idempotent by run ID.
 Memo retains ownership of its metadata and optimistic revision checks.
 
+Decisions made without a gap use `DecisionRecord` and a `record` revision.
+They omit the `gap` property in Memo, retain their question and source, and may
+be recorded on ended plans. Repair reconciles these records by decision ID,
+independently of gap resolution. Decisions resolving a gap inherit its concerns.
+
+Dependency discovery treats canonical references to tasks in the current plan
+like their `task:` shorthand, including references inside transcluded scripts.
+Discovery defers reading task outputs until execution, so proposed dependencies
+can be validated before their first run.
+
 Aggregate successes pin their child run identities. Changed membership or
 child runs require a new aggregate attempt. Changed input content is reported
 as stale; it does not rewrite historical success. Approval decisions verify

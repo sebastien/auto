@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from auto.features.plan.gaps import GapRaise, GapDecide, GapList, PlanRepair
+from auto.features.plan.gaps import DecisionRecord, GapRaise, GapDecide, GapList, PlanRepair
 from auto.features.plan.store import journal
 from auto.integration.memo.store import MemoKnowledge
 from auto.runtime.model import Context
@@ -31,5 +34,29 @@ class MemoTests(unittest.TestCase):
 			store = MemoKnowledge(root)
 			value = store.get(f"auto:demo/gap/{gap}")
 			store.write("gap", value)
+
+	def testStandaloneDecisionAndCliRoundTrip(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".git").mkdir()
+			plan = root / ".auto/plans/demo"
+			plan.mkdir(parents=True)
+			(plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
+			ctx = Context(project=root, plan=plan)
+			first = DecisionRecord(ctx, plan, "Which database?", "sqlite", "Simple deployment", source="chat:1")
+			store = MemoKnowledge(root)
+			self.assertNotIn("gap", store.get(first["identity"]))
+			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "decision", "record",
+				"Which format?", "{format: markdown}", "Readable", "--plan", str(plan),
+				"--concerns", "[documentation]", "--source", "chat:2", "--format", "json", "--no-input"],
+				cwd=root, capture_output=True, text=True, check=False)
+			self.assertEqual(result.returncode, 0, result.stderr)
+			decision = json.loads(result.stdout)
+			self.assertNotIn("gap", decision)
+			self.assertEqual(decision["answer"], {"format": "markdown"})
+			self.assertEqual(decision["concerns"], ["documentation"])
+			self.assertEqual(store.get(decision["identity"])["source"], "chat:2")
+			PlanRepair(ctx)
+			self.assertEqual([row["operations"][0]["op"] for row in journal(plan)], ["record", "record"])
 
 # EOF

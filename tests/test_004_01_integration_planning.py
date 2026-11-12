@@ -10,8 +10,9 @@ from pathlib import Path
 
 from auto.features.elaboration.operations import ElaborationApply, ElaborationParse, ElaborationValidate
 from auto.features.memory.config import agentsFor, housekeepingFor, memoryPolicy, validateAgents
-from auto.features.plan.gaps import GapDecide, GapList, GapRaise, PlanRepair
-from auto.features.plan.operations import PlanRevise, PlanStatus, PlanReady
+from auto.features.plan.gaps import DecisionRecord, GapDecide, GapList, GapRaise, PlanRepair
+from auto.features.plan.model import createDecisionFromDict
+from auto.features.plan.operations import PlanAbandon, PlanRevise, PlanStatus, PlanReady
 from auto.features.plan.store import journal
 from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunCheck
 from auto.runtime.model import Content, Context
@@ -133,6 +134,98 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(PlanStatus(self.ctx)["status"], "Succeeded")
 		with self.assertRaises(AutoError):
 			TaskUpdate(self.ctx, "first", {"title": "changed"})
+
+	def testDecisionWithoutGapIsDurableAndResolvable(self):
+		answer = {"database": "sqlite"}
+		decision = DecisionRecord(self.ctx, self.plan, "Which database?", answer, "Keep deployment simple",
+			concerns=["architecture"], source="chat:session/1")
+		self.assertNotIn("gap", decision)
+		self.assertEqual(decision["author"], "human")
+		self.assertEqual(decision["answer"], answer)
+		self.assertEqual(decision["source"], "chat:session/1")
+		self.assertEqual(decision["concerns"], ["architecture"])
+		self.assertEqual(createDecisionFromDict(decision).asDict(), decision)
+		self.assertEqual(self.store.get(decision["identity"])["answer"], answer)
+		self.assertEqual(journal(self.plan)[-1]["operations"], [{"op": "record", "decision": decision["id"]}])
+		self.assertEqual(journal(self.plan)[-1]["id"], decision["revision"])
+		PlanRepair(self.ctx)
+		self.assertEqual(len(journal(self.plan)), 1)
+
+	def testDecisionDoesNotReopenEndedPlan(self):
+		for status in ("Succeeded", "Abandoned"):
+			with self.subTest(status=status):
+				if status == "Succeeded":
+					self.assertEqual(TaskStart(self.ctx, "root")["status"], status)
+				else:
+					PlanAbandon(self.ctx, self.plan, "No further work")
+				DecisionRecord(self.ctx, self.plan, "Archive records?", True, "Retain the history")
+				self.assertEqual(PlanStatus(self.ctx)["status"], status)
+
+	def testRepairRecordsOrphanDecisionsOnceAndKeepsGapsIndependent(self):
+		gap = GapRaise(self.ctx, self.plan, {"question": "Choose?", "needed_by": ["root"]})
+		decision = DecisionRecord(self.ctx, self.plan, "Use local storage?", True, "Fits the scope")
+		# Simulate a durable Memo record whose journal append was lost.
+		(self.plan / "journal.jsonl").write_text(jsonText(journal(self.plan)[0]) + "\n")
+		PlanRepair(self.ctx)
+		PlanRepair(self.ctx)
+		rows = journal(self.plan)
+		self.assertEqual([row["operations"][0]["op"] for row in rows], ["raise", "record"])
+		self.assertEqual(rows[-1]["id"], decision["revision"])
+		self.assertEqual(GapList(self.ctx)[0]["status"], "Open")
+		resolved = GapDecide(self.ctx, gap, "yes", "Confirmed")
+		self.assertEqual(resolved["gap"], gap)
+		self.assertEqual(len(journal(self.plan)), 3)
+
+	def testRepairRunsBeforeNextDecisionWrite(self):
+		first = DecisionRecord(self.ctx, self.plan, "First?", "a", "Chosen")
+		(self.plan / "journal.jsonl").write_text("")
+		second = DecisionRecord(self.ctx, self.plan, "Second?", "b", "Chosen")
+		self.assertEqual([row["operations"][0]["decision"] for row in journal(self.plan)], [first["id"], second["id"]])
+
+	def testDecisionStagedWriteRecoversAfterStorageFailure(self):
+		self.store.fail = True
+		with self.assertRaisesRegex(AutoError, "Injected storage failure"):
+			DecisionRecord(self.ctx, self.plan, "Use local storage?", True, "Fits the scope")
+		self.assertEqual(journal(self.plan), [])
+		PlanRepair(self.ctx)
+		PlanRepair(self.ctx)
+		self.assertEqual(len(journal(self.plan)), 1)
+		self.assertEqual(len(self.store.list("auto:demo", "decision")), 1)
+
+	def testGapDecisionInheritsConcerns(self):
+		gap = GapRaise(self.ctx, self.plan, {"question": "Which storage?", "needed_by": ["root"], "concerns": ["architecture"]})
+		self.assertEqual(GapDecide(self.ctx, gap, "local", "Simple")["concerns"], ["architecture"])
+
+	def testInvalidDecisionDoesNotWrite(self):
+		for fields in ({"question": ""}, {"concerns": "architecture"}, {"concerns": [1]}, {"source": {"ref": "chat"}}):
+			with self.subTest(fields=fields), self.assertRaises(AutoError):
+				DecisionRecord(self.ctx, self.plan, **{"question": "Which?", "answer": True, "rationale": "Chosen", **fields})
+		self.assertEqual(journal(self.plan), [])
+		self.assertEqual(self.store.records, {})
+
+	def testCanonicalDependenciesBlockUntilUpstreamSucceeded(self):
+		self.add("first")
+		self.add("second", inputs={"upstream": "auto:demo/task/first"})
+		self.assertEqual(PlanReady(self.ctx), ["first"])
+		self.assertEqual(TaskStart(self.ctx, "second")["status"], "Blocked")
+		self.assertEqual(self.engine.calls, [])
+		self.assertEqual(TaskStart(self.ctx, "first")["status"], "Succeeded")
+		self.assertEqual(PlanReady(self.ctx), ["second"])
+		self.engine.outputs = iter(["second output"])
+		self.assertEqual(TaskStart(self.ctx, "second")["status"], "Succeeded")
+
+	def testCanonicalDependenciesAreDiscoveredInTranscludedScripts(self):
+		self.add("first")
+		fragment = self.root / "fragment.md"
+		fragment.write_text("@auto:demo/task/first#Summary\n")
+		self.add("second", process="@" + str(fragment))
+		self.assertEqual(PlanReady(self.ctx), ["first"])
+		before = journal(self.plan)
+		with self.assertRaisesRegex(AutoError, "cycle"):
+			PlanRevise(self.ctx, self.plan, [{"op": "edit", "task": {
+				"id": "first", "inputs": {"cycle": "auto:demo/task/second"},
+				"sections": {"Process": "work"}}}], "introduce cycle")
+		self.assertEqual(journal(self.plan), before)
 
 	def testChecksAndUsage(self):
 		self.add("skipped", sections={"Pre": "!?false", "Process": "never"})
