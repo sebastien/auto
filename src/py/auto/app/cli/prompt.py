@@ -1,0 +1,187 @@
+"""Module: prompt — Interactive completion of incomplete commands (see spec-011)."""
+
+from __future__ import annotations
+
+import os
+import sys
+from importlib.util import find_spec
+from pathlib import Path
+
+from auto.app.operations import Descriptor
+from auto.runtime.model import Event
+from auto.utils.data import AutoError
+
+# -----------------------------------------------------------------------------
+#
+# OPERATIONS
+#
+# -----------------------------------------------------------------------------
+
+
+def interactive(argv) -> bool:
+	"""Tell whether a human can be prompted for this invocation."""
+	if find_spec("prompt_toolkit") is None or "--no-input" in argv or os.environ.get("AUTO_NO_INPUT") or os.environ.get("CI"):
+		return False
+	if any(item == "--format=json" or item == "--format" and argv[index + 1:index + 2] == ["json"] for index, item in enumerate(argv)):
+		return False
+	return sys.stdin.isatty() and sys.stderr.isatty() and os.environ.get("TERM") != "dumb"
+
+
+def session(argv) -> Prompter | None:
+	"""Return a prompter when the invocation is interactive."""
+	return Prompter() if interactive(argv) else None
+
+
+def candidatesFor(name: str, descriptor: Descriptor, context, arguments: dict) -> list:
+	"""Return `(value, description)` candidates, or none when they cannot be listed."""
+	if not descriptor.candidates:
+		return []
+	try:
+		return list(descriptor.candidates(context, arguments))
+	except (AutoError, OSError, ValueError):
+		return []
+
+# -----------------------------------------------------------------------------
+#
+# API
+#
+# -----------------------------------------------------------------------------
+
+
+class Prompter:
+	"""Ask for missing values on stderr, with completion and validation."""
+
+	def __init__(self, *, input=None, output=None, history: bool = True):
+		self.input = input
+		self._output = output
+		self.history = history
+		self.filled = False
+
+	@property
+	def output(self):
+		# prompt_toolkit is imported on first use, so that complete commands start fast.
+		if self._output is None:
+			from prompt_toolkit.output import create_output
+			self._output = create_output(stdout=sys.stderr)
+		return self._output
+
+	def say(self, text: str, style: str = ""):
+		from prompt_toolkit import print_formatted_text
+		from prompt_toolkit.formatted_text import FormattedText
+		print_formatted_text(FormattedText([(style, text)]), output=self.output, color_depth=self.depth())
+
+	def depth(self):
+		from prompt_toolkit.output import ColorDepth
+		return ColorDepth.MONOCHROME if "NO_COLOR" in os.environ else None
+
+	def prompt(self, label: str, *, help: str = "", name: str | None = None, default: str = "", completer=None, check=None,
+			multiline: bool = False) -> str:
+		"""Prompt for one value; `check` returns an error message or None."""
+		from prompt_toolkit import PromptSession
+		from prompt_toolkit.formatted_text import FormattedText
+		from prompt_toolkit.history import FileHistory, InMemoryHistory
+		from prompt_toolkit.validation import Validator
+		history = InMemoryHistory()
+		if name and self.history:
+			root = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "auto/history"
+			try:
+				root.mkdir(parents=True, exist_ok=True)
+				history = FileHistory(str(root / name))
+			except OSError:
+				pass
+		validator = None
+		if check:
+			class Check(Validator):
+				def validate(self, document):
+					error = check(document.text)
+					if error:
+						from prompt_toolkit.validation import ValidationError
+						raise ValidationError(message=error, cursor_position=len(document.text))
+			validator = Check()
+		hint = help + (" (Esc Enter to submit)" if multiline else "")
+		message = FormattedText([("bold", label)] + ([("fg:ansibrightblack", " — " + hint)] if hint else []) + [("", "\n"), ("fg:ansicyan", "› ")])
+		session = PromptSession(input=self.input, output=self.output, history=history)
+		try:
+			return session.prompt(message, default=default, completer=completer, validator=validator, validate_while_typing=False,
+				complete_while_typing=True, multiline=multiline, enable_open_in_editor=True, color_depth=self.depth())
+		except EOFError:
+			raise KeyboardInterrupt from None
+
+	def choose(self, label: str, options: list, *, help: str = "", name: str | None = None, default: str = "", optional: bool = False) -> str | None:
+		"""Prompt for one of `(value, description)` options."""
+		from prompt_toolkit.completion import FuzzyCompleter, WordCompleter
+		values = [str(value) for value, _ in options]
+		completer = FuzzyCompleter(WordCompleter(values, meta_dict={str(value): description for value, description in options}, sentence=True))
+		def check(text):
+			text = text.strip()
+			if text in values or optional and not text:
+				return None
+			return "Choose one of: " + ", ".join(values[:8]) + ("…" if len(values) > 8 else "") + " (Tab to complete)"
+		value = self.prompt(label, help=help, name=name, default=default, completer=completer, check=check).strip()
+		return value or None
+
+	def confirm(self, text: str) -> bool:
+		"""Ask a yes/no question, defaulting to yes."""
+		def check(value):
+			return None if value.strip().lower() in ("", "y", "yes", "n", "no") else "Answer y or n"
+		return not self.prompt(text + " [Y/n]", check=check).strip().lower().startswith("n")
+
+	def ask(self, name: str, descriptor: Descriptor, context, arguments: dict | None = None, *, need: str = "", default: str = "",
+			optional: bool = False, check=None) -> str | None:
+		"""Ask for argument `name` as its descriptor describes; None when an optional value is skipped."""
+		from prompt_toolkit.completion import FuzzyCompleter, PathCompleter, WordCompleter
+		if need and not self.filled:
+			self.say(need, "italic")
+		self.filled = True
+		label = name.replace("_", " ").capitalize()
+		help = descriptor.help + (" (Enter to skip)" if optional else "")
+		candidates = candidatesFor(name, descriptor, context, arguments or {})
+		if descriptor.kind == "choice":
+			if not candidates:
+				if optional:
+					return None
+				raise AutoError(f"No {name} is available to choose from", recovery=descriptor.recovery or None)
+			return self.choose(label, candidates, help=help, name=name, default=default, optional=optional)
+		completer = None
+		if descriptor.kind == "path":
+			suffix = descriptor.suffix
+			completer = PathCompleter(expanduser=True, file_filter=lambda path: os.path.isdir(path) or path.endswith(suffix))
+		elif candidates:
+			completer = FuzzyCompleter(WordCompleter([value for value, _ in candidates], meta_dict=dict(candidates), sentence=True))
+		def validate(text):
+			if not text.strip():
+				return None if optional else f"{label} is required"
+			if descriptor.kind == "path" and not Path(text.strip()).expanduser().is_file():
+				return f"File not found: {text.strip()}"
+			try:
+				check and check(text)
+			except (AutoError, ValueError) as error:
+				return str(error)
+			except Exception as error:  # YAML parsers raise their own error types.
+				return f"Invalid value: {error}".partition("\n")[0]
+			return None
+		value = self.prompt(label, help=help, name=name, default=default, completer=completer, check=validate, multiline=descriptor.kind == "multiline")
+		value = value.strip() if descriptor.kind != "multiline" else value.strip("\n")
+		if descriptor.kind == "path":
+			value = str(Path(value).expanduser())
+		return value or None
+
+	def question(self, event: dict):
+		"""Answer a run question: a confirmation, a form field by field, or free text."""
+		self.say(str(event.get("content", "")), "bold")
+		if event.get("type") == Event.POLICY_REQUEST:
+			return self.confirm("Allow?")
+		if not event.get("fields"):
+			return self.prompt("Answer", name="answer", check=lambda text: None if text.strip() else "An answer is required").strip()
+		answer = {}
+		for field in event["fields"]:
+			label = str(field.get("title") or field.get("label") or field["id"])
+			options = [(str(option.get("value", option.get("label"))), str(option.get("label", ""))) if isinstance(option, dict) else (str(option), "")
+				for option in field.get("options") or []]
+			if options:
+				answer[field["id"]] = self.choose(label, options, help=field.get("description", ""))
+			else:
+				answer[field["id"]] = self.prompt(label, help=field.get("description", "")).strip()
+		return answer
+
+# EOF

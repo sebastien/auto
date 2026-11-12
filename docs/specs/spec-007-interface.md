@@ -13,6 +13,8 @@ them without adding behaviour. Interfaces need to be:
 - *Scriptable*: stable structured output and exit status, so that interfaces
   can be used by scripts, shell checks and agents
 - *Non-interactive safe*: an interface never blocks on input it cannot get
+- *Self-discoverable*: when a human is present, the CLI asks for what is
+  missing instead of failing (see [CLI Prompt](spec-011-cli-prompt.md))
 
 ## Conceptual Model
 
@@ -74,8 +76,11 @@ auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
   selects `text` (default, for humans), `markdown` (for inclusion in prompts)
   or `json` (stable, following the model). Streams are rendered as text, or
   as JSON lines with `--format json`, one event per line.
-- *Questions*: prompted when stdin and stderr are a terminal, otherwise
-  handled as non-interactive (see Mapping Rules).
+- *Interaction*: in an interactive session, missing verbs, arguments, context
+  and inputs are prompted for instead of failing, and questions are prompted;
+  otherwise they are usage errors and non-interactive questions (see Mapping
+  Rules). `auto` alone prints the reference (see
+  [CLI Prompt](spec-011-cli-prompt.md)).
 - *Interruption*: `SIGINT` cancels the running script or run, ending it as
   `Cancelled`.
 - *Help*: `auto help`, `auto {noun} --help` and `auto {noun} {verb} --help`
@@ -135,6 +140,7 @@ flags (eg. `--plan`) as the default context.
 | `CatalogueList` | `catalogue list` | `catalogue_list` | List the framework, as an input of Elaborators |
 | `CatalogueGet` | `catalogue get` | `catalogue_get` | Read a framework entry by identity |
 | `ElaborationValidate` | `elaboration validate` | `elaboration_validate` | Post check of Elaborators, and self-check before answering |
+| `AuditValidate` | `audit validate` | `audit_validate` | Post check of audit reports, and self-check before answering |
 
 ## Rules
 

@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,86 @@ from auto.utils.data import AutoError, document, jsonText, yamlLoad
 # DEFINITIONS
 #
 # -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Descriptor:
+	"""Describe how a human enters an argument (see spec-011)."""
+
+	kind: str = "text"
+	help: str = ""
+	suffix: str = ""
+	candidates: Callable | None = None
+	recovery: str = ""
+
+
+def firstLine(text) -> str:
+	return str(text or "").strip().partition("\n")[0]
+
+
+def planCandidates(context, arguments):
+	from auto.features.plan.model import createPlan
+	result = []
+	for path in sorted((context.project / ".auto/plans").glob("*/plan.md")):
+		try:
+			plan = createPlan(path)
+		except (AutoError, OSError, ValueError):
+			continue
+		result.append((plan.id, firstLine(plan.meta.get("goal") or plan.description)))
+	return result
+
+
+def taskCandidates(context, arguments):
+	from auto.features.task.operations import TaskList
+	return [(task["id"], firstLine(task.get("title") or task.get("description"))) for task in TaskList(context)]
+
+
+def runCandidates(context, arguments):
+	from auto.features.task.operations import RunList
+	runs = sorted(RunList(context), key=lambda run: run.get("started") or "", reverse=True)
+	return [(run["id"], f"{run['task']} · {run['status']}") for run in runs]
+
+
+def gapCandidates(context, arguments):
+	from auto.features.plan.gaps import GapList
+	from auto.features.plan.model import GapState
+	return [(gap["id"], firstLine(gap["question"])) for gap in GapList(context, filter={"status": GapState.OPEN})]
+
+
+def answerCandidates(context, arguments):
+	if not arguments.get("gap"):
+		return []
+	from auto.features.plan.gaps import GapList
+	gap = next((gap for gap in GapList(context) if gap["id"] == arguments["gap"]), {})
+	options = [option.get("value", option.get("id", option.get("label"))) if isinstance(option, dict) else option for option in gap.get("options", [])]
+	return [(str(option), "") for option in options if option is not None]
+
+
+def catalogueCandidates(context, arguments):
+	from auto.features.elaboration.catalogue import CatalogueList
+	return [(entry["identity"], firstLine(entry.get("title") or entry.get("description"))) for entry in CatalogueList(context)]
+
+
+# Descriptors are keyed by argument name, which is consistent across exposures.
+DESCRIPTORS = {
+	"plan": Descriptor("choice", "The plan to work in", candidates=planCandidates, recovery='Create a plan with auto plan create "<goal>".'),
+	"goal": Descriptor("multiline", "What the plan should achieve"),
+	"reason": Descriptor("multiline", "Why the plan or task needs refining"),
+	"task": Descriptor("choice", "A task of the plan", candidates=taskCandidates, recovery="Check the plan tasks with auto plan status."),
+	"run": Descriptor("choice", "A run of the plan", candidates=runCandidates, recovery="Start a run with auto task run TASK."),
+	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="List gaps with auto gap list."),
+	"answer": Descriptor("value", "The decision, as a YAML value", candidates=answerCandidates),
+	"rationale": Descriptor("text", "Why this decision"),
+	"identity": Descriptor("choice", "A catalogue entry", candidates=catalogueCandidates),
+	"script": Descriptor("path", "A markdown script", suffix=".md"),
+	"elaboration": Descriptor("path", "A task elaboration document", suffix=".md"),
+	"audit": Descriptor("path", "An audit report", suffix=".md"),
+	"budget": Descriptor("structured", "Optional YAML budget mapping, eg. {cost: 2, time: 1800}"),
+	"effects": Descriptor("structured", "YAML list of dotted effect names"),
+	"agents": Descriptor("structured", "YAML list of agent references"),
+	"filter": Descriptor("structured", "YAML mapping of fields to match"),
+	"since": Descriptor("text", "Event index to follow from"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +121,9 @@ class Exposure:
 	passPlan: bool = False
 	violations: bool = False
 	messages: bool = False
+	effects: bool = False
+	needsPlan: bool = False
+	ask: tuple[str, ...] = ()
 	noun: str = ""
 	verb: str = ""
 
@@ -77,6 +161,9 @@ class Exposure:
 			properties["inputs"] = {"type": "object"}
 		if self.params:
 			properties["params"] = {"type": "object"}
+		for name, value in properties.items():
+			if DESCRIPTORS.get(name, Descriptor()).help:
+				value["description"] = DESCRIPTORS[name].help
 		return {"type": "object", "properties": properties, "required": list(self.arguments), "additionalProperties": False}
 
 	def call(self, context, arguments):
@@ -87,20 +174,24 @@ class Exposure:
 # Exposure order follows the interface specification table (see spec-007).
 EXPOSURES = [
 	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone",
-		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True),
+		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True, effects=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
-	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects", "agents"), inputs=True),
-	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True),
-	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True),
-	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",)),
-	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True),
-	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",)),
-	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",)),
-	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",)),
+	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects", "agents"), inputs=True,
+		effects=True, ask=("budget",)),
+	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True,
+		effects=True, needsPlan=True),
+	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True, needsPlan=True),
+	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",), needsPlan=True),
+	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True, effects=True, needsPlan=True),
+	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",), needsPlan=True),
+	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",), needsPlan=True),
+	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",),
+		effects=True, needsPlan=True),
 	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", mcp=True, optional=("kind", "query")),
 	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", mcp=True),
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
-		mcp=True, payload="elaboration", passPlan=True, violations=True),
+		mcp=True, payload="elaboration", passPlan=True, violations=True, needsPlan=True),
+	Exposure("AuditValidate", "audit.operations", ("audit",), "Validate an audit report", mcp=True, payload="audit", violations=True),
 ]
 
 STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,

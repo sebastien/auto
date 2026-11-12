@@ -24,9 +24,10 @@ from ruamel.yaml import YAML
 class AutoError(Exception):
 	"""Reports an operation failure with a stable failure kind."""
 
-	def __init__(self, message: str, kind: str = "input"):
+	def __init__(self, message: str, kind: str = "input", *, recovery: str | None = None):
 		super().__init__(message)
 		self.kind = kind
+		self.recovery = recovery
 
 # -----------------------------------------------------------------------------
 #
@@ -150,5 +151,31 @@ def sections(body: str, level: int = 2) -> tuple[str, dict[str, str]]:
 		else:
 			(result[current] if current is not None else intro).append(line)
 	return "".join(intro), {name: "".join(lines).strip() for name, lines in result.items()}
+
+
+def section(text: str, name: str) -> str:
+	"""Select the body of the one heading named `name`, keeping any frontmatter."""
+	front = ""
+	if text.startswith("---\n"):
+		match = re.search(r"(?m)^---\s*$\n?", text[4:])
+		if match:
+			front, text = text[:4 + match.end()], text[4 + match.end():]
+	lines, headings, fence = text.splitlines(keepends=True), [], None
+	for index, line in enumerate(lines):
+		marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+		if marker:
+			if fence is None:
+				fence = marker[1]
+			elif marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+				fence = None
+		heading = re.match(r"^(#{1,6}) ([^\n]+?)\s*$", line) if fence is None else None
+		if heading:
+			headings.append((index, len(heading[1]), heading[2]))
+	matches = [item for item in headings if item[2] == name]
+	if len(matches) != 1:
+		raise AutoError(f"Missing or ambiguous section: {name}")
+	start, level, _ = matches[0]
+	end = next((index for index, depth, _ in headings if index > start and depth <= level), len(lines))
+	return front + "".join(lines[start + 1:end]).strip("\n") + "\n"
 
 # EOF

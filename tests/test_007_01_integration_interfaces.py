@@ -32,6 +32,46 @@ class InterfaceTests(unittest.TestCase):
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn(exposure.need, result.stdout)
 
+	def testErrorRecovery(self):
+		result = self.cli("script", "expand")
+		self.assertEqual(result.returncode, 2)
+		self.assertIn("the following arguments are required: script", result.stderr)
+		self.assertIn("Recovery: Give script (a markdown script). Run auto script expand --help", result.stderr)
+		result = self.cli("plan")
+		self.assertEqual(result.returncode, 2)
+		self.assertIn("a verb is required", result.stderr)
+		self.assertIn("Choose one of: create, refine, status", result.stderr)
+		result = self.cli("script", "expand", "./not-there.md", "--format", "json")
+		self.assertEqual(result.returncode, 1)
+		self.assertIn("auto script expand --help", json.loads(result.stdout)["failure"]["recovery"])
+		self.assertIn("auto config", result.stderr)
+		with tempfile.TemporaryDirectory() as directory:
+			from unittest.mock import patch
+			with patch.dict("os.environ", {"AUTO_PLAN": ""}):
+				result = self.cli("task", "run", ".auto/catalogue/task/audit-architecture.md", "--format", "json", cwd=directory)
+		self.assertEqual(result.returncode, 1)
+		failure = json.loads(result.stdout)["failure"]
+		self.assertEqual(failure["reason"], "This operation requires a plan")
+		self.assertIn("--plan <name-or-path>", failure["recovery"])
+		self.assertIn('auto plan create "<goal>"', failure["recovery"])
+		self.assertIn("not a catalogue Markdown path", failure["recovery"])
+
+	def testUnknownOptionRecovery(self):
+		for arguments, command in (
+			(("script", "run", "audit.md"), "auto script run"),
+			(("audit.md",), "auto script run"),
+			(("config",), "auto config"),
+		):
+			with self.subTest(command=arguments):
+				result = self.cli(*arguments, "--set", "model=openai/gpt-6.1-sol")
+				self.assertEqual(result.returncode, 2)
+				self.assertIn("Use --model openai/gpt-6.1-sol instead of --set", result.stderr)
+				self.assertIn(f"Run {command} --help", result.stderr)
+				self.assertTrue(result.stderr.startswith(f"usage: {command} "))
+		result = self.cli("script", "run", "audit.md", "--unknown")
+		self.assertEqual(result.returncode, 2)
+		self.assertIn("Run auto script run --help", result.stderr)
+
 	def testScriptPathRelativeToWorkingDirectory(self):
 		with tempfile.TemporaryDirectory() as directory:
 			project = Path(directory)

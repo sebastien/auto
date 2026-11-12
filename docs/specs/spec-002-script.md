@@ -132,6 +132,10 @@ depends on its source:
 - Supports a suffix, based on the runtime capabilities:
   - `#L{START}-{END}` for a range of lines
   - `#{SYMBOL}` for a given symbol (format specific, decided by the runtime)
+  - `#{SECTION}` for a markdown file: the body of the one heading named
+    `SECTION`, up to the next heading of the same or a higher level. The
+    frontmatter is kept, so a transcluded script keeps its defaults (eg.
+    `@auto:catalogue/task/audit#Process`)
 
 ### Frontmatter
 

@@ -3,10 +3,10 @@ SHELL = kash
 default : test
 
 setup :
-	uv sync --extra mcp
+	uv sync --extra mcp --extra interactive
 
 test :
-	uv run --extra mcp python -m unittest discover -s tests -p "test_*.py"
+	uv run --extra mcp --extra interactive python -m unittest discover -s tests -p "test_*.py"
 
 check : test
 	uv run python -m compileall -q src/py

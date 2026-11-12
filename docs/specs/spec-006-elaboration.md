@@ -385,6 +385,15 @@ For example, `coarse` with `governance` gives few tasks with gates, for a plan
 reviewed step by step, while `fine` with no `detail` gives many lightweight
 tasks, for a plan run like a script.
 
+### Built-in Audit
+
+`auto:catalogue/task/audit` checks a scope of the project against a list of
+criteria, from one perspective (eg. conventions, structure, symbols,
+documentation, UI/UX, security). It produces an `auto:catalogue/artifact/audit`,
+whose Post runs `auto audit validate`. An audit is specialised by a task
+giving `### Scope` and `### Criteria` in its Process, then transcluding
+`@auto:catalogue/task/audit#Process` (see `auto:catalogue/task/audit-symbols`).
+
 ## Out of Scope
 
 - Assessing elaboration quality against plan outcomes, and triggering

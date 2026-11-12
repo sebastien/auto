@@ -32,12 +32,15 @@ def planPath(context, plan=None) -> Path:
 	"""Resolve the directory of the current or named plan."""
 	path = plan or context.plan
 	if path is None:
-		raise AutoError("This operation requires a plan")
+		raise AutoError("This operation requires a plan", recovery='Select an existing plan with --plan <name-or-path> or AUTO_PLAN. '
+			'If you have no plan, create one with auto plan create "<goal>". '
+			'Task runs take a task ID defined in that plan, not a catalogue Markdown path.')
 	path = Path(path)
 	if not path.is_absolute() and len(path.parts) == 1:
 		path = context.project / ".auto/plans" / path
 	if not (path / "plan.md").exists():
-		raise AutoError(f"Plan not found: {path}")
+		raise AutoError(f"Plan not found: {path}", recovery='Point --plan at a directory containing plan.md, '
+			'or create a plan with auto plan create "<goal>". Check AUTO_PLAN if you did not pass --plan.')
 	return path.resolve()
 
 

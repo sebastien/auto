@@ -49,6 +49,17 @@ class ScriptTests(unittest.TestCase):
 		result = ScriptExpand(ctx, self.script("@./child/child.md", {"inputs": {"name": "parent"}, "params": {"style": "parent"}}))
 		self.assertIn("caller child data parent", result)
 
+	def testMarkdownSectionSelectorKeepsDefaults(self):
+		(self.root / "base.md").write_text("---\ninputs: {name: base}\n---\n# Base\n\nIntro\n\n## Process\n\nHello {{ name }}\n\n### Detail\n\nKept\n\n## Post\n\nDropped\n")
+		result = ScriptExpand(self.ctx, self.script("@./base.md#Process"))
+		self.assertIn("Hello base", result)
+		self.assertIn("Kept", result)
+		self.assertNotIn("Intro", result)
+		self.assertNotIn("Dropped", result)
+		self.assertNotIn("## Process", result)
+		with self.assertRaises(AutoError):
+			ScriptExpand(self.ctx, self.script("@./base.md#Missing"))
+
 	def testImplicitTransitiveInputsAndCycles(self):
 		(self.root / "child.md").write_text("{{ extra }}\n{{ inputs.value }}")
 		result = ScriptInputs(self.ctx, self.script("@./child.md\n{{ name }}"))

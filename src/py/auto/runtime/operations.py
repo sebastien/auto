@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from auto.runtime.model import Content, Context
-from auto.utils.data import AutoError, digest, jsonText
+from auto.utils.data import AutoError, digest, jsonText, section
 
 # -----------------------------------------------------------------------------
 #
@@ -87,6 +87,8 @@ def Resolve(context: Context, ref: str, base: Path | None = None) -> Content:
 			node = matches[0]
 			start = min([node.lineno, *[item.lineno for item in node.decorator_list]])
 			text = "".join(text.splitlines(keepends=True)[start - 1:node.end_lineno])
+		elif content.path.suffix == ".md":
+			text = section(text, selector)
 		else:
 			raise AutoError(f"Unsupported symbol selector: {ref}")
 		content = Content(content.ref + "#" + selector, text.encode(), content.digest, content.path)
