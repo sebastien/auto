@@ -53,9 +53,29 @@ class PromptTests(unittest.TestCase):
 		with patch.object(prompt, "find_spec", lambda name: None):
 			self.assertFalse(prompt.interactive([]))
 
-	def testChoiceIsStrict(self):
-		with self.prompter("nope\r\x15b\r") as prompter:
-			self.assertEqual(prompter.choose("Pick", [("a", "first"), ("b", "second")]), "b")
+	def testPickerFiltersAndMoves(self):
+		options = [("alpha", "first"), ("beta", "second"), ("gamma", "third")]
+		with self.prompter("\r") as prompter:
+			self.assertEqual(prompter.choose("Pick", options), "alpha")
+		with self.prompter("\x1b[B\x1b[B\r") as prompter:
+			self.assertEqual(prompter.choose("Pick", options), "gamma")
+		with self.prompter("thd\r") as prompter:
+			self.assertEqual(prompter.choose("Pick", options), "gamma")
+		self.assertIn("Pick › gamma", self.screen.getvalue())
+		with self.prompter("\r") as prompter:
+			self.assertEqual(prompter.choose("Pick", options, default="beta"), "beta")
+
+	def testPickerIsStrict(self):
+		with self.prompter("nope\r\x15bet\r") as prompter:
+			self.assertEqual(prompter.choose("Pick", [("alpha", ""), ("beta", "")]), "beta")
+		with self.prompter("\x03") as prompter, self.assertRaises(KeyboardInterrupt):
+			prompter.choose("Pick", [("alpha", "")])
+
+	def testFuzzyScoring(self):
+		self.assertIsNone(prompt.fuzzy("xyz", "status"))
+		self.assertEqual(prompt.fuzzy("", "status"), (0, 6))
+		self.assertLess(prompt.fuzzy("sta", "status"), prompt.fuzzy("sta", "show tasks"))
+		self.assertIsNotNone(prompt.fuzzy("run fail", "build-01 · run Failed"))
 
 	def testMultilineSubmitsWithEscEnter(self):
 		with self.prompter("line one\rline two" + ESC_ENTER) as prompter:

@@ -129,7 +129,7 @@ def main(argv=None) -> int:
 			verbs = [(exposure.verb, exposure.need) for exposure in EXPOSURES if exposure.noun == args.noun]
 			if not prompter:
 				args.argumentParser.error("a verb is required", recovery="Choose one of: " + ", ".join(verb for verb, _ in verbs) + ".")
-			argv.insert(argv.index(args.noun) + 1, prompter.choose("auto " + args.noun, verbs, help="Choose a command (Tab to complete)"))
+			argv.insert(argv.index(args.noun) + 1, prompter.choose("auto " + args.noun, verbs, help="Choose a command"))
 			args = cli.parse_args(argv)
 		sources = {} if args.noun == "config" else None
 		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=args.agent, sources=sources)

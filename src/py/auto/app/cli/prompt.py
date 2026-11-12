@@ -41,6 +41,20 @@ def candidatesFor(name: str, descriptor: Descriptor, context, arguments: dict) -
 	except (AutoError, OSError, ValueError):
 		return []
 
+
+def fuzzy(query: str, text: str) -> tuple | None:
+	"""Score `text` against space-separated subsequence terms, lower is better; None when it does not match."""
+	text, spread, first = text.lower(), 0, len(text)
+	for term in query.lower().split():
+		start = position = -1
+		for char in term:
+			position = text.find(char, position + 1)
+			if position < 0:
+				return None
+			start = position if start < 0 else start
+		spread, first = spread + position - start, min(first, start)
+	return spread, first
+
 # -----------------------------------------------------------------------------
 #
 # API
@@ -107,18 +121,67 @@ class Prompter:
 		except EOFError:
 			raise KeyboardInterrupt from None
 
-	def choose(self, label: str, options: list, *, help: str = "", name: str | None = None, default: str = "", optional: bool = False) -> str | None:
-		"""Prompt for one of `(value, description)` options."""
-		from prompt_toolkit.completion import FuzzyCompleter, WordCompleter
-		values = [str(value) for value, _ in options]
-		completer = FuzzyCompleter(WordCompleter(values, meta_dict={str(value): description for value, description in options}, sentence=True))
-		def check(text):
-			text = text.strip()
-			if text in values or optional and not text:
-				return None
-			return "Choose one of: " + ", ".join(values[:8]) + ("…" if len(values) > 8 else "") + " (Tab to complete)"
-		value = self.prompt(label, help=help, name=name, default=default, completer=completer, check=check).strip()
-		return value or None
+	def choose(self, label: str, options: list, *, help: str = "", default: str = "", optional: bool = False, rows: int = 10) -> str | None:
+		"""Pick one of `(value, description)` options from a list filtered as you type, like fzf; None when an optional pick is skipped."""
+		from prompt_toolkit.application import Application
+		from prompt_toolkit.buffer import Buffer
+		from prompt_toolkit.key_binding import KeyBindings
+		from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+		from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+		options = [(str(value), str(description or "")) for value, description in options]
+		rows = max(1, min(rows, len(options)))
+		state = {"index": next((index for index, (value, _) in enumerate(options) if value == default), 0), "offset": 0}
+		def reset(_):
+			state.update(index=0, offset=0)
+		query = Buffer(multiline=False, on_text_changed=reset)
+		def matches():
+			scored = ((fuzzy(query.text, value + " " + description), index) for index, (value, description) in enumerate(options))
+			return [options[index] for score, index in sorted(item for item in scored if item[0] is not None)]
+		def listing():
+			found = matches()
+			state["index"] = min(state["index"], max(0, len(found) - 1))
+			state["offset"] = min(max(state["offset"], state["index"] - rows + 1), state["index"])
+			lines = []
+			for index, (value, description) in enumerate(found[state["offset"]:state["offset"] + rows], state["offset"]):
+				selected = index == state["index"]
+				lines += [("fg:ansicyan bold" if selected else "", "› " if selected else "  "), ("bold" if selected else "", value)]
+				lines += [("fg:ansibrightblack", "  " + description)] if description else []
+				lines.append(("", "\n"))
+			if not found:
+				lines.append(("fg:ansibrightblack", "  no match\n"))
+			return lines[:-1] if lines and lines[-1] == ("", "\n") else lines
+		def move(step):
+			found = matches()
+			state["index"] = max(0, min(len(found) - 1, state["index"] + step))
+		keys = KeyBindings()
+		for key, step in (("up", -1), ("c-p", -1), ("s-tab", -1), ("down", 1), ("c-n", 1), ("tab", 1), ("pageup", -rows), ("pagedown", rows)):
+			keys.add(key)(lambda event, step=step: move(step))
+		@keys.add("enter")
+		def accept(event):
+			found = matches()
+			if found:
+				event.app.exit(result=found[state["index"]][0])
+		@keys.add("c-c")
+		@keys.add("c-d")
+		def cancel(event):
+			event.app.exit(exception=KeyboardInterrupt())
+		@keys.add("escape")
+		def skip(event):
+			event.app.exit(result=None) if optional else cancel(event)
+		hint = (help + " · " if help else "") + "type to filter, ↑↓ to move, Enter to pick" + (", Esc to skip" if optional else "")
+		header = [("bold", label), ("fg:ansibrightblack", " — " + hint)]
+		field = Window(BufferControl(query))
+		layout = HSplit([
+			Window(FormattedTextControl(header), height=1),
+			VSplit([Window(FormattedTextControl([("fg:ansicyan", "› ")]), width=2), field,
+				Window(FormattedTextControl(lambda: [("fg:ansibrightblack", f" {len(matches())}/{len(options)}")]), dont_extend_width=True)]),
+			Window(FormattedTextControl(listing), height=rows),
+		])
+		application = Application(layout=Layout(layout, focused_element=field), key_bindings=keys, input=self.input, output=self.output,
+			erase_when_done=True, color_depth=self.depth())
+		value = application.run()
+		self.say(f"{label} › {value if value is not None else '(skipped)'}", "fg:ansibrightblack")
+		return value
 
 	def confirm(self, text: str) -> bool:
 		"""Ask a yes/no question, defaulting to yes."""
@@ -141,7 +204,7 @@ class Prompter:
 				if optional:
 					return None
 				raise AutoError(f"No {name} is available to choose from", recovery=descriptor.recovery or None)
-			return self.choose(label, candidates, help=help, name=name, default=default, optional=optional)
+			return self.choose(label, candidates, help=descriptor.help, default=default, optional=optional)
 		completer = None
 		if descriptor.kind == "path":
 			suffix = descriptor.suffix

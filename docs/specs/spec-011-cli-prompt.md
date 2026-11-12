@@ -88,8 +88,12 @@ schemas and of the generated help.
    verb, context, required arguments, `ask` optional arguments, missing
    inputs. Each prompt shows:
    - the label, preceded by the operation need on the first prompt
-   - completion from candidates (fuzzy, with their descriptions), or path
-     completion for `path` arguments
+   - for `choice` arguments, a picker: the candidates are listed with their
+     descriptions and filtered as you type (fuzzy, space-separated terms),
+     like fzf; the picker is erased once a candidate is picked, leaving
+     `{label} › {value}`
+   - otherwise, completion from candidates, or path completion for `path`
+     arguments
    - inline validation, applying the same coercion as the operation (eg. a
      budget must parse as YAML, `since` as an integer), re-prompting with the
      entered value kept
@@ -113,7 +117,9 @@ non-interactive session, questions are handled as non-interactive (see
 ## Conventions
 
 - *Keys*: `Enter` accepts, `Tab` completes, `Esc Enter` submits multiline
-  text, `Ctrl-X Ctrl-E` edits the value in `$EDITOR`.
+  text, `Ctrl-X Ctrl-E` edits the value in `$EDITOR`. In a picker, `↑`/`↓`
+  (or `Ctrl-P`/`Ctrl-N`, `Tab`/`Shift-Tab`, `PageUp`/`PageDown`) move,
+  `Enter` picks, and `Esc` skips an optional pick.
 - *Cancellation*: `Ctrl-C` or `Ctrl-D` at a prompt exits with `130`, nothing
   having run.
 - *Streams*: prompts are written on stderr; stdout only carries results.
