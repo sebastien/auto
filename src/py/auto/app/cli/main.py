@@ -90,9 +90,10 @@ def parser():
 		for argument in exposure.arguments:
 			command.add_argument(argument, nargs="?", help=DESCRIPTORS.get(argument, Descriptor()).help)
 		for argument in exposure.optional:
-			command.add_argument("--" + argument, help=DESCRIPTORS.get(argument, Descriptor()).help)
+			options = {"action": "store_true", "default": None} if exposure.schema["properties"][argument].get("type") == "boolean" else {}
+			command.add_argument("--" + argument, help=DESCRIPTORS.get(argument, Descriptor()).help, **options)
 		for name in CONTEXT_KEYS:
-			command.add_argument("--" + name)
+			command.add_argument("--" + name, dest="harnessAgent" if name == "agent" and name in exposure.arguments else name)
 		command.add_argument("--format", choices=("text", "markdown", "json"), default="text")
 		command.add_argument("--no-input", action="store_true", help="Never prompt for missing values")
 		properties = exposure.schema["properties"]
@@ -124,6 +125,7 @@ def main(argv=None) -> int:
 		return 0
 	prompter = prompt.session(argv)
 	frontend = None
+	usage = True
 	try:
 		if args.noun in {exposure.noun for exposure in EXPOSURES} and getattr(args, "verb", None) is None:
 			verbs = [(exposure.verb, exposure.need) for exposure in EXPOSURES if exposure.noun == args.noun]
@@ -132,7 +134,7 @@ def main(argv=None) -> int:
 			argv.insert(argv.index(args.noun) + 1, prompter.choose("auto " + args.noun, verbs, help="Choose a command"))
 			args = cli.parse_args(argv)
 		sources = {} if args.noun == "config" else None
-		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=args.agent, sources=sources)
+		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=getattr(args, "harnessAgent", args.agent), sources=sources)
 		if args.noun == "config":
 			for key in ("engine", "isolated"):
 				if key not in context.defaults and key not in context.config:
@@ -159,6 +161,7 @@ def main(argv=None) -> int:
 			context.params = assignments(args.param)
 		arguments = coerceArguments(exposure, arguments)
 		arguments = resolveContextArguments(context, exposure, arguments)
+		usage = False
 		arguments = resolvePayload(context, exposure, arguments)
 		if prompter and exposure.payloadKind == "script":
 			for name in missingInputs(context, arguments[exposure.payload]):
@@ -196,6 +199,14 @@ def main(argv=None) -> int:
 				frontend.result(result)
 			else:
 				print(render(result, args.format))
+		sys.stdout.flush()
+		from auto.features.memory.scheduler import HousekeepingCheck, diagnostic, hasWork
+		try:
+			if hasWork(context):
+				exclude = [arguments["agent"].removeprefix("auto:agent/")] if exposure.name == "ConsolidationStart" else []
+				HousekeepingCheck(context, exclude=exclude)
+		except Exception as error:
+			diagnostic(context.project / ".auto/housekeeping", error)
 		return exitStatus(result, exposure)
 	except (AutoError, OSError, ValueError) as error:
 		helpCommand = "auto " + " ".join(str(getattr(args, name)) for name in ("noun", "verb") if getattr(args, name, None)) + " --help"
@@ -207,7 +218,7 @@ def main(argv=None) -> int:
 		print("Recovery: " + recovery, file=sys.stderr)
 		if getattr(args, "format", None) == "json":
 			print(render({"failure": {"kind": getattr(error, "kind", "system"), "reason": str(error), "recovery": recovery}}, "json"))
-		return 1
+		return 2 if usage else 1
 	except KeyboardInterrupt:
 		return 130
 	finally:
@@ -253,14 +264,27 @@ def complete(args, exposure, context, prompter):
 		return prompter.ask(name, DESCRIPTORS.get(name, Descriptor()), context, gathered(), need=commandNeed(exposure), check=check, **options)
 	def repair(name):
 		value, descriptor = getattr(args, name), DESCRIPTORS.get(name, Descriptor())
-		if prompter and value is not None and descriptor.kind == "choice":
+		if value is not None and descriptor.kind == "choice":
 			values = [candidate for candidate, _ in prompt.candidatesFor(name, descriptor, context, gathered())]
-			if values and value not in values:
-				prompter.say(f"! Unknown {name}: {value}", "fg:ansiyellow")
-				setattr(args, name, ask(name, default=value))
-	if prompter and exposure.needsPlan and context.plan is None:
-		args.plan = ask("plan")
-		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=args.agent)
+			if value not in values:
+				if prompter:
+					prompter.say(f"! Unknown {name}: {value}", "fg:ansiyellow")
+					setattr(args, name, ask(name, default=value))
+				else:
+					recovery = "Choose " + name + ": " + ", ".join(values[:5]) + "." if values else descriptor.recovery
+					raise AutoError(f"Unknown {name}: {value}", recovery=recovery or None)
+	if exposure.needsPlan:
+		from auto.features.plan.store import planPath
+		try:
+			context = context.derive(plan=planPath(context))
+		except AutoError as error:
+			if not prompter:
+				values = [value for value, _ in prompt.candidatesFor("plan", DESCRIPTORS["plan"], context, gathered())]
+				if values:
+					raise AutoError(str(error), recovery=(error.recovery or "") + " Available plans: " + ", ".join(values[:5]) + ".") from error
+				raise
+			args.plan = ask("plan")
+			context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=args.agent)
 	for name in exposure.arguments:
 		if getattr(args, name) is not None:
 			repair(name)
@@ -282,22 +306,23 @@ def complete(args, exposure, context, prompter):
 
 def missingInputs(context, script) -> list:
 	"""Return the inputs a script uses without being given or declaring them."""
-	from auto.features.script.operations import ScriptInputs, loadScript
+	from auto.features.script.operations import ScriptInputs
 	try:
-		meta = loadScript(context, script).meta
-		names = ScriptInputs(context, script)["inputs"]
+		return ScriptInputs(context, script, missingOnly=True)["inputs"]
 	except (AutoError, OSError, ValueError):
 		return []
-	declared = {*(meta.get("inputs") or {}), *(meta.get("each") or {})}
-	return [name for name in names if name not in context.inputs and name not in declared]
 
 
 def commandLine(args, exposure) -> str:
 	"""Return the command equivalent to a filled invocation."""
 	words = ["auto", exposure.noun, exposure.verb, *(getattr(args, name) for name in exposure.arguments)]
 	for name in (*exposure.optional, *CONTEXT_KEYS):
-		if getattr(args, name, None) is not None:
-			words += ["--" + name, getattr(args, name)]
+		value = getattr(args, "harnessAgent" if name == "agent" and name in exposure.arguments else name, None)
+		if isinstance(value, bool):
+			if value:
+				words.append("--" + name)
+		elif value is not None:
+			words += ["--" + name, value]
 	for flag in ("input", "param"):
 		for item in getattr(args, flag, []):
 			words += ["--" + flag, item]

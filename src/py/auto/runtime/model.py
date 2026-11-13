@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable
 
-from auto.runtime.integration import EngineIntegration, KnowledgeIntegration
+from auto.runtime.integration import EngineIntegration, KnowledgeIntegration, RunScopeIntegration
 from auto.utils.data import AutoError
 
 # -----------------------------------------------------------------------------
@@ -62,6 +62,8 @@ class Event(StrEnum):
 	RUN_PHASE = "RunPhase"
 	RUN_FINISHED = "RunFinished"
 	RUN_ENDED = "RunEnded"
+	CONSOLIDATION_APPLIED = "ConsolidationApplied"
+	CONSOLIDATION_RECONCILED = "ConsolidationReconciled"
 	TASK_CHECKED = "TaskChecked"
 	TASK_EVALUATED = "TaskEvaluated"
 	TASK_EVALUATION_FAILED = "TaskEvaluationFailed"
@@ -114,7 +116,7 @@ class Limits:
 	def check(self) -> None:
 		self.usage["time"] = self.initialTime + time.monotonic() - self.started
 		for name, maximum in self.budget.items():
-			if self.usage.get(name, 0) >= maximum:
+			if self.usage.get(name, 0) > maximum:
 				raise AutoError(f"{name} budget exhausted", FailureKind.TIMEOUT if name == "time" else FailureKind.BUDGET)
 
 	def remaining(self) -> float:
@@ -146,10 +148,13 @@ class Context:
 	resolvedInputs: dict = field(default_factory=dict)
 	params: dict = field(default_factory=dict)
 	policyLayers: list = field(default_factory=list)
+	configurationLayers: list = field(default_factory=list)
+	policyDefaults: dict | None = None
 	environ: dict = field(default_factory=lambda: dict(os.environ))
 	engines: dict = field(default_factory=dict)
 	resolvers: dict = field(default_factory=dict)
 	knowledge: object | None = None
+	runScope: RunScopeIntegration | None = None
 	limits: Limits | None = None
 	evidence: list = field(default_factory=list)
 	variables: dict = field(default_factory=dict)
@@ -195,13 +200,33 @@ class Runtime:
 		return MemoKnowledge(self.context.project)
 
 	def resolve(self, target: str) -> Content:
-		if not self.context.resolvers:
-			from auto.wiring import installResolvers
-			installResolvers(self.context)
-		for prefix, resolver in self.context.resolvers.items():
+		from auto.wiring import installResolvers
+		installResolvers(self.context)
+		for prefix in sorted(self.context.resolvers, key=len, reverse=True):
 			if target.startswith(prefix):
-				return resolver(self.context, target)
+				return self.context.resolvers[prefix](self.context, target)
 		raise AutoError(f"No resolver for reference: {target}")
+
+	def prepareRun(self, run: dict, state: dict):
+		"""Apply configured run facets through the composition boundary."""
+		from auto.wiring import prepareRun
+		return prepareRun(self.context, run, state)
+
+	def planRunBudget(self, task, budget, run=None, *, assessment=False):
+		from auto.wiring import planRunBudget
+		return planRunBudget(self.context, task, budget, run, assessment=assessment)
+
+	def prepareRunRequest(self, run: dict, state: dict, request: dict):
+		from auto.wiring import prepareRunRequest
+		return prepareRunRequest(self.context, run, state, request)
+
+	def recordRunMetadata(self, run: dict, event: dict):
+		from auto.wiring import recordRunMetadata
+		return recordRunMetadata(run, event)
+
+	def planEventRecorded(self, path):
+		from auto.wiring import planEventRecorded
+		return planEventRecorded(self.context, path)
 
 
 # -----------------------------------------------------------------------------

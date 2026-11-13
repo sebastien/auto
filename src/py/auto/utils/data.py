@@ -29,6 +29,14 @@ class AutoError(Exception):
 		self.kind = kind
 		self.recovery = recovery
 
+
+class ReferenceUnavailable(AutoError):
+	"""A configured source cannot be read on this host; never substitute content."""
+
+	def __init__(self, ref: str, reason: str):
+		super().__init__(f"Reference unavailable: {ref}: {reason}", recovery="Check the configured resolver and the source archive on this host.")
+		self.ref = ref
+
 # -----------------------------------------------------------------------------
 #
 # OPERATIONS
@@ -54,21 +62,34 @@ def yamlText(value: object) -> str:
 	stream = io.StringIO()
 	writer = YAML(typ="safe", pure=True)
 	writer.default_flow_style = False
+	# Wrapped escaped scalars can change backslashes when snapshots are nested
+	# inside another YAML document. Keep their exact bytes across round trips.
+	writer.width = 2**31 - 1
 	writer.dump(value, stream)
 	return stream.getvalue()
 
 
-def document(text: str) -> tuple[dict, str]:
-	"""Split YAML frontmatter from a markdown body."""
-	if not text.startswith("---\n"):
-		return {}, text
-	match = re.search(r"(?m)^---\s*$", text[4:])
+def _frontmatter(text: str):
+	"""Locate exact frontmatter boundaries for either Markdown line ending."""
+	if not re.match(r"---\r?\n", text):
+		return None
+	match = re.match(r"---\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", text, re.MULTILINE | re.DOTALL)
 	if not match:
 		raise AutoError("Unclosed YAML frontmatter")
-	meta = yamlLoad(text[4:4 + match.start()]) or {}
+	return match
+
+
+def document(text: str) -> tuple[dict, str]:
+	"""Split YAML frontmatter from a markdown body."""
+	match = _frontmatter(text)
+	if match is None:
+		return {}, text
+	meta = yamlLoad(match[1])
+	if meta is None:
+		meta = {}
 	if not isinstance(meta, dict) or any(not isinstance(key, str) for key in meta):
 		raise AutoError("Frontmatter must be a string-keyed mapping")
-	return meta, text[4 + match.end():].lstrip("\r\n")
+	return meta, text[match.end():].lstrip("\r\n")
 
 
 def documentText(meta: dict, body: str) -> str:
@@ -156,10 +177,9 @@ def sections(body: str, level: int = 2) -> tuple[str, dict[str, str]]:
 def section(text: str, name: str) -> str:
 	"""Select the body of the one heading named `name`, keeping any frontmatter."""
 	front = ""
-	if text.startswith("---\n"):
-		match = re.search(r"(?m)^---\s*$\n?", text[4:])
-		if match:
-			front, text = text[:4 + match.end()], text[4 + match.end():]
+	match = _frontmatter(text)
+	if match is not None:
+		front, text = text[:match.end()], text[match.end():]
 	lines, headings, fence = text.splitlines(keepends=True), [], None
 	for index, line in enumerate(lines):
 		marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
@@ -176,6 +196,7 @@ def section(text: str, name: str) -> str:
 		raise AutoError(f"Missing or ambiguous section: {name}")
 	start, level, _ = matches[0]
 	end = next((index for index, depth, _ in headings if index > start and depth <= level), len(lines))
-	return front + "".join(lines[start + 1:end]).strip("\n") + "\n"
+	newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
+	return front + "".join(lines[start + 1:end]).strip("\r\n") + newline
 
 # EOF

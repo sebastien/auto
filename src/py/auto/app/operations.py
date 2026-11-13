@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from auto.runtime.model import Event, RunStatus
+from auto.runtime.model import Event, RunStatus, budgetValue
 from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, document, jsonText, yamlLoad
 
@@ -30,6 +30,7 @@ class Descriptor:
 	suffix: str = ""
 	candidates: Callable | None = None
 	recovery: str = ""
+	label: str = ""
 
 
 def firstLine(text) -> str:
@@ -79,11 +80,18 @@ def catalogueCandidates(context, arguments):
 	return [(entry["identity"], firstLine(entry.get("title") or entry.get("description"))) for entry in CatalogueList(context)]
 
 
+def agentCandidates(context, arguments):
+	from auto.features.memory.config import agentsFor
+	return [("auto:agent/" + name, config["agent"]) for name, config in agentsFor(context).items()]
+
+
 # Descriptors are keyed by argument name, which is consistent across exposures.
 DESCRIPTORS = {
 	"plan": Descriptor("choice", "The plan to work in", candidates=planCandidates, recovery='Create a plan with auto plan create "<goal>".'),
 	"goal": Descriptor("multiline", "What the plan should achieve"),
-	"reason": Descriptor("multiline", "Why the plan or task needs refining"),
+	"reason": Descriptor("multiline", "Why the plan or task needs this change"),
+	"mode": Descriptor("choice", "How to hold the plan", candidates=lambda context, arguments: [("Pause", "Finish the current run"), ("Stop", "Cancel the current run")]),
+	"follow": Descriptor("text", "Keep following new plan events"),
 	"task": Descriptor("choice", "A task of the plan", candidates=taskCandidates, recovery="Check the plan tasks with auto plan status."),
 	"run": Descriptor("choice", "A run of the plan", candidates=runCandidates, recovery="Start a run with auto task run TASK."),
 	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="List gaps with auto gap list."),
@@ -99,6 +107,9 @@ DESCRIPTORS = {
 	"budget": Descriptor("structured", "Optional YAML budget mapping, eg. {cost: 2, time: 1800}"),
 	"effects": Descriptor("structured", "YAML list of dotted effect names"),
 	"agents": Descriptor("structured", "YAML list of agent references"),
+	"agent": Descriptor("choice", "The Auto agent to consolidate", candidates=agentCandidates),
+	"phases": Descriptor("structured", "YAML list of Memoriser phases; omitted means all"),
+	"overrideAllowance": Descriptor("text", "Explicitly override a consolidation allowance"),
 	"filter": Descriptor("structured", "YAML mapping of fields to match"),
 	"since": Descriptor("text", "Event index to follow from"),
 }
@@ -129,6 +140,7 @@ class Exposure:
 	ask: tuple[str, ...] = ()
 	noun: str = ""
 	verb: str = ""
+	mcpVerb: str = ""
 
 	def __post_init__(self):
 		if self.noun and self.verb:
@@ -142,6 +154,10 @@ class Exposure:
 	@property
 	def words(self) -> tuple[str, str]:
 		return self.noun, self.verb
+
+	@property
+	def toolName(self) -> str:
+		return self.noun + "_" + (self.mcpVerb or self.verb)
 
 	@property
 	def schema(self):
@@ -158,6 +174,12 @@ class Exposure:
 			properties["concerns"] = {"type": "array", "items": {"type": "string"}}
 		if "since" in properties:
 			properties["since"] = {"type": "integer"}
+		if "follow" in properties:
+			properties["follow"] = {"type": "boolean"}
+		if "overrideAllowance" in properties:
+			properties["overrideAllowance"] = {"type": "boolean"}
+		if "phases" in properties:
+			properties["phases"] = {"type": "array", "items": {"type": "string"}}
 		if "answer" in properties:
 			properties["answer"] = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "object"}, {"type": "array"}]}
 		if self.payload:
@@ -169,6 +191,8 @@ class Exposure:
 		for name, value in properties.items():
 			if DESCRIPTORS.get(name, Descriptor()).help:
 				value["description"] = DESCRIPTORS[name].help
+			if DESCRIPTORS.get(name, Descriptor()).label:
+				value["title"] = DESCRIPTORS[name].label
 		return {"type": "object", "properties": properties, "required": list(self.arguments), "additionalProperties": False}
 
 	def call(self, context, arguments):
@@ -186,7 +210,13 @@ EXPOSURES = [
 	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True,
 		effects=True, needsPlan=True),
 	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True, needsPlan=True),
-	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",), needsPlan=True),
+	Exposure("PlanContinue", "orchestration.operations", (), "Run a plan until it needs a human", stream=True, passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanHold", "plan.control", ("mode", "reason"), "Pause or stop a plan", passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanRelease", "plan.control", ("reason",), "Release a held plan", passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanEvents", "plan.events", (), "Follow a plan from an event cursor", mcp=True, stream=True,
+		optional=("since", "follow"), needsPlan=True),
+	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",), needsPlan=True,
+		noun="policy", verb="show", mcpVerb="resolve"),
 	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True, effects=True, needsPlan=True),
 	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",), needsPlan=True),
 	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",), needsPlan=True),
@@ -196,6 +226,9 @@ EXPOSURES = [
 		optional=("concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
 	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", mcp=True, optional=("kind", "query")),
 	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", mcp=True),
+	Exposure("ConsolidationStart", "memory.consolidation", ("agent",), "Consolidate an agent's memory",
+		optional=("phases", "reason", "overrideAllowance"), effects=True),
+	Exposure("ConsolidationStatus", "memory.consolidation", ("agent",), "Inspect agent consolidation and due work", mcp=True),
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
 		mcp=True, payload="elaboration", passPlan=True, violations=True, needsPlan=True),
 	Exposure("AuditValidate", "audit.operations", ("audit",), "Validate an audit report", mcp=True, payload="audit", violations=True),
@@ -203,7 +236,7 @@ EXPOSURES = [
 
 STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,
 	RunStatus.TIMED_OUT: 124, RunStatus.CANCELLED: 130}
-STRUCTURED_ARGUMENTS = ("budget", "filter", "effects", "agents", "concerns")
+STRUCTURED_ARGUMENTS = ("budget", "filter", "effects", "agents", "concerns", "phases")
 
 # -----------------------------------------------------------------------------
 #
@@ -218,6 +251,13 @@ def coerceArguments(exposure: Exposure, arguments: dict) -> dict:
 	for name in STRUCTURED_ARGUMENTS:
 		if name in result and isinstance(result[name], str):
 			result[name] = yamlLoad(result[name])
+	if "budget" in result:
+		budgetValue(result["budget"])
+	if "filter" in result and not isinstance(result["filter"], dict):
+		raise AutoError("filter must be a mapping")
+	for name in ("effects", "agents", "concerns", "phases"):
+		if name in result and (not isinstance(result[name], list) or any(not isinstance(value, str) for value in result[name])):
+			raise AutoError(f"{name} must be a list of strings")
 	for name in exposure.valueArguments:
 		if isinstance(result.get(name), str):
 			result[name] = yamlLoad(result[name])
@@ -226,6 +266,8 @@ def coerceArguments(exposure: Exposure, arguments: dict) -> dict:
 			result["since"] = int(result["since"])
 		except ValueError as error:
 			raise AutoError("since must be an integer") from error
+	if "since" in result and (type(result["since"]) is not int or result["since"] < 0):
+		raise AutoError("since must be a non-negative integer")
 	return result
 
 
@@ -261,6 +303,11 @@ def exitStatus(result, exposure: Exposure | None = None) -> int:
 	if exposure is not None and exposure.violations:
 		return 1 if result else 0
 	if isinstance(result, dict):
+		if result.get("kind") == "ContinuationStopped":
+			data = result["data"]
+			if data["stop"] == "ended":
+				return 0 if data.get("status") == RunStatus.SUCCEEDED else 1
+			return 1 if data["stop"] == "failed" else 3
 		if isinstance(result.get("run"), dict):
 			return exitStatus(result["run"])
 		if result.get("failure") or result.get("pass") is False:
@@ -290,7 +337,7 @@ def resumeResult(context, exposure: Exposure, result, ask):
 	if not ask or not exposure.resumable:
 		return result
 	from auto.features.plan.store import journal
-	from auto.features.task.operations import RunAnswer, RunGet
+	from auto.features.task.operations import RunAnswer, RunCancel, RunGet
 	nested = isinstance(result, dict) and isinstance(result.get("run"), dict)
 	if nested:
 		run = result["run"]
@@ -298,7 +345,11 @@ def resumeResult(context, exposure: Exposure, result, ask):
 	else:
 		run = result
 	while run["status"] == RunStatus.WAITING:
-		RunAnswer(context, run, ask(run["question"]), "Answered interactively")
+		try:
+			RunAnswer(context, run, ask(run["question"]), "Answered interactively")
+		except KeyboardInterrupt:
+			RunCancel(context, run)
+			raise
 		run = RunGet(context, run)
 	if not nested:
 		return run

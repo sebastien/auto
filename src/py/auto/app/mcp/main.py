@@ -21,7 +21,32 @@ def createServer(context):
 	from mcp import types
 	from mcp.server import Server
 	server = Server("auto")
-	exposed = {"_".join(item.words): item for item in EXPOSURES if item.mcp}
+	exposed = {item.toolName: item for item in EXPOSURES if item.mcp}
+	maintenance = set()
+
+	def scheduleMaintenance(ctx):
+		from auto.features.memory.scheduler import HousekeepingCheck, diagnostic, hasWork
+		try:
+			needed = hasWork(ctx)
+		except Exception as error:
+			diagnostic(ctx.project / ".auto/housekeeping", error)
+			return
+		if not needed:
+			return
+		stop = threading.Event()
+		async def maintain():
+			try:
+				await asyncio.to_thread(HousekeepingCheck, ctx.derive(cancelled=stop.is_set))
+			except asyncio.CancelledError:
+				stop.set()
+				raise
+		def completed(task):
+			maintenance.discard(task)
+			if not task.cancelled() and task.exception() is not None:
+				diagnostic(ctx.project / ".auto/housekeeping", task.exception())
+		task = asyncio.create_task(maintain())
+		maintenance.add(task)
+		task.add_done_callback(completed)
 
 	@server.list_tools()
 	async def listTools():
@@ -31,7 +56,7 @@ def createServer(context):
 	async def callTool(name, arguments):
 		item = exposed[name]
 		arguments = dict(arguments)
-		config = {key: arguments.pop(key) for key in CONTEXT_KEYS if key != "plan" and key in arguments}
+		config = {key: arguments.pop(key) for key in CONTEXT_KEYS if key != "plan" and key not in item.arguments and key in arguments}
 		plan = arguments.pop("plan", None)
 		if plan:
 			from auto.features.plan.store import planPath
@@ -46,6 +71,7 @@ def createServer(context):
 			result = await asyncio.to_thread(item.call, ctx, arguments)
 			if item.stream:
 				stream, count = result, 0
+				result = None
 				try:
 					while True:
 						pending = asyncio.create_task(asyncio.to_thread(next, stream, None))
@@ -66,6 +92,7 @@ def createServer(context):
 		except AutoError as error:
 			result = {"failure": {"kind": error.kind, "reason": str(error)}}
 		structured = result if isinstance(result, dict) else {"result": result}
+		scheduleMaintenance(ctx)
 		return types.CallToolResult(content=[types.TextContent(type="text", text=render(result, "markdown"))],
 			structuredContent=structured, isError=exitStatus(result, item) != 0)
 	return server

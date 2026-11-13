@@ -56,7 +56,7 @@ class TaskTests(unittest.TestCase):
 	def testCanonicalTaskReferencesUsePlanIdentity(self):
 		# The canonical plan ID comes from plan.md, independently of its directory.
 		(self.plan / "plan.md").write_text(documentText({"id": "renamed", "goal": "Demo"}, "# Demo"))
-		self.add("assemble", inputs={"part": "auto:renamed/task/build/definition#Process",
+		self.add("assemble", inputs={"part": "auto:renamed/task/build#Process", "definition": "auto:renamed/task/build/definition#Process",
 			"external": "auto:other/task/build"})
 		self.assertEqual(TaskDependencies(self.context(), "assemble"), ["build"])
 		self.assertEqual(TaskValidate(self.context(), "assemble"), [])

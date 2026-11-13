@@ -6,13 +6,15 @@ import re
 import shlex
 from pathlib import Path
 
-from liquid import Environment, Node, StrictUndefined, Tag
+from liquid import Environment, Node, RenderContext, StrictUndefined, Tag, Undefined
+from liquid.template import BoundTemplate
 from liquid.token import TOKEN_TAG
 
-from auto.features.script.config import validateConfig
+from auto.features.script.config import composedMeta, validateConfig
 from auto.features.script.model import Script
+from auto.features.script.sources import ScriptSources
 from auto.runtime.config import RUNTIME_DEFAULTS
-from auto.runtime.operations import Resolve, Shell, Value, isReference
+from auto.runtime.operations import Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, document, jsonText, merge
 
@@ -27,6 +29,17 @@ class AutoEnvironment(Environment):
 	context_depth_limit = 32
 	loop_iteration_limit = 10000
 	output_stream_limit = 4 * 1024 * 1024
+	# Each composed script gets a fresh render context, but its caller's loop
+	# drop remains the parent of loops declared inside that script.
+	class template_class(BoundTemplate):
+		class context_class(RenderContext):
+			def parentloop(self):
+				parent = super().parentloop()
+				if issubclass(type(parent), Undefined):
+					inherited = self.get(["forloop"], token=None)
+					if not issubclass(type(inherited), Undefined):
+						return inherited
+				return parent
 
 
 class TransclusionNode(Node):
@@ -57,14 +70,12 @@ def directives(source: str) -> tuple[str, list[tuple[str, str, bool]]]:
 	def add(kind, text, inline):
 		items.append((kind, text if kind == "literal" else text.strip(), inline))
 		return "{% auto " + str(len(items) - 1) + " %}"
-	parts, raw, codeFence = [], False, None
+	parts, raw, codeFence = [], None, None
 	for line in source.splitlines(keepends=True):
-		if "{% raw %}" in line or "{% comment %}" in line:
-			raw = True
 		if raw:
 			parts.append(line)
-			if "{% endraw %}" in line or "{% endcomment %}" in line:
-				raw = False
+			if re.search(r"{%-?\s*end" + raw + r"\s*-?%}", line):
+				raw = None
 			continue
 		marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
 		if marker:
@@ -78,6 +89,13 @@ def directives(source: str) -> tuple[str, list[tuple[str, str, bool]]]:
 			# Fenced examples are data, including Liquid and Auto syntax.
 			parts.append(add("literal", line.rstrip("\n"), True) + ("\n" if line.endswith("\n") else ""))
 			continue
+		literal = re.search(r"{%-?\s*(raw|comment)\s*-?%}", line)
+		if literal:
+			raw = literal[1]
+			parts.append(line)
+			if re.search(r"{%-?\s*end" + raw + r"\s*-?%}", line[literal.end():]):
+				raw = None
+			continue
 		stripped = line.strip()
 		if stripped.startswith("@") and isReference(stripped[1:].strip('"')):
 			parts.append(add("file", stripped[1:], False) + "\n")
@@ -86,7 +104,7 @@ def directives(source: str) -> tuple[str, list[tuple[str, str, bool]]]:
 		elif stripped.startswith("!?"):
 			parts.append(add("check", stripped[2:], False) + "\n")
 		else:
-			line = re.sub(r"{{([@!])(.*?)}}", lambda m: add("file" if m[1] == "@" else "shell", m[2], True), line)
+			line = re.sub(r"{{([@!])((?:{{.*?}}|[^{]|{(?!{))*?)}}", lambda m: add("file" if m[1] == "@" else "shell", m[2], True), line)
 			parts.append(re.sub(r"({%[-]?\s*)elif\b", r"\1elsif", line))
 	return "".join(parts), items
 
@@ -101,12 +119,24 @@ def directives(source: str) -> tuple[str, list[tuple[str, str, bool]]]:
 class Renderer:
 	"""Keep origins, caller values and defaults distinct across composition."""
 
-	def __init__(self, context, script: Script, inherited: dict | None = None, stack: tuple = ()):
+	def __init__(self, context, script: Script, inherited: dict | None = None, stack: tuple = (), *, checks: list | None = None,
+		scopeWrapper=False, scopeStack=()):
 		self.context, self.script = context, script
+		self.checks = checks
+		self.scope = script.meta.get("_template_scope", {})
+		if not isinstance(self.scope, dict):
+			raise AutoError("Template scope must be a mapping")
 		self.stack = stack
-		if len(stack) >= context.maxDepth or str(script.path) in stack:
-			raise AutoError(f"Recursive transclusion: {script.path}")
+		self.identity = script.identity
+		self.scopeWrapper, self.scopeStack = scopeWrapper, scopeStack
+		if self.identity in stack:
+			raise AutoError(f"Recursive transclusion: {script.ref or script.path}")
+		if len(stack) >= context.maxDepth:
+			raise AutoError(f"Transclusion depth exceeded: {script.ref or script.path}")
+		if scopeWrapper and (len(scopeStack) >= context.maxDepth or self.identity in scopeStack):
+			raise AutoError(f"Recursive captured scope: {script.path}")
 		self.defaults = merge(script.meta, inherited or {})
+		self.sources = ScriptSources(context, self.defaults.get("_template_sources"))
 		for key, value in self.defaults.get("output", {}).items():
 			if isinstance(value, str) and value.startswith(("./", "../")):
 				self.defaults["output"][key] = str((script.path.parent / value).resolve())
@@ -140,18 +170,36 @@ class Renderer:
 		def resolve(group):
 			inheritedValues, current = inherited.get(group, {}), getattr(self.context, group)
 			result = {}
-			for key, value in merge(self.defaults.get(group, {}), current).items():
+			defaults = self.defaults.get(group, {})
+			materialized = group == "params" and self.defaults.get("from")
+			values = defaults if materialized else merge(defaults, current)
+			for key, value in values.items():
 				if key in inheritedValues:
 					result[key] = inheritedValues[key]
 				else:
-					origin = self.context.project if key in current else self.script.path.parent
-					result[key] = Value(self.context, value, origin, self.config)
+					origin = self.context.project if key in current and not materialized else self.script.path.parent
+					result[key] = self.sources.value(value, origin, self.config) if group == "params" else Value(self.context, value, origin, self.config)
 			return result
 		inputs, params = resolve("inputs"), resolve("params")
+		if self.defaults.get("_template_bindings"):
+			params["__template_values"] = self.defaults["_template_bindings"]
 		return {**inputs, "inputs": inputs, "params": params, **self.context.variables}
 
 	def render(self, namespace: dict | None = None) -> str:
-		return self.template.render(namespace if namespace is not None else self.bindings())
+		return self.template.render(merge(namespace if namespace is not None else self.bindings(), self.scope))
+
+	def transclusions(self):
+		"""Enumerate authored files in source order, retaining conditional scope."""
+		context = self.template.context_class(self.template)
+		def visit(nodes, conditional=False):
+			for node in nodes:
+				if isinstance(node, TransclusionNode):
+					kind, argument, inline = node.directive
+					if kind == "file":
+						yield argument.strip('"'), inline, conditional
+				else:
+					yield from visit(node.children(context, include_partials=False), True)
+		yield from visit(self.template.nodes)
 
 	def insert(self, directive, namespace: dict) -> str:
 		kind, argument, inline = directive
@@ -161,23 +209,27 @@ class Renderer:
 			self.context.limits.check()
 		argument = self.shellArgument(argument, namespace) if kind in {"shell", "check"} else self.env.from_string(argument).render(namespace)
 		if kind == "check":
+			if self.checks is not None:
+				self.checks.append(argument)
+				return ""
 			return "!?" + argument
 		if kind == "shell":
 			stdout, stderr, code = Shell(self.context, argument, self.config)
 			if code:
 				raise AutoError(f"Shell transclusion failed ({code}): {stderr}")
 			return stdout if inline else fence(stdout)
-		content = Resolve(self.context, argument, self.script.path.parent)
-		if inline:
+		content = self.sources.resolve(argument, self.script.path.parent)
+		wrapper = (self.sources.record(argument, self.script.path.parent) or {}).get("scope_wrapper") is True
+		if inline and not wrapper:
 			return content.text
 		if content.path.suffix != ".md":
 			return fence(content.text, content.path.suffix.lstrip("."))
 		meta, body = document(content.text)
-		if "each" in meta:
-			raise AutoError(f"A transcluded script cannot use each: {content.path}")
-		# Lifecycle keys (pre, post, transform, apply) belong to the script being run, so
-		# they are dropped below with the other non-inherited keys.
-		child = Renderer(self.context, Script(body, content.path, meta), self.defaults, (*self.stack, str(self.script.path)))
+		meta = composedMeta(meta, content.path)
+		stack = self.stack if self.scopeWrapper else (*self.stack, self.identity)
+		scopeStack = (*self.scopeStack, self.identity) if self.scopeWrapper else self.scopeStack
+		child = Renderer(self.context, Script(body, content.path, meta, content.ref), self.defaults, stack, checks=self.checks,
+			scopeWrapper=wrapper, scopeStack=scopeStack)
 		childNamespace = child.bindings(namespace)
 		# Loop locals are inherited; child defaults fill previously absent inputs.
 		childNamespace = merge(childNamespace, namespace)

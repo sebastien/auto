@@ -213,6 +213,7 @@ anywhere else (eg. Memo records, APIs):
 | Plan input | `plan:{name}` | `auto:{plan}/input/{name}` |
 | Task output (latest succeeded run) | `task:{id}` | `auto:{plan}/task/{id}` |
 | Task definition | `task:{id}/definition` | `auto:{plan}/task/{id}/definition` |
+| Materialized companion source | `task:{id}/source/{hash}` | `auto:{plan}/task/{id}/source/{hash}` |
 | Root task (output, definition) | `task:root`, `task:root/definition` | `auto:{plan}/task/root`, `auto:{plan}/task/root/definition` |
 | Run output | `run:{id}` | `auto:{plan}/run/{id}` |
 | Run receipt or journal | `run:{id}/receipt`, `run:{id}/journal` | `auto:{plan}/run/{id}/{part}` |
@@ -225,6 +226,19 @@ Task, run, gap and decision ids contain no `/`, so `/{part}` is unambiguous and 
 available for ranges and symbols. Plan ids `catalogue` and `agent` are reserved:
 `auto:agent/{id}` references memorisation agents and their consolidation runs
 (see [Memorisation](spec-010-memorisation.md)).
+
+A materialized companion source belongs to its task definition and is available
+without a succeeded task output, including after removal through the archived
+definition. Its 64-character lowercase hex identity hashes the original source
+location and compiled document, so different inclusion scopes can coexist.
+Its content digest is computed over the exact compiled document bytes; the
+original source reference/digest and source-relative location remain recorded.
+
+Removing a task retains its final definition bytes. Definition references still
+resolve those bytes with the same digest and original relative-reference origin.
+The task remains absent from the current plan and cannot be started or have its
+id reused. A definition reference is an asset; unlike an output reference, it
+does not require a succeeded run of the referenced task.
 
 ### Digest
 
@@ -239,8 +253,9 @@ A digest is `sha256:{hex}`, supplied by the owner of the referenced content:
 ## Operations
 
 Plan:
-- `PlanCreate(context,goal,inputs?,budget?,agents?)`: creates the plan and its root
+- `PlanCreate(context,goal,inputs?,budget?,effects?,agents?)`: creates the plan and its root
   task, and elaborates the root task, producing the first revision.
+  `effects` records explicit human requests as grants (see Plan Policy).
 - `PlanGet(context,id)`: returns a plan.
 - `PlanList(context,filter?)`: lists plans, filtered by status.
 - `PlanRefine(context,plan,reason,task?)`: elaborates the task (by default
@@ -281,6 +296,12 @@ its journal:
 - *Readiness*: a task is `Ready` when it has no open gaps and all its input
   tasks and children have a succeeded run. Preconditions are checked when the run starts
   (see Task lifecycle).
+  An output gate additionally requires a human's affirmative decision for the
+  exact current output digest, or an explicit human dismissal with a rationale.
+  Rejection resolves the gap but keeps dependents blocked and leaves the
+  producing run `Succeeded`. A retry or rework produces a new output requiring
+  its own gate; an earlier decision cannot approve that output. These rules
+  also apply to dependents added after the producing run.
 - *Gaps*: a question raised during a run (`ScriptQuestion`) is raised as
   a gap; the run is `Waiting` until a decision is made, and the answer is
   passed back to the run.

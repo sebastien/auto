@@ -10,14 +10,14 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from liquid.exceptions import LiquidError
 
-from auto.features.script.config import commands, validateConfig
+from auto.features.script.config import commands, composedMeta, validateConfig
 from auto.features.script.model import Script, createScript
 from auto.features.script.templates import Renderer
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
-from auto.runtime.operations import Engine, Resolve, Shell, Value, isReference
+from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
-from auto.utils.data import AutoError, document, jsonText
+from auto.utils.data import AutoError, document, documentText, jsonText, merge
 
 
 # -----------------------------------------------------------------------------
@@ -35,7 +35,7 @@ def loadScript(context: Context, script: Script | str | dict) -> Script:
 		path = Path(script.get("path", context.project / "script.md"))
 		return createScript(script["content"], path, script.get("meta")) if "meta" in script else createScript(script["content"], path)
 	content = Resolve(context, script if isReference(script) else "./" + script)
-	return createScript(content.text, content.path)
+	return createScript(content.text, content.path, ref=content.ref)
 
 
 def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
@@ -50,7 +50,7 @@ def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
 			raise AutoError("Unsupported output format")
 		for name in ("schema", "template"):
 			if name in output:
-				output[name] = Value(context, output[name], loaded.path.parent, renderer.config)
+				output[name] = renderer.sources.value(output[name], loaded.path.parent, renderer.config)
 		if isinstance(output.get("schema"), str):
 			output["schema"] = json.loads(output["schema"])
 		if "schema" in output:
@@ -94,14 +94,27 @@ def ended(kind, reason, status=None) -> dict:
 def executePrepared(context: Context, request: dict):
 	"""Drive one engine stream; answers are sent back through the generator."""
 	engine = Engine(context, request["config"].get("engine", RUNTIME_DEFAULTS["engine"]))
-	stream = engine.start(context, request)
-	answer = None
+	stream, answer = None, None
 	try:
+		if context.cancelled():
+			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
+		if context.limits:
+			context.limits.check()
+			for name in ("tokens", "cost"):
+				if name in context.limits.budget and context.limits.usage.get(name, 0) >= context.limits.budget[name]:
+					raise AutoError(f"{name} budget exhausted before engine execution", FailureKind.BUDGET)
+		stream = engine.start(context, request)
 		while True:
+			if context.cancelled():
+				raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 			try:
 				event = stream.send(answer)
 			except StopIteration:
 				raise AutoError("Engine ended without a terminal event", "system") from None
+			if context.cancelled():
+				raise AutoError("Execution cancelled", FailureKind.CANCELLED)
+			if context.limits:
+				context.limits.check()
 			answer = None
 			if event["type"] == Event.SCRIPT_ENDED:
 				if event["status"] == RunStatus.SUCCEEDED:
@@ -114,7 +127,8 @@ def executePrepared(context: Context, request: dict):
 		yield {"type": Event.SCRIPT_ENDED, "status": statusFor(kind), "output": None,
 			"failure": {"kind": failureFor(kind), "reason": str(error)}}
 	finally:
-		stream.close()
+		if stream is not None:
+			stream.close()
 
 
 def relay(stream):
@@ -137,6 +151,8 @@ def runLifecycle(context: Context, script: Script):
 		yield from runScript(context, script)
 		return
 	try:
+		if context.cancelled():
+			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 		renderer = Renderer(context, script)
 		namespace = renderer.bindings()
 		# Inputs are resolved once, so shell values do not run again for the prompt.
@@ -187,6 +203,8 @@ def runScript(context: Context, script, renderer: Renderer | None = None):
 	"""Run the prompt through the engine, streaming its events."""
 	stream = None
 	try:
+		if context.cancelled():
+			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 		loaded = loadScript(context, script)
 		request = prepare(context, loaded, renderer)
 		if context.observe:
@@ -229,6 +247,8 @@ def ScriptStart(context: Context, script):
 	"""Stream an ephemeral execution, once per `each` item; closing the stream cancels its engine."""
 	context = context.derive(limits=context.limits or Limits())
 	try:
+		if context.cancelled():
+			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 		loaded = loadScript(context, script)
 		validateConfig(loaded.meta)
 		each = loaded.meta.get("each")
@@ -267,43 +287,91 @@ def ScriptStart(context: Context, script):
 		yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": results}
 
 
-def ScriptInputs(context: Context, script) -> dict:
+def ScriptInputs(context: Context, script, *, definitions=None, expandDefinitions=True, missingOnly=False) -> dict:
 	"""Discover declared/implicit inputs and transitive references without shell effects."""
-	names, references, unresolved, visited = set(), set(), [], set()
-	def visit(loaded, depth=0, stack=()):
-		if str(loaded.path) in stack:
-			raise AutoError(f"Recursive transclusion: {loaded.path}")
-		if str(loaded.path) in visited:
-			return
+	context = context.derive(allowShell=False, variables={key: value for key, value in context.variables.items() if key != "_policyDeniedAction"})
+	names, references, unresolved, visited = set(), set(), [], {}
+	def visit(loaded, depth=0, stack=(), inherited=None):
+		if depth:
+			loaded = Script(loaded.content, loaded.path, composedMeta(loaded.meta, loaded.path), loaded.ref)
+		identity = loaded.identity
+		if identity in stack:
+			raise AutoError(f"Recursive transclusion: {loaded.ref or loaded.path}")
+		key = (identity, documentText(merge(loaded.meta, inherited or {}), loaded.content))
+		if key in visited:
+			return visited[key]
 		if depth >= context.maxDepth:
 			raise AutoError("Input discovery depth exceeded")
-		visited.add(str(loaded.path))
-		renderer = Renderer(context, loaded)
-		names.update(loaded.meta.get("inputs", {}))
-		names.update(loaded.meta.get("each", {}) if depth == 0 else {})
-		names.update(name for name in renderer.template.global_variable_paths(include_partials=False) if not name.startswith(("params", "run", "plan", "forloop")))
-		values = list(loaded.meta.get("inputs", {}).values()) + list(loaded.meta.get("params", {}).values())
-		values += list(loaded.meta.get("output", {}).values())
-		transclusions = set()
-		for kind, argument, inline in renderer.items:
-			if kind == "file":
-				transclusions.add(argument.strip('"'))
-		values += list(transclusions)
-		for value in values:
+		renderer = Renderer(context, loaded, inherited)
+		if not missingOnly:
+			names.update(loaded.meta.get("inputs", {}))
+			names.update(loaded.meta.get("each", {}) if depth == 0 else {})
+		transclusions = list(renderer.transclusions())
+		paths = renderer.template.global_variable_paths(include_partials=False)
+		for argument, inline, conditional in transclusions:
+			paths.extend(renderer.env.from_string(argument).global_variable_paths(include_partials=False))
+		for name in paths:
+			root = name.removeprefix("inputs.").split(".", 1)[0]
+			if missingOnly and (root in renderer.defaults.get("inputs", {}) or root in context.inputs or root in renderer.defaults.get("each", {})):
+				continue
+			if root not in renderer.scope and (name.startswith("inputs.") or root not in {"inputs", "params", "run", "plan", "forloop"}):
+				names.add(root)
+		values = []
+		for group in ("inputs", "params", "output"):
+			current = getattr(context, group) if group != "output" else {}
+			if group == "params" and renderer.defaults.get("from"):
+				current = {}
+			for name, value in loaded.meta.get(group, {}).items():
+				if name in (inherited or {}).get(group, {}) or name in current:
+					continue
+				values.append((value, group != "inputs", loaded.path.parent, None))
+			values.extend((value, group != "inputs", context.project, None) for value in current.values())
+		values += [(value, True, loaded.path.parent, None if inline else not conditional)
+			for value, inline, conditional in transclusions]
+		for value, sourceOwned, origin, contributes in values:
 			if not isReference(value):
 				continue
 			if "{{" in value:
 				unresolved.append(value)
 				continue
 			references.add(value)
-			# Task outputs may not exist yet; graph validation checks their identity.
-			if value.startswith("task:") or re.fullmatch(r"auto:[^/#]+/task/[^/#]+(?:/definition)?(?:#.*)?", value):
+			# Outputs remain future data. Definition values and inline insertions
+			# are data too; full definition transclusions compose as scripts.
+			definition = re.fullmatch(r"(?:task:|auto:[^/#]+/task/)[^/#]+/definition(?:#.*)?", value)
+			if re.fullmatch(r"(?:task:|auto:[^/#]+/task/)[^/#]+(?:#.*)?", value) or definition and (contributes is None or not expandDefinitions):
 				continue
-			content = Resolve(context, value, loaded.path.parent)
-			if value in transclusions and content.path.suffix == ".md":
+			context.variables.pop("_policyDeniedAction", None)
+			try:
+				target, _, selector = value.partition("#")
+				content = definitions(target) if definition and definitions is not None and not renderer.sources.record(value, origin) else None
+				if content is not None:
+					if len(content.data) > context.maxBytes:
+						raise AutoError("Reference exceeds byte limit: " + value)
+					content = Select(content, selector, value)
+				else:
+					content = renderer.sources.resolve(value, origin) if sourceOwned else Resolve(context, value, origin)
+			except AutoError:
+				if "_policyDeniedAction" not in context.variables:
+					raise
+				unresolved.append(value)
+				continue
+			if contributes is not None and content.path.suffix == ".md":
 				meta, body = document(content.text)
-				visit(Script(body, content.path, meta), depth + 1, (*stack, str(loaded.path)))
-	visit(loadScript(context, script))
+				defaults = visit(Script(body, content.path, meta, content.ref), depth + 1, (*stack, identity), renderer.defaults)
+				if contributes:
+					renderer.defaults = merge({key: value for key, value in defaults.items() if key in {*RUNTIME_KEYS, "output"}}, renderer.defaults)
+		visited[key] = renderer.defaults
+		return renderer.defaults
+	loaded = loadScript(context, script)
+	visit(loaded)
+	# Known parameter/loop-selected paths can remain as literal binding
+	# expressions in the root. Their captured Markdown still contributes inputs.
+	renderer = Renderer(context, loaded)
+	for ref, record in renderer.sources.records.items():
+		if record.get("expand"):
+			content = renderer.sources.resolve(ref, loaded.path.parent)
+			meta, body = document(content.text)
+			visit(Script(body, content.path, meta, content.ref), 1, inherited=renderer.defaults)
 	return {"inputs": sorted(names), "references": sorted(references), "unresolved": unresolved}
 
 # EOF

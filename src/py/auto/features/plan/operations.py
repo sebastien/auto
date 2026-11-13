@@ -5,14 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto.features.plan.gaps import GapList, repairLocked
+from auto.features.plan.gates import taskGapState
+from auto.features.plan.control import planHold
 from auto.features.memory.config import validateAgents
 from auto.features.plan.model import GapState, PlanState, RevisionOp, createPlan
-from auto.features.plan.references import latestRun
+from auto.features.plan.references import latestRun, planContent
 from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.features.task.model import Task, createTaskFromDict, createTaskFromText, taskText
-from auto.runtime.model import IN_FLIGHT, RunStatus
-from auto.runtime.operations import Resolve
-from auto.utils.data import AutoError, digest, document, documentText, identifier, jsonText
+from auto.runtime.model import Content, IN_FLIGHT, RunStatus
+from auto.runtime.operations import Resolve, Select
+from auto.utils.data import AutoError, digest, document, documentText, identifier, jsonText, readJson
 
 
 # -----------------------------------------------------------------------------
@@ -42,10 +44,51 @@ def _tasksAt(path: Path) -> dict[str, Task]:
 	return result
 
 
-def dependencyGraph(context, tasks: dict) -> dict[str, set[str]]:
-	"""Return declared dependencies plus parent-child edges, validated acyclic."""
-	from auto.features.task.operations import TaskDependencies
-	graph = {id: set(TaskDependencies(context, task)) for id, task in tasks.items()}
+def dependencyGraph(context, tasks: dict, *, taskInputs: dict | None = None) -> dict[str, set[str]]:
+	"""Validate definition dependencies, with optional inputs for selected runs."""
+	from auto.features.task.operations import TaskReferences
+	context = context.derive(inputs={})
+	definitions = {}
+	plan = createPlan(planPath(context)).id
+	owners = sorted({"auto:": planContent, "task:": planContent, **context.resolvers}.items(), key=lambda item: len(item[0]), reverse=True)
+	def definition(ref):
+		prefix = f"auto:{plan}/task/" if ref.startswith(f"auto:{plan}/task/") else "task:"
+		if not ref.startswith(prefix) or not ref.endswith("/definition"):
+			return None
+		id = ref[len(prefix):-len("/definition")]
+		if id not in tasks or next(resolve for start, resolve in owners if ref.startswith(start)) is not planContent:
+			return None
+		if id in definitions:
+			return definitions[id]
+		task = tasks[id]
+		text = taskText(task)
+		if task.path.is_file():
+			stored = task.path.read_bytes()
+			if taskText(createTaskFromText(stored.decode("utf-8"), task.path, id == "root")) == text:
+				# Unchanged definitions retain their exact bytes and registered owner.
+				definitions[id] = None
+				return None
+		if id == "root":
+			meta, body = document(text)
+			text = documentText({**meta, "id": plan}, body)
+		data = text.encode()
+		content = Content(f"auto:{plan}/task/{id}/definition", data, digest(data), task.path)
+		definitions[id] = content
+		return content
+	references = {id: TaskReferences(context.derive(inputs=taskInputs[id]) if taskInputs is not None and id in taskInputs else context,
+		task, definitions=definition) for id, task in tasks.items()}
+	graph = {id: set(value["dependencies"]) for id, value in references.items()}
+	readonly = context.derive(allowShell=False, variables=dict(context.variables))
+	for value in references.values():
+		for ref in value["definitions"]:
+			target, _, selector = ref.partition("#")
+			content = definition(target)
+			if content is not None:
+				if len(content.data) > context.maxBytes:
+					raise AutoError("Reference exceeds byte limit: " + ref)
+				Select(content, selector, ref)
+			else:
+				Resolve(readonly, ref)
 	for id, task in tasks.items():
 		if id != "root":
 			parent = task.meta.get("parent", "root")
@@ -91,7 +134,7 @@ def PlanGet(context, id=None) -> dict:
 		for id, task in tasks.items():
 			facets[id] = {**task.asDict(), "state": status["tasks"][id], "attempts": sum(run["task"] == id for run in runs),
 				"children": [child for child in tasks if child != "root" and tasks[child].meta.get("parent", "root") == id]}
-		return {**meta, "root": "root", "path": str(path), "tasks": facets, "revision": status["revision"],
+		return {**meta, "root": "root", "path": str(path), "tasks": facets, "revision": status["revision"], "hold": status["hold"], "continuation": status["continuation"],
 			"status": status["status"], "usage": status["usage"], "gaps": status["gaps"]}
 
 
@@ -124,7 +167,15 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 			operations.append({"op": RevisionOp.REMOVE, "task": id})
 		for change in changes:
 			op = change["op"]
-			if op == "agents":
+			if op in {RevisionOp.HOLD, RevisionOp.RELEASE}:
+				if context.author != "human":
+					raise AutoError("Plan holds and releases require a human author")
+				if not isinstance(change.get("reason"), str) or not change["reason"].strip():
+					raise AutoError("A hold or release requires a reason")
+				if op == RevisionOp.HOLD and change.get("mode") not in {"Pause", "Stop"}:
+					raise AutoError("Hold mode must be Pause or Stop")
+				operations.append({"op": op, "reason": change["reason"], **({"mode": change["mode"]} if op == RevisionOp.HOLD else {})})
+			elif op == "agents":
 				agents = validateAgents(context, change["agents"])
 				root = tasks["root"]
 				root.meta["agents"] = agents
@@ -178,7 +229,13 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 			if violations:
 				raise AutoError(jsonText(violations))
 		operations.extend(metadata.pop("extraOps", []))
-		return commit(context, path, operations, writes, reason=reason, **metadata)
+		revision = commit(context, path, operations, writes, reason=reason, **metadata)
+	if any(op["op"] == RevisionOp.HOLD and op["mode"] == "Stop" for op in operations):
+		from auto.features.task.operations import RunCancel, RunList
+		for run in RunList(context):
+			if run["status"] in IN_FLIGHT:
+				RunCancel(context, run)
+	return revision
 
 
 def PlanReady(context, plan=None) -> list:
@@ -186,14 +243,14 @@ def PlanReady(context, plan=None) -> list:
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	from auto.features.plan.policy import taskPolicyBlocked
-	gaps = GapList(context, path, {"status": GapState.OPEN})
+	gaps = GapList(context, path)
 	tasks = tasksAt(path)
 	graph = dependencyGraph(context, tasks)
 	def ready(id, dependencies):
 		run = latestRun(path, id)
-		return not taskPolicyBlocked(context, tasks[id]) and not any(id in gap["needed_by"] for gap in gaps) \
+		return not taskPolicyBlocked(context, tasks[id]) and not taskGapState(context, id, tasks, dependencies, gaps) \
 			and all(latestRun(path, dependency, True) for dependency in dependencies) \
-			and (run or {}).get("status") not in {RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)
+			and (run or {}).get("status") not in {RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING} and not latestRun(path, id, True)
 	return [id for id, dependencies in graph.items() if ready(id, dependencies)]
 
 
@@ -206,11 +263,13 @@ def PlanStatus(context, plan=None) -> dict:
 	meta = createPlan(path).meta
 	tasks, runs = tasksAt(path), RunList(context)
 	graph = dependencyGraph(context, tasks)
-	gaps = GapList(context, path, {"status": GapState.OPEN})
+	allGaps = GapList(context, path)
+	gaps = [gap for gap in allGaps if gap["status"] == GapState.OPEN]
 	states, policyTasks = {}, {}
 	def state(id, run):
-		if any(id in gap["needed_by"] for gap in gaps):
-			return "Open"
+		gapState = taskGapState(context, id, tasks, graph[id], allGaps)
+		if gapState:
+			return gapState
 		if policyTasks[id]["blocked"] or any(not latestRun(path, dependency, True) for dependency in graph[id]):
 			return RunStatus.BLOCKED
 		status = run["status"] if run else "Ready"
@@ -253,7 +312,8 @@ def PlanStatus(context, plan=None) -> dict:
 		status = PlanState.DRAFT
 	policy = PolicyResolve(context, path)
 	policy["tasks"] = policyTasks
-	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage,
+	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage, "hold": planHold(path),
+		"continuation": readJson(path / "continuation.json"),
 		"failures": [run["id"] for run in runs if run.get("failure")], "stale": stale, "staleRuns": staleRuns, "revision": (journal(path) or [{}])[-1].get("id")}
 
 

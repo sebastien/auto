@@ -32,8 +32,11 @@ knowledge artifacts (its AgentMemory). The configured `agent` field locates
 that AgentMemory entry, by default `agent-{id}/agent:{Name}`, `{Name}` being
 the id in PascalCase (`ui-designer` gives `UiDesigner`), so the Auto id and
 the Memo private namespace match (eg. `designer` and `agent-designer/`).
-The project's `[memory] agents` lists the default agents of plans created
-without `agents`.
+The project's `[memory] default_agents` lists the default agent references of
+plans created without `agents`; it defaults to an empty list. Agent definitions
+remain under `[memory.agents.{id}]`. A plan's explicit `agents` overrides the
+default selection, and `agents: []` disables it. Creation records the resolved
+selection, so later configuration changes do not change existing plans.
 `agent` is a reserved plan id.
 
 Agent (runtime facet): how Auto runs memorisation for an agent, from
@@ -46,7 +49,7 @@ configuration.
 - `allowance`: optional agent-specific cap per time window, in addition to the
   project housekeeping allowance
 - `policy`: rules for the `memory.*` effects (see Policy)
-- `triggers`: when consolidation is requested (see Triggers)
+- `triggers`: when consolidation is requested (see Triggers), `[]` by default
 - `concerns`: optional decision concerns the agent follows (see Decisions);
   all decisions of its plans when absent
 - `instructions`: what this agent's memory is for, given to its Memoriser
@@ -193,8 +196,11 @@ the agent lock:
    Auto reconciles the staged change set with Memo before any retry; already
    applied changes and report observations must not be duplicated: appends are
    keyed from the change set's `id` (see Memo Memorisation), so a retry finds
-   them. The precise
-   reconciliation contract awaits Memo's `AgentConsolidate` implementation.
+   them. Memo retains the frozen plan under the agent identity and pass id
+   before publishing units. An exact retry reconciles completed units and
+   keyed appends, and publishes the completion report last. Auto retains the
+   staged intent and Memo's completed, pending and uncertain unit results until
+   reconciliation completes.
 4. Questions and proposals are logged by `AgentConsolidate` as open
    observations of the agent. The agent decides whether and when to raise
    them, typically in a conversation through an interface. The outcome (an
@@ -307,6 +313,9 @@ Plan `agents` are set at creation (`PlanCreate`, see Plan) and changed with an
 ## Format
 
 ```toml
+[memory]
+default_agents = ["auto:agent/designer"]
+
 [memory.agents.designer]
 agent = "agent-designer/agent:Designer"
 memoriser = "auto:catalogue/task/memorise"
@@ -359,6 +368,12 @@ agents: ["auto:agent/designer", "auto:agent/architect"]
   output, exit status 3 meaning unavailable. When the
   resolver is unavailable (eg. the interface is not installed on this host),
   the reference is reported unavailable to the Memoriser, never guessed.
+  Commands are split into an executable and arguments, without a shell; relative
+  executables resolve from the project directory. The JSON excerpt is an object;
+  if it includes `source`, that value must match the requested reference. Invalid
+  JSON, an oversized response or another nonzero status is a resolver error.
+  A missing executable and exit status 3 report the reference as unavailable.
+  Configured resolvers cannot replace Auto's built-in schemes.
 - *Availability*: Auto must not claim to have applied or scheduled a runnable
   consolidation until Memo provides the required agent operations and partial
   application reconciliation semantics.

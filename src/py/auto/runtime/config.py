@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+import re
 from pathlib import Path
 
 from auto.runtime.model import Context
@@ -36,6 +37,8 @@ def validateConfig(value: dict) -> None:
 			raise AutoError(f"{name} must be a string")
 	if "isolated" in value and type(value["isolated"]) is not bool:
 		raise AutoError("isolated must be a boolean")
+	if "tools" in value and (not isinstance(value["tools"], list) or any(not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9_*:.-]+", item) for item in value["tools"])):
+		raise AutoError("tools must be a list of tool names; [] disables all tools")
 	if "temperature" in value and (type(value["temperature"]) not in (int, float) or not math.isfinite(value["temperature"])):
 		raise AutoError("temperature must be a finite number")
 	if any(not isinstance(item, str) for item in value.get("env", {}).values()):
@@ -57,15 +60,13 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	"""Build the operation context from flags, environment and configuration."""
 	cwd = (directory or Path.cwd()).resolve()
 	project = next((p for p in (cwd, *cwd.parents) if (p / ".auto").is_dir() or (p / ".git").exists()), cwd)
-	policyLayers = []
-	config = loadConfig(project, sources, policyLayers)
+	policyLayers, configurationLayers = [], []
+	config = loadConfig(project, sources, policyLayers, configurationLayers)
 	runtime = config.pop("runtime", {})
 	validateConfig(runtime)
 	config.update(runtime)
-	from auto.features.memory.config import agentsFor, housekeepingFor
-	settings = Context(project=project, defaults=config, policyLayers=policyLayers)
-	agentsFor(settings)
-	housekeepingFor(settings)
+	from auto.wiring import validateContext
+	validateContext(Context(project=project, defaults=config, policyLayers=policyLayers, configurationLayers=configurationLayers))
 	selected = plan or os.environ.get("AUTO_PLAN")
 	planPath = None
 	if selected:
@@ -82,6 +83,6 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 					if path[:2] == ("runtime", key):
 						del sources[path]
 				sources[("runtime", key)] = "--" + key if overrides.get(key) is not None else "AUTO_" + key.upper()
-	return Context(project=project, plan=planPath, config=explicit, defaults=config, policyLayers=policyLayers)
+	return Context(project=project, plan=planPath, config=explicit, defaults=config, policyLayers=policyLayers, configurationLayers=configurationLayers)
 
 # EOF

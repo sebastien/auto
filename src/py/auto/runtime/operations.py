@@ -70,6 +70,12 @@ def Resolve(context: Context, ref: str, base: Path | None = None) -> Content:
 	pin = {"ref": content.ref, "digest": content.digest}
 	if pin not in context.evidence:
 		context.evidence.append(pin)
+	return Select(content, selector, ref)
+
+
+def Select(content: Content, selector: str, ref: str | None = None) -> Content:
+	"""Select bytes from resolved content without changing its owner or origin."""
+	ref = ref or content.ref + "#" + selector
 	if selector:
 		text = content.text
 		match = re.fullmatch(r"L(\d+)-(\d+)", selector)

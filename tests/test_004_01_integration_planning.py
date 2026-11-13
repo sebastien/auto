@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from auto.features.elaboration.operations import ElaborationApply, ElaborationParse, ElaborationValidate
+from auto.features.elaboration.operations import ElaborationApply, ElaborationParse, ElaborationValidate, ElaborationStart
 from auto.features.memory.config import agentsFor, housekeepingFor, memoryPolicy, validateAgents
-from auto.features.plan.gaps import DecisionRecord, GapDecide, GapList, GapRaise, PlanRepair
+from auto.features.plan.gaps import DecisionRecord, GapDecide, GapDismiss, GapList, GapRaise, PlanRepair
 from auto.features.plan.model import createDecisionFromDict
 from auto.features.plan.operations import PlanAbandon, PlanRevise, PlanStatus, PlanReady
 from auto.features.plan.store import journal
-from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunCheck
+from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunAnswer, RunCheck, RunEvaluate
 from auto.runtime.model import Content, Context
 from auto.runtime.operations import Resolve
 from auto.utils.data import AutoError, digest, documentText, jsonText
@@ -374,9 +375,40 @@ Work
 		self.add("question")
 		run = TaskStart(self.ctx, "question")
 		self.assertEqual(run["status"], "Waiting")
-		GapDecide(self.ctx, run["gap"], "developers", "Chosen")
+		RunAnswer(self.ctx, run, "developers", "Chosen")
 		self.assertEqual(RunGet(self.ctx, run)["status"], "Succeeded")
 		self.assertEqual(RunOutput(self.ctx, run), "developers")
+
+	def testQuestionFieldsRemainVisibleInGapRecords(self):
+		fields = [{"key": "count", "type": "integer", "minimum": 1}]
+		class QuestionEngine:
+			def start(inner, context, request):
+				yield {"type": "ScriptQuestion", "content": "How many?", "fields": fields}
+		self.ctx.engines["fake"] = QuestionEngine()
+		self.add("question")
+		run = TaskStart(self.ctx, "question")
+		self.assertEqual(run["status"], "Waiting")
+		self.assertEqual(GapList(self.ctx)[0]["fields"], fields)
+
+	def testCancellingInteractiveQuestionCancelsWaitingEngineSession(self):
+		from auto.app.operations import EXPOSURES, resumeResult
+		class QuestionEngine:
+			cancelled = False
+			def start(inner, context, request):
+				request["session"] = "question-session"
+				yield {"type": "ScriptQuestion", "content": "Choose"}
+			def cancel(inner, context, request):
+				inner.cancelled = request["session"] == "question-session"
+		engine = QuestionEngine()
+		self.ctx.engines["fake"] = engine
+		self.add("question")
+		run = TaskStart(self.ctx, "question")
+		def cancelQuestion(event):
+			raise KeyboardInterrupt
+		with self.assertRaises(KeyboardInterrupt):
+			resumeResult(self.ctx, next(item for item in EXPOSURES if item.name == "TaskStart"), run, cancelQuestion)
+		self.assertTrue(engine.cancelled)
+		self.assertEqual(RunGet(self.ctx, run)["status"], "Cancelled")
 
 	def testChangedAggregateMustRunAgain(self):
 		self.add("first")
@@ -408,6 +440,22 @@ Work
 		PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {"goal": "Updated"}}], "Change goal")
 		self.assertEqual(PlanStatus(self.ctx)["id"], "demo")
 
+	def testCustomElaboratorReceivesPolicyAndCompleteGoalChecks(self):
+		custom = self.root / "custom-elaborator.md"
+		custom.write_text("---\nid: custom\n---\n## Process\n{{ goal }}\n{{ policy }}\n")
+		PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {
+			"elaborator": {"task": str(custom)}, "post": ["touch post-marker"], "eval": ["touch eval-marker"]}}], "Configure")
+		run = ElaborationStart(self.ctx, self.plan, "root")
+		self.assertEqual(run["status"], "Succeeded", run)
+		state = json.loads((self.plan / "runs" / run["id"] / "state.json").read_text())
+		goal = json.loads(state["inputs"]["goal"])
+		self.assertEqual(goal["post"]["commands"], ["touch post-marker"])
+		self.assertEqual(goal["evaluation"]["commands"], ["touch eval-marker"])
+		self.assertIn("rules", json.loads(state["inputs"]["policy"]))
+		self.assertIn("touch post-marker", self.engine.calls[0])
+		self.assertFalse((self.root / "post-marker").exists())
+		self.assertFalse((self.root / "eval-marker").exists())
+
 	def testElaboratorBudgetIsClamped(self):
 		from auto.features.elaboration.operations import ElaborationStart
 		elaborator = self.root / "elaborator.md"
@@ -430,6 +478,89 @@ Work
 		with self.assertRaises(AutoError):
 			GapDecide(self.ctx, gap["id"], "approve", "Approved")
 		self.assertEqual(GapList(self.ctx)[0]["status"], "Open")
+
+	def testRejectedOutputGateKeepsDependentsBlocked(self):
+		self.add("draft", hints={"gate": "approval"})
+		self.add("publish", inputs={"draft": "task:draft"})
+		run = TaskStart(self.ctx, "draft")
+		receipt = self.plan / "runs" / run["id"] / "receipt.json"
+		original = receipt.read_bytes()
+		gap = GapList(self.ctx)[0]
+		GapDecide(self.ctx, gap["id"], "reject", "Needs a better draft")
+		self.assertEqual(GapList(self.ctx)[0]["status"], "Resolved")
+		self.assertEqual(PlanStatus(self.ctx)["tasks"]["publish"], "Blocked")
+		self.assertNotIn("publish", PlanReady(self.ctx))
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+		self.assertEqual(receipt.read_bytes(), original)
+		self.assertEqual(RunGet(self.ctx, run)["status"], "Succeeded")
+		# A new affirmative decision about that exact output can approve it.
+		second = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Approve after discussion?",
+			"needed_by": ["publish"], "subjects": gap["subjects"]})
+		GapDecide(self.ctx, second, True, "Accepted after discussion")
+		self.assertIn("publish", PlanReady(self.ctx))
+
+	def testRetryOutputRequiresFreshGateAndCanReplaceRejectedOutput(self):
+		self.add("draft", hints={"gate": "approval"})
+		self.add("publish", inputs={"draft": "task:draft"})
+		first = TaskStart(self.ctx, "draft")
+		GapDecide(self.ctx, GapList(self.ctx)[0]["id"], "no", "Try again")
+		self.engine.outputs = iter(["better draft"])
+		second = TaskStart(self.ctx, "draft")
+		self.assertNotEqual(first["id"], second["id"])
+		self.assertNotIn("publish", PlanReady(self.ctx))
+		newGap = next(gap for gap in GapList(self.ctx) if gap["status"] == "Open")
+		GapDecide(self.ctx, newGap["id"], "approve", "Improved")
+		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertEqual(RunGet(self.ctx, first)["status"], "Succeeded")
+
+	def testRootOutputGateAllowsExplicitRetryAfterRejection(self):
+		PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {"hints": {"gate": "approval"}}}], "Review plan output")
+		first = TaskStart(self.ctx, "root")
+		GapDecide(self.ctx, GapList(self.ctx)[0]["id"], False, "Retry the result")
+		second = TaskStart(self.ctx, "root")
+		self.assertEqual(second["status"], "Succeeded")
+		self.assertNotEqual(first["id"], second["id"])
+		newGap = next(gap for gap in GapList(self.ctx) if gap["status"] == "Open")
+		GapDecide(self.ctx, newGap["id"], True, "Accepted new attempt")
+		self.assertEqual(PlanStatus(self.ctx)["status"], "Succeeded")
+
+	def testApprovalExpiresWhenPinnedOutputChanges(self):
+		self.add("draft", hints={"gate": "approval"})
+		self.add("publish", inputs={"draft": "task:draft"})
+		run = TaskStart(self.ctx, "draft")
+		GapDecide(self.ctx, GapList(self.ctx)[0]["id"], True, "Accepted")
+		self.assertIn("publish", PlanReady(self.ctx))
+		(self.plan / "runs" / run["id"] / run["outputFile"]).write_text("Changed after review")
+		self.assertNotIn("publish", PlanReady(self.ctx))
+		self.assertEqual(PlanStatus(self.ctx)["tasks"]["publish"], "Blocked")
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+
+	def testDismissalExplicitlyWaivesRejectedOutputGate(self):
+		self.add("draft", hints={"gate": "approval"})
+		self.add("publish", inputs={"draft": "task:draft"})
+		TaskStart(self.ctx, "draft")
+		gap = GapList(self.ctx)[0]["id"]
+		GapDecide(self.ctx, gap, False, "Initially declined")
+		with self.assertRaises(AutoError):
+			GapDismiss(self.ctx, gap, "")
+		with self.assertRaises(AutoError):
+			GapDismiss(self.ctx.derive(author="agent"), gap, "Cannot waive")
+		GapDismiss(self.ctx, gap, "Human explicitly waives the review requirement")
+		PlanRepair(self.ctx)
+		self.assertEqual(GapList(self.ctx)[0]["status"], "Dismissed")
+		self.assertIn("publish", PlanReady(self.ctx))
+
+	def testNewDependentsAndMissingGateCannotBypassReview(self):
+		self.add("draft", hints={"gate": "approval"})
+		TaskStart(self.ctx, "draft")
+		gap = GapList(self.ctx)[0]
+		self.add("publish", inputs={"draft": "task:draft"})
+		self.assertNotIn("publish", gap["needed_by"])
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
+		GapDecide(self.ctx, gap["id"], True, "Accepted")
+		self.assertIn("publish", PlanReady(self.ctx))
+		self.store.records.pop(gap["identity"])
+		self.assertNotIn("publish", PlanReady(self.ctx))
 
 	def testPolicyCheckpointAndRework(self):
 		elaboration = {"task": "root", "tasks": [{"id": "publish", "title": "Publish", "effects": ["vcs.push"], "sections": {"Process": "work"}}]}
@@ -459,6 +590,27 @@ Work
 		PolicyGrant(self.ctx, self.plan, "vcs.push", "auto:demo/task/publish", decision["id"])
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Succeeded")
 
+	def testPlanningGrantGapCanBeAnsweredWithoutSeparatePythonCall(self):
+		self.ctx.defaults["policy"] = {"vcs": "deny"}
+		elaboration = {"task": "root", "tasks": [{"id": "publish", "title": "Publish", "effects": ["vcs.push"], "sections": {"Process": "work"}}],
+			"gaps": [{"name": "grant", "kind": "decision", "question": "Grant vcs.push (deny)?", "effects": ["vcs.push"], "needed_by": ["publish"]}]}
+		self.assertEqual(ElaborationValidate(self.ctx, self.plan, elaboration), [])
+		ElaborationApply(self.ctx, self.plan, elaboration, "elaborator-run")
+		gap = GapList(self.ctx)[0]
+		answer = {"grant": "vcs.push", "scope": "auto:demo/task/publish"}
+		with self.assertRaisesRegex(AutoError, "human decision"):
+			GapDecide(self.ctx.derive(author="agent"), gap["id"], answer, "Cannot grant")
+		for invalid in ({"grant": "vcs.commit", "scope": answer["scope"]}, {"grant": "vcs.push", "scope": "auto:other"}):
+			with self.subTest(answer=invalid), self.assertRaises(AutoError):
+				GapDecide(self.ctx, gap["id"], invalid, "Wrong grant")
+		self.assertEqual(GapList(self.ctx)[0]["status"], "Open")
+		decision = GapDecide(self.ctx, gap["id"], answer, "Publish explicitly authorized")
+		self.assertEqual([op["op"] for op in journal(self.plan)[-1]["operations"]], ["resolve", "grant"])
+		self.assertEqual(journal(self.plan)[-1]["author"], "human")
+		self.assertEqual(journal(self.plan)[-1]["operations"][-1]["source"], decision["identity"])
+		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Succeeded")
+
 	def testChangedDefinitionInvalidatesCheckpoint(self):
 		from auto.runtime.operations import Resolve
 		self.add("publish", effects=["vcs.push"])
@@ -478,6 +630,62 @@ Work
 		self.assertIn('"PolicyDenied"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
 		self.assertFalse((self.root / "should-not-exist").exists())
 
+	def testReassessmentShellChecksRespectCurrentPolicyAndCaller(self):
+		self.add("checked", sections={"Process": "work", "Evaluation": "!?printf '{\"score\":1,\"feedback\":\"ok\"}'"})
+		run = TaskStart(self.ctx, "checked")
+		self.assertEqual(run["status"], "Succeeded")
+		receipt = self.plan / "runs" / run["id"] / "receipt.json"
+		original = receipt.read_bytes()
+		for rule in ("confirm", "deny"):
+			with self.subTest(rule=rule):
+				(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"shell.run": rule}}, "# Demo"))
+				with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
+					RunCheck(self.ctx, run, {"content": "!?touch must-not-exist"})
+				with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
+					RunEvaluate(self.ctx, run)
+		self.assertFalse((self.root / "must-not-exist").exists())
+		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo"}, "# Demo"))
+		self.ctx.defaults["policy"] = {"shell.run": "deny"}
+		with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
+			RunCheck(self.ctx, run, {"content": "!?touch must-not-exist"})
+		self.ctx.defaults.pop("policy")
+		with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
+			RunCheck(self.ctx.derive(allowShell=False), run, {"content": "!?touch must-not-exist"})
+		self.assertEqual(receipt.read_bytes(), original)
+		self.assertGreater(RunGet(self.ctx, run)["usage"]["time"], run["usage"]["time"])
+
+	def testReassessmentModelPermissionsAreCheckedBeforeActions(self):
+		self.add("checked")
+		run = TaskStart(self.ctx, "checked")
+		receipt = self.plan / "runs" / run["id"] / "receipt.json"
+		original = receipt.read_bytes()
+		class CheckEngine:
+			def start(inner, context, request):
+				inner.policy = request.get("policy")
+				inner.acted, inner.closed = False, False
+				try:
+					answer = yield {"type": "PolicyRequest", "effect": "net.write", "action": "post review"}
+					inner.acted = answer is True
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": {"pass": True, "reason": "Checked"}}
+				finally:
+					inner.closed = True
+		engine = CheckEngine()
+		self.ctx.engines["fake"] = engine
+		for rule in ("confirm", "deny"):
+			with self.subTest(rule=rule):
+				(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": rule}}, "# Demo"))
+				with self.assertRaisesRegex(AutoError, "requires authorization for net.write"):
+					RunCheck(self.ctx, run, {"content": "Review the output"})
+				self.assertEqual(engine.policy["rules"]["net.write"]["rule"], rule)
+				self.assertFalse(engine.acted)
+				self.assertTrue(engine.closed)
+		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": "allow"}}, "# Demo"))
+		self.assertTrue(RunCheck(self.ctx, run, {"content": "Review the output"})["pass"])
+		self.assertTrue(engine.acted)
+		self.assertTrue(engine.closed)
+		self.assertEqual(GapList(self.ctx), [])
+		self.assertEqual(receipt.read_bytes(), original)
+
 	def testRuntimePolicyRequestsWaitAndResume(self):
 		class PolicyEngine:
 			enforceableEffects = {"net.write"}
@@ -496,7 +704,7 @@ Work
 		self.assertEqual(run["status"], "Waiting")
 		with self.assertRaises(AutoError):
 			GapDecide(self.ctx.derive(author="agent"), run["gap"], "approve", "Not human")
-		GapDecide(self.ctx, run["gap"], "approve", "Approved")
+		RunAnswer(self.ctx, run, "approve", "Approved")
 		self.assertEqual(RunOutput(self.ctx, run), "True")
 		self.assertIn('"PolicyRequested"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
 
@@ -511,11 +719,11 @@ Work
 		self.ctx.defaults["policy"] = {"vcs": "deny"}
 		self.add("notify")
 		run = TaskStart(self.ctx, "notify")
-		GapDecide(self.ctx, run["gap"], "approve", "Insufficient")
+		RunAnswer(self.ctx, run, "approve", "Insufficient")
 		self.assertEqual(RunOutput(self.ctx, run), "False")
 		self.assertIn('"PolicyDenied"', (self.plan / "runs" / run["id"] / "journal.jsonl").read_text())
 		run = TaskStart(self.ctx, "notify")
-		decision = GapDecide(self.ctx, run["gap"], {"grant": "vcs.push", "scope": "auto:demo/task/notify"}, "Explicit grant")
+		decision = RunAnswer(self.ctx, run, {"grant": "vcs.push", "scope": "auto:demo/task/notify"}, "Explicit grant")
 		self.assertEqual(RunOutput(self.ctx, run), "True")
 		self.assertTrue(any(op.get("source") == decision["identity"] for row in journal(self.plan) for op in row["operations"] if op["op"] == "grant"))
 
@@ -554,7 +762,7 @@ Work
 		run = TaskStart(self.ctx, "edit")
 		self.assertEqual(run["status"], "Waiting")
 		self.assertEqual(GapList(self.ctx)[0]["effects"], ["repo.write"])
-		GapDecide(self.ctx, run["gap"], "approve", "Approved")
+		RunAnswer(self.ctx, run, "approve", "Approved")
 		self.assertEqual(RunOutput(self.ctx, run), "Done")
 		self.assertTrue(any("/permission/per1/reply" in path and data == {"decision": "once"} for _, path, data in engine.calls))
 

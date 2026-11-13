@@ -4,28 +4,35 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 
 from liquid.exceptions import LiquidError
 
-# NOTE: Task runs live within a plan (spec-003), so task operations use plan storage and policy directly.
-from auto.features.plan.gaps import GapDecide, GapList, GapRaise, planRef, repairLocked
-from auto.features.plan.model import GapKind, GapState, RevisionOp, createPlan
+# Plan tasks use plan storage and policy; a supplied run scope reuses the lifecycle for agent tasks.
+from auto.features.plan.gaps import GapDecide, GapList, GapRaise, applyPending, planRef, repairLocked
+from auto.features.plan.gates import taskGapState
+from auto.features.plan.events import recordPlanStatus, recordRun
+from auto.features.plan.control import planHold
+from auto.features.plan.model import GapKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanRevise, dependencyGraph, tasksAt
 from auto.features.plan.policy import EFFECT, PolicyResolve, runtimeRule, shellPermitted, taskPolicyBlocked
 from auto.features.plan.references import latestRun, readReceipt, runDirectories
-from auto.features.plan.store import journal, locked, planPath, recover
-from auto.features.script.config import commands
+from auto.features.plan.store import exclusive, journal, locked, planPath, recover
+from auto.features.script.config import commands, validateConfig
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, conform, executePrepared, prepare
 from auto.features.script.templates import Renderer
+from auto.features.script.sources import ScriptSources
 from auto.features.task.model import Run, Task, createRunFromDict, createTaskFromDict, createTaskFromText
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
 from auto.runtime.operations import Engine, Knowledge, Resolve, Shell, Value
-from auto.utils.data import AutoError, atomicWrite, document, identifier, jsonText, merge, readJson, timestamp
+from auto.utils.data import AutoError, atomicWrite, document, identifier, identity, jsonText, merge, readJson, timestamp
 from auto.utils.references import relocate
 
 # -----------------------------------------------------------------------------
@@ -65,33 +72,55 @@ def resolveTask(context, task) -> Task:
 def effectiveTask(context, task: Task) -> Task:
 	"""Resolve profile and artifact defaults at their own source locations."""
 	meta, parts = dict(task.meta), dict(task.sections)
+	if meta.get("budget") is None:
+		meta.pop("budget", None)
+	for name in ("profile", "artifact"):
+		if name in meta and meta[name] is not None and not isinstance(meta[name], str):
+			raise AutoError(f"Task {name} must be a reference string")
 	if "each" in meta:
 		raise AutoError("each is only supported by scripts: a task run is a single item")
+	sources = ScriptSources(context, meta.get("_template_sources"))
 	if meta.get("profile"):
-		content = Resolve(context, meta["profile"], task.path.parent)
+		content = sources.resolve(meta["profile"], task.path.parent)
 		profile, _ = document(content.text)
-		meta = merge({key: value for key, value in profile.items() if key in {"engine", "provider", "model", "agent", "temperature", "budget"}}, meta)
+		if task.projectDefaults is not None:
+			profile = task.projectDefaults(profile)
+		meta = merge({key: value for key, value in profile.items() if key in {"engine", "provider", "model", "agent", "temperature", "budget", "memory"}}, meta)
 	if meta.get("artifact"):
-		content = Resolve(context, meta["artifact"], task.path.parent)
+		original = sources.record(meta["artifact"], task.path.parent)
+		ref = original.get("compiled_artifact") if original else None
+		if ref:
+			if not isinstance(ref, str):
+				raise AutoError("Compiled artifact source must be a reference string")
+			compiled = sources.record(ref, task.path.parent)
+			if not re.fullmatch(r"auto:[^/#]+/task/[^/#]+/source/[a-f0-9]{64}", ref) or not compiled or compiled["ref"] != ref or compiled.get("source") != {"ref": original["ref"], "digest": original["digest"]}:
+				raise AutoError("Compiled artifact source does not match the selected artifact")
+		content = sources.resolve(ref or meta["artifact"], task.path.parent)
 		artifact = createTaskFromText(content.text, content.path)
+		validateConfig({key: value for key, value in artifact.meta.items() if key in {"post", "eval"}})
+		if artifact.meta.get("_template_bindings"):
+			meta["_template_bindings"] = merge(artifact.meta["_template_bindings"], meta.get("_template_bindings", {}))
 		contract = dict(artifact.meta.get("output", {}))
 		for key, value in contract.items():
 			if isinstance(value, str) and value.startswith(("./", "../")):
 				contract[key] = str((content.path.parent / value).resolve())
 		meta["output"] = merge(contract, meta.get("output", {}))
 		for key in ("post", "eval"):
-			if artifact.meta.get(key):
+			if key in artifact.meta:
+				validateConfig({key: meta[key]} if key in meta else {})
 				meta[key] = commands(artifact.meta[key]) + commands(meta.get(key))
 		for name in ("Post", "Evaluation"):
 			if name in artifact.sections:
 				# Keep the included fragment's relative references attached to its origin.
 				text = relocate(artifact.sections[name], content.path.parent)
 				parts[name] = text + "\n" + parts.get(name, "")
-	return Task(task.id, meta, parts, task.path, task.description)
+	return replace(task, meta=meta, sections=parts)
 
 
 def runDirectory(context, run) -> Path:
 	"""Return the storage directory of a run in the current plan."""
+	if context.runScope is not None:
+		return context.runScope.directory(context, run)
 	return planPath(context) / "runs" / identifier(run["id"] if isinstance(run, dict) else run)
 
 
@@ -103,13 +132,23 @@ def emit(path: Path, event: dict) -> None:
 		os.fsync(stream.fileno())
 
 
-def saveRun(path, run, state=None):
+def saveRun(context, path, run, state=None):
 	"""Persist a run receipt or its active state."""
-	if state is not None:
-		atomicWrite(path / "state.json", jsonText(state))
-	atomicWrite(path / ("receipt.json" if run["status"] in TERMINAL else "active.json"), jsonText(run))
-	if run["status"] in TERMINAL:
-		(path / "active.json").unlink(missing_ok=True)
+	if context.runScope is not None:
+		return context.runScope.save(context, path, run, state)
+	plan = path.parent.parent
+	with locked(plan):
+		previous = readReceipt(path)
+		changed = previous is None or previous["status"] != run["status"] or previous.get("gap") != run.get("gap")
+		if changed:
+			recordPlanStatus(context, plan)
+		if state is not None:
+			atomicWrite(path / "state.json", jsonText(state))
+		atomicWrite(path / ("receipt.json" if run["status"] in TERMINAL else "active.json"), jsonText(run))
+		if run["status"] in TERMINAL:
+			(path / "active.json").unlink(missing_ok=True)
+		if changed:
+			recordRun(context, plan, run)
 
 
 def hasCheck(task, phase) -> bool:
@@ -127,15 +166,13 @@ def checkRequest(context, task, check):
 
 	Front matter commands run before the body `!?` checks: both add up, the
 	body does not override the front matter."""
-	renderer = Renderer(context, task.script(check))
+	checks = []
+	renderer = Renderer(context, task.script(check), checks=checks)
 	namespace = renderer.bindings()
 	if check != "Pre":
 		namespace["output"] = context.variables.get("result")
 	text = renderer.render(namespace)
-	shells = [renderer.shellArgument(command, namespace) for command in commands(task.meta.get(LIFECYCLE[check]))]
-	prose = []
-	for line in text.splitlines():
-		(shells if line.startswith("!?") else prose).append(line[2:] if line.startswith("!?") else line)
+	shells = [renderer.shellArgument(command, namespace) for command in commands(task.meta.get(LIFECYCLE[check]))] + checks
 	stdin = "" if check == "Pre" else outputText(context.variables.get("result"))
 	evidence, last = [], None
 	for command in shells:
@@ -149,12 +186,12 @@ def checkRequest(context, task, check):
 				raise AutoError(f"Evaluation shell failed: {stderr}", "output")
 			last = conform(stdout, {"format": "json", "schema": EVALUATION})
 		evidence.append(stdout + stderr)
-	if not "\n".join(prose).strip():
+	if not text.strip():
 		return None, last or ({"score": 1, "feedback": "No evaluation"} if check == "Evaluation" else {"pass": True, "reason": "No check"})
 	meta = {**task.meta, "output": {"format": "json", "schema": EVALUATION if check == "Evaluation" else VERDICT}}
 	# Already-expanded prose is supplied as data, so transclusions cannot execute twice.
 	content = "{{ instructions }}\n\n{{ evidence }}\n\nTask inputs: {{ inputs | json }}\nRun output: {{ result | json }}"
-	ctx = context.derive(variables={**context.variables, "instructions": "\n".join(prose), "evidence": evidence, "result": context.variables.get("result")})
+	ctx = context.derive(variables={**context.variables, "instructions": text, "evidence": evidence, "result": context.variables.get("result")})
 	return prepare(ctx, Script(content, task.path, meta)), None
 
 
@@ -171,20 +208,34 @@ def applyEffects(context, task) -> dict:
 	return {"pass": True, "reason": "Applied"}
 
 
-def _drive(context, path, run, state, request, answer=None):
-	"""Drive one engine stream, persisting usage and raising policy gaps."""
+def executionPolicy(context, run, state):
+	"""Resolve the same execution permissions for lifecycle and reassessment."""
+	if context.runScope is not None:
+		return context.runScope.policy(context, run, state)
+	if context.policyDefaults is not None:
+		context = context.derive(defaults=context.policyDefaults)
 	taskId = run["task"] if run["task"] != "elaborator" else state.get("target", "root")
-	definition = TaskGet(context, taskId)
-	request["policy"] = PolicyResolve(context, context.plan, taskId)
+	ref = "auto:" + createPlan(context.plan).id + "/task/" + taskId + "/definition"
+	content = Resolve(context.derive(allowShell=False, variables=dict(context.variables)), ref)
+	definition = createTaskFromText(content.text, content.path, taskId == "root")
+	policy = PolicyResolve(context, context.plan, definition)
 	if run["task"] == "elaborator":
 		definition = createTaskFromDict({**state["task"], "id": "elaborator", "effects": []}, Path(state["task"]["path"]))
 		base = "auto:" + createPlan(context.plan).id
-		request["policy"]["grants"] = [grant for grant in request["policy"]["grants"] if grant["scope"] == base]
-	request["policy"]["effects"] = definition.meta.get("effects", [])
-	request["policy"]["blocked"] = taskPolicyBlocked(context, definition)
+		policy["grants"] = [grant for grant in policy["grants"] if grant["scope"] == base]
+	policy["effects"] = definition.meta.get("effects", [])
+	policy["blocked"] = taskPolicyBlocked(context, definition)
+	return definition, policy
+
+
+def _drive(context, path, run, state, request, answer=None):
+	"""Drive one engine stream, persisting usage and raising policy gaps."""
+	definition, request["policy"] = executionPolicy(context, run, state)
+	request = context.runtime.prepareRunRequest(run, state, request)
+	taskId = run["task"] if run["task"] != "elaborator" else state.get("target", "root")
 	state["request"] = request
 	run["runtime"].update({key: request["config"][key] for key in ("engine", "model") if key in request["config"]})
-	saveRun(path, run, state)
+	saveRun(context, path, run, state)
 	stream = executePrepared(context, request)
 	try:
 		while True:
@@ -196,6 +247,8 @@ def _drive(context, path, run, state, request, answer=None):
 				observed = {**event, "value": dict(context.limits.usage)} if event.get("type") == Event.SCRIPT_META and event.get("name") == "usage" else event
 				context.observe(observed)
 			run["usage"] = dict(context.limits.usage)
+			if event["type"] == Event.SCRIPT_META:
+				context.runtime.recordRunMetadata(run, event)
 			if event["type"] == Event.SCRIPT_META and event["name"] == "session":
 				run["runtime"]["session"] = event["value"]
 			if event["type"] == Event.SCRIPT_META and event["name"] == "runtime":
@@ -204,7 +257,13 @@ def _drive(context, path, run, state, request, answer=None):
 				effect, action = event.get("effect"), event.get("action")
 				if not isinstance(action, str) or not action:
 					raise AutoError("Runtime policy request requires an action")
-				rule, covered = runtimeRule(context, definition, effect)
+				if context.runScope is not None:
+					answer = context.runScope.authorizeRequest(context, effect)
+					if not answer:
+						emit(path, {"type": Event.POLICY_DENIED, "effect": effect, "action": action})
+					continue
+				policyContext = context.derive(defaults=context.policyDefaults) if context.policyDefaults is not None else context
+				rule, covered = runtimeRule(policyContext, definition, effect)
 				if covered:
 					answer = True
 					continue
@@ -225,49 +284,77 @@ def _drive(context, path, run, state, request, answer=None):
 				context.variables["_detach"] = True
 				emit(path, {"type": Event.POLICY_REQUESTED, "effect": effect, "action": action})
 				emit(path, {"type": Event.GAP_RAISED, "gap": gap})
-				saveRun(path, run, state)
+				saveRun(context, path, run, state)
 				return None, True
 			if event["type"] == Event.SCRIPT_QUESTION:
+				if context.runScope is not None:
+					raise AutoError("An agent-scoped run cannot suspend for a human answer; record a question in its report", "output")
 				target = run["task"] if run["task"] != "elaborator" else state.get("target", "root")
-				gap = GapRaise(context, context.plan, {"kind": GapKind.INFORMATION, "question": event["content"], "needed_by": [target], "raised_by": run["id"]})
+				gap = GapRaise(context, context.plan, {"kind": GapKind.INFORMATION, "question": event["content"], "needed_by": [target], "raised_by": run["id"],
+					**({"fields": event["fields"]} if event.get("fields") else {})})
 				run.update(status=RunStatus.WAITING, gap=gap, question=event)
 				state["question"] = event
 				context.variables["_detach"] = True
 				run["usage"] = dict(context.limits.usage)
 				emit(path, {"type": Event.GAP_RAISED, "gap": gap})
-				saveRun(path, run, state)
+				saveRun(context, path, run, state)
 				return None, True
 			if event["type"] == Event.SCRIPT_ENDED:
 				if event["status"] != RunStatus.SUCCEEDED:
 					failure = event.get("failure", {"kind": FailureKind.SYSTEM, "reason": "Engine failed"})
 					raise AutoError(failure["reason"], kindFor(event["status"], failure))
 				return event["output"], False
-			saveRun(path, run, state)
+			saveRun(context, path, run, state)
 	finally:
 		stream.close()
 
 
-def _continue(context, path, run, state, answer=UNSET):
+def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 	"""Run the lifecycle phases of a prepared run, resuming at the first incomplete one."""
 	task = createTaskFromDict(state["task"], Path(state["task"]["path"]))
+	if not admitted and context.runScope is None:
+		with locked(context.plan):
+			run["budget"] = context.runtime.planRunBudget(task, run["budget"], run)
+			run["status"] = RunStatus.RUNNING
+			saveRun(context, path, run, state)
+	if context.limits:
+		for key, amount in context.limits.budget.items():
+			cap = run["usage"].get(key, 0) + max(0, amount - context.limits.usage.get(key, 0))
+			run["budget"][key] = min(run["budget"].get(key, cap), cap)
 	limits = Limits(run["budget"], dict(run["usage"]), initialTime=run["usage"].get("time", 0))
-	variables = {"plan": createPlan(context.plan).id, "run": {"id": run["id"], "output": str(path / run.get("outputFile", "output.txt"))}}
-	cancelled = lambda: (path / "cancel").exists()
-	context = context.derive(config=state["config"], defaults=state.get("defaults", {}), inputs=state["inputs"],
+	variables = context.runScope.variables(context, path, run) if context.runScope is not None else {"plan": createPlan(context.plan).id}
+	variables["run"] = {"id": run["id"], "output": str(path / run.get("outputFile", "output.txt"))}
+	callerCancelled = context.cancelled
+	cancelled = lambda: (path / "cancel").exists() or callerCancelled()
+	context = context.derive(config=state["config"], policyDefaults=context.policyDefaults if context.policyDefaults is not None else context.defaults,
+		defaults=state.get("defaults", {}), inputs=state["inputs"],
 		params=state.get("params", {}), variables=variables, limits=limits, evidence=run["inputs"], cancelled=cancelled)
-	context = context.derive(allowShell=context.allowShell and shellPermitted(context, task))
+	if context.runScope is None:
+		context = context.derive(allowShell=context.allowShell and shellPermitted(context.derive(defaults=context.policyDefaults), task))
 	if context.observe:
 		context.observe({"type": Event.RUN_STARTED, "task": run["task"], "budget": run["budget"], "usage": run["usage"]})
 	run["status"] = RunStatus.RUNNING
 	try:
+		if context.cancelled():
+			raise AutoError("Run cancelled", FailureKind.CANCELLED)
+		if "memory" not in state:
+			state["memory"] = context.runtime.prepareRun(run, state)
+			context = context.derive(inputs=state["inputs"])
+			saveRun(context, path, run, state)
 		if answer is not UNSET:
 			state["request"]["answer"] = Value(context, answer, context.plan)
 		if "resolvedInputs" not in state:
 			state["resolvedInputs"] = Renderer(context, task.script()).bindings()["inputs"]
 		context.resolvedInputs = state["resolvedInputs"]
 		for phase in ("Pre", "Process", "Post", "Apply", "Evaluation"):
+			if context.cancelled():
+				raise AutoError("Run cancelled", FailureKind.CANCELLED)
 			if phase in state["completed"]:
 				continue
+			if phase == "Evaluation" and context.runScope is not None and not state.get("scopePost"):
+				context.runScope.check(context, path, run, state)
+				state["scopePost"] = True
+				saveRun(context, path, run, state)
 			if phase != "Process" and not hasCheck(task, phase):
 				state["completed"].append(phase)
 				continue
@@ -304,7 +391,7 @@ def _continue(context, path, run, state, answer=UNSET):
 				emit(path, {"type": Event.TASK_EVALUATION_FAILED, "failure": run["evaluation_failure"]})
 				state.pop("request", None)
 				state["completed"].append(phase)
-				saveRun(path, run, state)
+				saveRun(context, path, run, state)
 				continue
 			state.pop("request", None)
 			state["completed"].append(phase)
@@ -321,11 +408,16 @@ def _continue(context, path, run, state, answer=UNSET):
 					run["status"] = RunStatus.SKIPPED if phase == "Pre" else RunStatus.FAILED
 					run["failure"] = {"kind": "input" if phase == "Pre" else "system" if phase == "Apply" else "output", "reason": value["reason"]}
 					break
-			saveRun(path, run, state)
+			saveRun(context, path, run, state)
 		limits.check()
 		if run["status"] == RunStatus.RUNNING:
+			if context.cancelled():
+				raise AutoError("Run cancelled", FailureKind.CANCELLED)
+			if context.runScope is not None:
+				context.runScope.finish(context, path, run, state)
+				limits.check()
 			run["status"] = RunStatus.SUCCEEDED
-			if task.meta.get("hints", {}).get("gate") == "approval":
+			if context.runScope is None and task.meta.get("hints", {}).get("gate") == "approval":
 				graph = dependencyGraph(context, tasksAt(context.plan))
 				needed = [id for id, deps in graph.items() if task.id in deps] or ["root"]
 				content = Resolve(context, "run:" + run["id"])
@@ -349,8 +441,60 @@ def _continue(context, path, run, state, answer=UNSET):
 			emit(path, {"type": Event.RUN_ENDED, "status": run["status"]})
 		if context.observe:
 			context.observe({"type": Event.RUN_FINISHED, "run": run})
-		saveRun(path, run, state)
+		saveRun(context, path, run, state)
 	return run
+
+
+def RunExecute(context, path, run, state):
+	"""Execute a prepared run using its scope's storage and application contract."""
+	with locked(path):
+		return _continue(context, path, run, state)
+
+
+def reconcileRunWorkers(context, plan):
+	"""Fail interrupted plan workers only after their execution lock is free."""
+	context = context.derive(plan=plan, runScope=None)
+	repaired = []
+	for path in runDirectories(plan):
+		run = readReceipt(path)
+		if run["status"] not in {RunStatus.PENDING, RunStatus.RUNNING} and not (path / "assessment.json").exists():
+			continue
+		with ExitStack() as owner:
+			try:
+				owner.enter_context(exclusive(path / ".lock", "This run"))
+			except AutoError:
+				continue
+			with locked(plan):
+				run = readReceipt(path)
+				assessment = readJson(path / "assessment.json")
+				if assessment:
+					finishAssessment(context, path, assessment, interrupted=True)
+				if run["status"] not in {RunStatus.PENDING, RunStatus.RUNNING}:
+					continue
+				run.update(status=RunStatus.FAILED, ended=timestamp(),
+					failure={"kind": FailureKind.SYSTEM, "reason": "Lifecycle worker was interrupted before a terminal receipt"})
+				emit(path, {"type": Event.RUN_ENDED, "status": RunStatus.FAILED})
+				saveRun(context, path, run)
+				repaired.append(run)
+	return repaired
+
+
+def assessmentProgress(context, path, assessment, usage):
+	"""Checkpoint cumulative measured usage while holding the run owner lock."""
+	with locked(context.plan):
+		assessment["usage"] = {key: max(amount, usage.get(key, amount)) for key, amount in assessment["usage"].items()}
+		atomicWrite(path / "assessment.json", jsonText(assessment))
+
+
+def finishAssessment(context, path, assessment, *, interrupted=False):
+	"""Charge one assessment once; a terminal receipt is never rewritten."""
+	with locked(context.plan):
+		events = [json.loads(line) for line in (path / "journal.jsonl").read_text().splitlines()] if (path / "journal.jsonl").exists() else []
+		if not any(event.get("assessment") == assessment["id"] and event["type"] == Event.ASSESSMENT_USAGE for event in events):
+			emit(path, {"type": Event.ASSESSMENT_USAGE, "assessment": assessment["id"],
+				"usage": {key: max(0, amount - assessment["base_usage"].get(key, 0)) for key, amount in assessment["usage"].items()},
+				**({"interrupted": True} if interrupted else {})})
+		(path / "assessment.json").unlink(missing_ok=True)
 
 
 def resumeGap(context, gap, answer):
@@ -388,6 +532,8 @@ def resumeGap(context, gap, answer):
 
 def _assess(context, run, check, instructions=None):
 	"""Evaluate one check against a concluded run, under its budget."""
+	context = context.derive(plan=planPath(context))
+	reconcileRunWorkers(context, context.plan)
 	path = runDirectory(context, run)
 	with locked(path):
 		receipt = RunGet(context, run)
@@ -404,19 +550,44 @@ def _assess(context, run, check, instructions=None):
 		limits = Limits(receipt["budget"], dict(receipt["usage"]), initialTime=receipt["usage"]["time"])
 		variables = {"plan": createPlan(context.plan).id, "run": {"id": path.name, "output": str(path / receipt.get("outputFile", "output.txt"))},
 			"result": RunOutput(context, run) if check != "Pre" else None}
-		ctx = context.derive(config=state["config"], defaults=state.get("defaults", {}), inputs=state["inputs"],
+		ctx = context.derive(config=state["config"], policyDefaults=context.policyDefaults if context.policyDefaults is not None else context.defaults,
+			defaults=state.get("defaults", {}), inputs=state["inputs"],
 			resolvedInputs=state.get("resolvedInputs", {}), limits=limits, variables=variables)
+		# Rendering keeps the saved defaults; authorization uses current configuration.
+		policyContext = ctx.derive(defaults=context.defaults)
+		definition, policy = executionPolicy(policyContext, receipt, state)
+		ctx = ctx.derive(allowShell=ctx.allowShell and shellPermitted(policyContext, definition))
+		with locked(context.plan):
+			limits.budget = context.runtime.planRunBudget(task, receipt["budget"], receipt, assessment=True)
+			assessment = {"id": identity(), "budget": limits.budget, "base_usage": dict(receipt["usage"]), "usage": dict(receipt["usage"])}
+			atomicWrite(path / "assessment.json", jsonText(assessment))
 		stream = None
 		try:
 			limits.check()
 			request, value = checkRequest(ctx, task, check)
 			if request:
+				request["policy"] = policy
+				request = ctx.runtime.prepareRunRequest(receipt, state, request)
 				stream = executePrepared(ctx, request)
-				for event in stream:
+				answer = None
+				while True:
+					event = stream.send(answer)
+					assessmentProgress(context, path, assessment, limits.usage)
+					answer = None
+					if event["type"] == Event.POLICY_REQUEST:
+						effect, action = event.get("effect"), event.get("action")
+						if not isinstance(action, str) or not action:
+							raise AutoError("Runtime policy request requires an action")
+						_, covered = runtimeRule(policyContext, definition, effect)
+						if not covered:
+							emit(path, {"type": Event.POLICY_DENIED, "effect": effect, "action": action})
+							raise AutoError(f"Reassessment requires authorization for {effect}; a completed run cannot wait for approval", "input")
+						answer = True
 					if event["type"] == Event.SCRIPT_ENDED:
 						if event["status"] != RunStatus.SUCCEEDED:
-							raise AutoError(event.get("failure", {}).get("reason", "Assessment failed"), "output")
+							raise AutoError(event.get("failure", {}).get("reason", "Assessment failed"), kindFor(event["status"], event.get("failure")))
 						value = event["output"]
+						break
 					if event["type"] == Event.SCRIPT_QUESTION:
 						raise AutoError("Standalone reassessment cannot suspend a completed run")
 			limits.check()
@@ -425,11 +596,18 @@ def _assess(context, run, check, instructions=None):
 			else:
 				emit(path, {"type": Event.TASK_CHECKED, "check": check.lower(), "verdict": value})
 			return value
+		except AutoError:
+			if "_policyDeniedAction" in ctx.variables:
+				emit(path, {"type": Event.POLICY_DENIED, "effect": "shell.run", "action": ctx.variables.pop("_policyDeniedAction")})
+			raise
 		finally:
-			if stream:
-				stream.close()
-			limits.usage["time"] = limits.initialTime + time.monotonic() - limits.started
-			emit(path, {"type": Event.ASSESSMENT_USAGE, "usage": {key: limits.usage[key] - receipt["usage"][key] for key in limits.usage}})
+			try:
+				if stream:
+					stream.close()
+			finally:
+				limits.usage["time"] = limits.initialTime + time.monotonic() - limits.started
+				assessmentProgress(context, path, assessment, limits.usage)
+				finishAssessment(context, path, assessment)
 
 
 
@@ -480,8 +658,12 @@ def TaskValidate(context, task, graph: bool = True, aggregate: bool = False) -> 
 	"""Return the violations of a task definition."""
 	violations = []
 	try:
-		task = effectiveTask(context, resolveTask(context, task))
+		definition = resolveTask(context, task)
+		task = effectiveTask(context, definition)
 		identifier(task.id)
+		hints = task.meta.get("hints", {})
+		if not isinstance(hints, dict):
+			raise AutoError("Task hints must be a mapping")
 		effects = task.meta.get("effects", [])
 		if not isinstance(effects, list) or any(not isinstance(effect, str) or not EFFECT.fullmatch(effect) for effect in effects):
 			raise AutoError("effects must be a list of dotted effect names")
@@ -490,28 +672,34 @@ def TaskValidate(context, task, graph: bool = True, aggregate: bool = False) -> 
 			raise AutoError("Unsupported output format")
 		if task.meta.get("engine"):
 			Engine(context, task.meta["engine"])
-		if "Process" not in task.sections and task.id != "root" and not aggregate and task.meta.get("hints", {}).get("elaborate") != "later":
+		if "Process" not in task.sections and task.id != "root" and not aggregate and hints.get("elaborate") != "later":
 			raise AutoError("Task requires Process unless it is an aggregate or deferred")
-		TaskDependencies(context, task)
+		TaskReferences(context, definition, expandDefinitions=False)
 		if graph and context.plan:
 			tasks = tasksAt(context.plan)
-			tasks[task.id] = task
+			tasks[task.id] = definition
 			dependencyGraph(context, tasks)
 	except (AutoError, ValueError, LiquidError) as error:
 		violations.append({"element": "task:" + getattr(task, "id", "unknown"), "message": str(error)})
 	return violations
 
 
-def TaskDependencies(context, task) -> list:
-	"""Return the ids of the tasks a task references."""
+def TaskReferences(context, task, *, definitions=None, expandDefinitions=True) -> dict:
+	"""Separate output dependencies from task-definition assets."""
 	task = effectiveTask(context, resolveTask(context, task))
 	refs = set()
 	for section in task.sections or {"Process": ""}:
-		refs.update(ScriptInputs(context, task.script(section))["references"])
+		refs.update(ScriptInputs(context, task.script(section), definitions=definitions, expandDefinitions=expandDefinitions)["references"])
 	if context.plan:
 		prefix = "auto:" + createPlan(planPath(context)).id + "/task/"
 		refs = {"task:" + ref[len(prefix):] if ref.startswith(prefix) else ref for ref in refs}
-	return sorted({ref[5:].split("/", 1)[0].split("#", 1)[0] for ref in refs if ref.startswith("task:")})
+	return {"dependencies": sorted({ref[5:].split("#", 1)[0] for ref in refs if re.fullmatch(r"task:[^/#]+(?:#.*)?", ref)}),
+		"definitions": sorted(ref for ref in refs if re.fullmatch(r"(?:task:|auto:[^/#]+/task/)[^/#]+/definition(?:#.*)?", ref))}
+
+
+def TaskDependencies(context, task) -> list:
+	"""Return same-plan tasks whose succeeded outputs are required."""
+	return TaskReferences(context, task)["dependencies"]
 
 
 def TaskExpand(context, task) -> str:
@@ -523,64 +711,84 @@ def TaskReady(context, task) -> bool:
 	"""Tell whether every input task has a succeeded run."""
 	task = resolveTask(context, task)
 	path = planPath(context)
-	graph = dependencyGraph(context, tasksAt(path))
-	return all(latestRun(path, dependency, True) for dependency in graph.get(task.id, TaskDependencies(context, task)))
+	graph = dependencyGraph(context, tasksAt(path), taskInputs={task.id: context.inputs})
+	dependencies = graph[task.id] if task.id in graph else TaskDependencies(context, task)
+	return all(latestRun(path, dependency, True) for dependency in dependencies)
 
 
 def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: bool = False) -> dict:
 	"""Run to a terminal or Waiting boundary; each attempt gets a fresh identity."""
+	if inputs is not None:
+		validateConfig({"inputs": inputs})
+	runInputs = merge(context.inputs, inputs or {})
 	plan = planPath(context)
 	context = context.derive(plan=plan, evidence=[])
-	with locked(plan):
-		recover(context, plan)
-		repairLocked(context, plan)
-		if any(op["op"] == RevisionOp.ABANDON for row in journal(plan) for op in row["operations"]):
-			raise AutoError("Cannot start a run in an abandoned plan")
-		task = effectiveTask(context, resolveTask(context, task))
-		Resolve(context, str(task.path))
-		previous = latestRun(plan, task.id)
-		if previous and previous["status"] in {RunStatus.RUNNING, RunStatus.WAITING}:
-			raise AutoError("Task already has an active run")
-		stem = task.id + "-" + time.strftime("%Y%m%dT%H%M", time.gmtime())
-		counter = 1
-		while (plan / "runs" / f"{stem}-{counter:02}").exists():
-			counter += 1
-		path = plan / "runs" / f"{stem}-{counter:02}"
-		path.mkdir(parents=True)
-		budget = budgetValue(task.meta.get("budget"))
-		run = Run(id=path.name, task=task.id, status=RunStatus.PENDING, started=timestamp(),
-			runtime={"engine": context.config.get("engine", task.meta.get("engine", context.defaults.get("engine", RUNTIME_DEFAULTS["engine"]))),
-				"provider": context.config.get("provider", task.meta.get("provider", context.defaults.get("provider"))),
-				"model": context.config.get("model", task.meta.get("model", context.defaults.get("model")))},
-			budget=budget, usage={"tokens": 0, "cost": 0, "time": 0}, inputs=context.evidence).asDict()
-		policyBlocked = taskPolicyBlocked(context, task) if not metaTask else {}
-		openGaps = any(task.id in gap["needed_by"] for gap in GapList(context, plan, {"status": GapState.OPEN}))
-		blocked = not metaTask and (bool(policyBlocked) or not TaskReady(context, task) or openGaps)
-		if blocked:
-			run.update(status=RunStatus.BLOCKED, ended=timestamp())
-			if policyBlocked:
-				run["failure"] = {"kind": FailureKind.INPUT, "reason": f"Policy authorization required: {policyBlocked}"}
-			saveRun(path, run)
-			return run
-		children = {id: RunOutput(context, latestRun(plan, id, True)) for id, child in tasksAt(plan).items()
-			if id != "root" and child.meta.get("parent", "root") == task.id}
-		if task.meta.get("hints", {}).get("elaborate") == "later" and not task.sections.get("Process") and not children:
-			run.update(status=RunStatus.BLOCKED, ended=timestamp(), failure={"kind": FailureKind.INPUT, "reason": "Deferred task must be decomposed before execution"})
-			saveRun(path, run)
-			return run
-		run["children"] = {id: latestRun(plan, id, True)["id"] for id in children}
-		for id in children:
-			Resolve(context, "task:" + id)
-		state = {"task": task.asDict(), "config": context.config, "defaults": context.defaults,
-			"inputs": merge(context.inputs, inputs or {}, {"children": children} if children else {}),
-			"params": context.params, "completed": [], "target": context.variables.get("target", "root"),
-			"applyElaboration": context.variables.get("applyElaboration", False)}
-		# The harness and shell checks need the same Auto entry point and plan context.
-		state["config"] = merge(state["config"], {"env": {"AUTO_PLAN": str(plan)}})
-		run["status"] = RunStatus.RUNNING
-		saveRun(path, run, state)
-	with locked(path):
-		return _continue(context, path, run, state)
+	reconcileRunWorkers(context, plan)
+	with ExitStack() as execution:
+		with locked(plan):
+			recover(context, plan)
+			repairLocked(context, plan)
+			if any(op["op"] == RevisionOp.ABANDON for row in journal(plan) for op in row["operations"]):
+				raise AutoError("Cannot start a run in an abandoned plan")
+			if planHold(plan):
+				raise AutoError("Cannot start a new run while the plan is held")
+			if not metaTask and isinstance(task, (Task, dict)):
+				# Ordinary runs select the stored plan definition, even when their
+				# caller retained an older model or mapping of that definition.
+				task = task.id if isinstance(task, Task) else task["id"]
+			task = effectiveTask(context, resolveTask(context, task))
+			Resolve(context.derive(allowShell=False, variables=dict(context.variables)), str(task.path) if metaTask else "task:" + task.id + "/definition")
+			previous = latestRun(plan, task.id)
+			if previous and previous["status"] in {RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING}:
+				raise AutoError("Task already has an active run")
+			stem = task.id + "-" + time.strftime("%Y%m%dT%H%M", time.gmtime())
+			counter = 1
+			while (plan / "runs" / f"{stem}-{counter:02}").exists():
+				counter += 1
+			path = plan / "runs" / f"{stem}-{counter:02}"
+			path.mkdir(parents=True)
+			execution.enter_context(locked(path))
+			budget = budgetValue(task.meta.get("budget"))
+			if context.limits:
+				for key, amount in context.limits.budget.items():
+					remaining = max(0, amount - context.limits.usage.get(key, 0))
+					budget[key] = min(budget.get(key, remaining), remaining)
+			run = Run(id=path.name, task=task.id, status=RunStatus.PENDING, started=timestamp(),
+				runtime={"engine": context.config.get("engine", task.meta.get("engine", context.defaults.get("engine", RUNTIME_DEFAULTS["engine"]))),
+					"provider": context.config.get("provider", task.meta.get("provider", context.defaults.get("provider"))),
+					"model": context.config.get("model", task.meta.get("model", context.defaults.get("model")))},
+				budget=budget, usage={"tokens": 0, "cost": 0, "time": 0}, inputs=context.evidence,
+				extra={"author": context.author, **({"continuation": context.variables["continuation"]} if context.variables.get("continuation") else {})}).asDict()
+			policyBlocked = taskPolicyBlocked(context, task) if not metaTask else {}
+			tasks = tasksAt(plan)
+			graph = dependencyGraph(context, tasks, taskInputs={task.id: runInputs})
+			gapState = taskGapState(context, task.id, tasks, graph.get(task.id, ()), GapList(context, plan), starting=True) if not metaTask else None
+			blocked = not metaTask and (bool(policyBlocked) or any(not latestRun(plan, dependency, True) for dependency in graph[task.id]) or gapState)
+			if blocked:
+				run.update(status=RunStatus.BLOCKED, ended=timestamp())
+				if policyBlocked:
+					run["failure"] = {"kind": FailureKind.INPUT, "reason": f"Policy authorization required: {policyBlocked}"}
+				saveRun(context, path, run)
+				return run
+			children = {id: RunOutput(context, latestRun(plan, id, True)) for id, child in tasksAt(plan).items()
+				if id != "root" and child.meta.get("parent", "root") == task.id}
+			if task.meta.get("hints", {}).get("elaborate") == "later" and not task.sections.get("Process") and not children:
+				run.update(status=RunStatus.BLOCKED, ended=timestamp(), failure={"kind": FailureKind.INPUT, "reason": "Deferred task must be decomposed before execution"})
+				saveRun(context, path, run)
+				return run
+			run["children"] = {id: latestRun(plan, id, True)["id"] for id in children}
+			for id in children:
+				Resolve(context, "task:" + id)
+			run["budget"] = context.runtime.planRunBudget(task, budget)
+			state = {"task": task.asDict(), "config": context.config, "defaults": context.defaults,
+				"inputs": merge(runInputs, {"children": children} if children else {}),
+				"params": context.params, "completed": [], "target": context.variables.get("target", "root"),
+				"applyElaboration": context.variables.get("applyElaboration", False)}
+			# The harness and shell checks need the same Auto entry point and plan context.
+			state["config"] = merge(state["config"], {"env": {"AUTO_PLAN": str(plan)}})
+			run["status"] = RunStatus.RUNNING
+			saveRun(context, path, run, state)
+		return _continue(context, path, run, state, admitted=True)
 
 
 def RunGet(context, run) -> dict:
@@ -590,11 +798,22 @@ def RunGet(context, run) -> dict:
 	if value is None:
 		raise AutoError(f"Run not found: {directory.name}")
 	if (directory / "receipt.json").exists():
+		# Completion appends the charge before deleting this checkpoint. Read it
+		# first so a concurrent handoff cannot hide or double-count measured usage.
+		assessment = readJson(directory / "assessment.json")
+		completed = set()
 		for line in (directory / "journal.jsonl").read_text().splitlines() if (directory / "journal.jsonl").exists() else []:
 			event = json.loads(line)
 			if event["type"] == Event.ASSESSMENT_USAGE:
+				if event.get("assessment") in completed:
+					continue
+				if event.get("assessment"):
+					completed.add(event["assessment"])
 				for key, amount in event["usage"].items():
 					value["usage"][key] = value["usage"].get(key, 0) + amount
+		if assessment and assessment["id"] not in completed:
+			for key, amount in assessment["usage"].items():
+				value["usage"][key] = value["usage"].get(key, 0) + max(0, amount - assessment["base_usage"].get(key, 0))
 	return createRunFromDict(value).asDict()
 
 
@@ -634,7 +853,11 @@ def RunAnswer(context, run, answer, rationale: str):
 	value = RunGet(context, run)
 	if value["status"] != RunStatus.WAITING:
 		raise AutoError("Run is not waiting")
-	return GapDecide(context, value["gap"], answer, rationale)
+	decision = GapDecide(context, value["gap"], answer, rationale)
+	result = resumeGap(context, value["gap"], answer)
+	if result:
+		applyPending(context, result)
+	return decision
 
 
 def RunCancel(context, run) -> dict:
@@ -653,7 +876,7 @@ def RunCancel(context, run) -> dict:
 				engine.cancel(context, state["request"])
 			value.update(status=RunStatus.CANCELLED, ended=timestamp(), failure={"kind": FailureKind.CANCELLED, "reason": "Cancelled by caller"})
 			emit(path, {"type": Event.RUN_ENDED, "status": RunStatus.CANCELLED})
-			saveRun(path, value)
+			saveRun(context, path, value)
 	return RunGet(context, run)
 
 

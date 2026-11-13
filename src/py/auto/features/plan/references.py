@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from auto.features.plan.model import createPlan
@@ -48,6 +49,13 @@ def latestRun(path: Path, task: str, succeeded: bool = False, seen: tuple = ()):
 	return max(runs, key=lambda run: run["started"]) if runs else None
 
 
+def definitionPath(path: Path, task: str) -> Path:
+	"""Locate an active definition or the retained definition of a removed task."""
+	file = path / "plan.md" if task == "root" else path / "tasks" / (task + ".md")
+	archived = path / ".history" / (task + ".md")
+	return archived if task != "root" and not file.exists() and archived.exists() else file
+
+
 def planContent(context, ref: str) -> Content:
 	"""Resolve a plan-scoped or canonical reference to content."""
 	scheme, _, rest = ref.partition(":")
@@ -63,25 +71,42 @@ def planContent(context, ref: str) -> Content:
 		parts = rest.split("/")
 		plan = identifier(parts.pop(0))
 		path = context.project / ".auto/plans" / plan
-		if context.plan and createPlan(context.plan).id == plan:
-			path = context.plan
-		if not parts:
-			file = path / "plan.md"
-			data = file.read_bytes()
-			return Content(ref, data, digest(data), file)
+		try:
+			if context.plan and createPlan(context.plan).id == plan:
+				path = context.plan
+			if not parts:
+				file = path / "plan.md"
+				data = file.read_bytes()
+				return Content(ref, data, digest(data), file)
+		except OSError as error:
+			raise AutoError(f"Cannot resolve {ref}: {error}") from error
 		scheme = parts.pop(0)
 		rest = "/".join(parts)
 		if scheme == "input":
 			scheme = "plan"
 	else:
 		path = planPath(context)
-	planId = createPlan(path).id
+	try:
+		planId = createPlan(path).id
+	except OSError as error:
+		raise AutoError(f"Cannot resolve {ref}: {error}") from error
 	name, _, part = rest.partition("/")
 	identifier(name)
 	canonical = f"auto:{planId}/{'input' if scheme == 'plan' else scheme}/{rest}"
 	if scheme == "task":
-		if part == "definition":
-			file = path / "plan.md" if name == "root" else path / "tasks" / (name + ".md")
+		if re.fullmatch(r"source/[a-f0-9]{64}", part):
+			from auto.features.script.sources import ScriptSources
+			file = definitionPath(path, name)
+			try:
+				meta, _ = document(file.read_text())
+			except OSError as error:
+				raise AutoError(f"Cannot resolve {ref}: {error}") from error
+			sources = ScriptSources(context, meta.get("_template_sources"))
+			if canonical not in sources.records:
+				raise AutoError("Unknown task source: " + canonical)
+			return sources.resolve(canonical, file.parent)
+		elif part == "definition":
+			file = definitionPath(path, name)
 		elif not part:
 			run = latestRun(path, name, True)
 			if run is None:
@@ -118,6 +143,7 @@ def planContent(context, ref: str) -> Content:
 		data = file.read_bytes()
 	except OSError as error:
 		raise AutoError(f"Cannot resolve {ref}: {error}") from error
-	return Content(canonical, data, digest(data), file)
+	origin = path / "tasks" / (name + ".md") if scheme == "task" and part == "definition" and name != "root" else file
+	return Content(canonical, data, digest(data), origin)
 
 # EOF

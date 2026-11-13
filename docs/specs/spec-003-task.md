@@ -198,7 +198,9 @@ Events, added to the run journal after the script events:
 
 - *Dependencies*: a task depends on every task it references with `task:`,
   in its inputs or transclusions, and, within a plan, on its children (see
-  Plan decomposition). Dependencies are implied, never declared.
+  Plan decomposition). Dependencies are implied, never declared. Caller input
+  overrides apply to dependency checks and rendering of the selected run;
+  they do not change stored definitions or other tasks' input defaults.
 - *Lifecycle*: `TaskStart` runs the following steps, stopping at the first
   failure:
   1. *Inputs*: input tasks without a succeeded run end the run as `Blocked`

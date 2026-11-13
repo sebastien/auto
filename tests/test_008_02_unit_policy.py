@@ -16,6 +16,9 @@ from auto.utils.data import AutoError
 class Store:
 	"""Minimal knowledge stub returning one human decision."""
 
+	def list(self, plan, kind):
+		return []
+
 	def get(self, ref):
 		return {"id": "decision-1", "revision": "revision-1", "identity": ref, "plan": "auto:example",
 			"author": "human", "answer": {"grant": "deploy.production", "scope": "auto:example/task/ship"}}
@@ -41,7 +44,7 @@ class PolicyTest(unittest.TestCase):
 			self.assertIn("deploy.production", resolved["unenforceable"])
 			context.knowledge = Store()
 			with locked(path):
-				commit(context, path, [{"op": "resolve", "decision": "decision-1"}], revision="revision-1")
+				commit(context, path, [{"op": "resolve", "gap": "gap-1", "decision": "decision-1"}], revision="revision-1")
 			PolicyGrant(context, path, "deploy.production", "auto:example/task/ship", "decision-1")
 			self.assertEqual(len(PolicyResolve(context, path, "ship")["grants"]), 1)
 			self.assertFalse(PolicyResolve(context, path, "root")["grants"])

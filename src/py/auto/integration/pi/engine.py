@@ -17,19 +17,24 @@ from auto.utils.data import AutoError
 
 
 class Pi:
-	"""Run a single ephemeral session, preserving native tools and explicit isolation."""
+	"""Run a single ephemeral session, with native tools unless restricted, and explicit isolation."""
 
 	def start(self, context, request):
 		config = request["config"]
-		if config.get("provider"):
-			raise AutoError("Pi integration does not support a separate provider setting")
+		if config.get("provider") and not config.get("model"):
+			raise AutoError("Pi needs a model to select a provider; set model as well")
 		if config.get("agent"):
 			raise AutoError("Pi CLI does not expose named agents")
 		args = ["pi", "--mode", "json", "--no-session"]
 		if config.get("isolated", False):
-			args += ["--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-mcp", "--no-approve"]
+			args += ["--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"]
 		if config.get("model"):
 			args += ["--model", config["model"]]
+		if config.get("provider"):
+			args += ["--provider", config["provider"]]
+		if "tools" in config:
+			# An empty list disables every tool; a list is an allowlist of tool names.
+			args += ["--tools", ",".join(config["tools"])] if config["tools"] else ["--no-tools"]
 		if "prompt" in config:
 			args += ["--system-prompt", config["prompt"] + "\n"]
 		decoder, pending, output, settled = codecs.getincrementaldecoder("utf-8")(), "", "", False
@@ -75,7 +80,7 @@ class Pi:
 						output = "".join(part["text"] for part in message["content"] if part["type"] == "text")
 					elif kind.startswith("tool_execution"):
 						yield {"type": Event.SCRIPT_ACTION, "name": event["toolName"], "content": kind}
-					elif kind == "agent_settled":
+					elif kind in {"agent_end", "agent_settled"}:
 						if event.get("aborted"):
 							raise AutoError("Pi aborted", "cancelled")
 						settled = True

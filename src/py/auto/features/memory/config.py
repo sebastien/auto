@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from auto.features.plan.policy import RANK, validatePolicy
 from auto.runtime.model import budgetValue
 from auto.utils.data import AutoError, identifier
@@ -28,21 +30,35 @@ def agentsFor(context) -> dict:
 	memory = context.defaults.get("memory", {})
 	if not isinstance(memory, dict) or not isinstance(memory.get("agents", {}), dict):
 		raise AutoError("memory.agents must be a mapping")
-	agents, seen = memory.get("agents", {}), set()
-	for name, config in agents.items():
+	agents, seen = {}, set()
+	for name, original in memory.get("agents", {}).items():
 		identifier(name)
-		if not isinstance(config, dict) or not isinstance(config.get("agent"), str) or not config["agent"]:
+		if not isinstance(original, dict):
+			raise AutoError(f"Agent {name} configuration must be a mapping")
+		default = f"agent-{name}/agent:" + "".join(part.capitalize() for part in re.split("[-_]+", name))
+		config = {"agent": default, **original}
+		if not isinstance(config["agent"], str) or not config["agent"]:
 			raise AutoError(f"Agent {name} requires a Memo artifact reference")
 		if config["agent"].startswith("memo:"):
 			raise AutoError(f"Agent {name} must use a Memo entry ID without the memo: prefix")
 		if config["agent"] in seen:
 			raise AutoError(f"Memo agent configured more than once: {config['agent']}")
 		seen.add(config["agent"])
+		if not isinstance(config.get("instructions", ""), str):
+			raise AutoError(f"Agent {name} instructions must be text")
+		for key in ("memoriser", "profile"):
+			if key in config and (not isinstance(config[key], str) or not config[key]):
+				raise AutoError(f"Agent {name} {key} must be a reference string")
+		if "concerns" in config and (not isinstance(config["concerns"], list) or any(not isinstance(label, str) or not label.strip() for label in config["concerns"])):
+			raise AutoError(f"Agent {name} concerns must be a list of non-empty labels")
+		if "triggers" in config and (not isinstance(config["triggers"], list) or any(not isinstance(trigger, str) or trigger not in {"plan-ended", "decision"} and not re.fullmatch(r"backlog:[1-9][0-9]*", trigger) for trigger in config["triggers"])):
+			raise AutoError(f"Agent {name} triggers must be plan-ended, decision or backlog:<positive integer>")
 		budgetValue(config.get("budget"))
 		if "allowance" in config:
 			validateAllowance(config["allowance"])
 		if "policy" in config:
 			validatePolicy(config["policy"])
+		agents[name] = config
 	return agents
 
 
@@ -57,6 +73,12 @@ def validateAgents(context, agents) -> list:
 	return agents
 
 
+def defaultAgents(context) -> list:
+	"""Resolve the explicit default selection independently of agent definitions."""
+	agentsFor(context)
+	return list(validateAgents(context, context.defaults.get("memory", {}).get("default_agents", [])))
+
+
 def housekeepingFor(context) -> dict:
 	"""Return the project housekeeping allowance, if configured."""
 	settings = context.defaults.get("housekeeping", {})
@@ -67,11 +89,17 @@ def housekeepingFor(context) -> dict:
 
 def memoryPolicy(context, agent: str) -> dict:
 	"""Resolve memory effects without letting an agent loosen user policy."""
+	if context.policyDefaults is not None:
+		context = context.derive(defaults=context.policyDefaults)
 	agents = agentsFor(context)
 	if agent not in agents:
 		raise AutoError(f"Unknown Auto agent: {agent}")
-	layers = [*(context.policyLayers or ([("configuration", context.defaults["policy"])] if "policy" in context.defaults else [])),
-		("agent", agents[agent].get("policy", {}))]
+	layers = list(context.policyLayers or ([("configuration", context.defaults["policy"])] if "policy" in context.defaults else []))
+	for source, values in context.configurationLayers:
+		definition = values.get("memory", {}).get("agents", {}).get(agent, {})
+		if isinstance(definition, dict) and "policy" in definition:
+			layers.append((source + ":agent/" + agent, definition["policy"]))
+	layers.append(("agent", agents[agent].get("policy", {})))
 	defaults = {"memory.observe": "allow", "memory.consolidate": "allow",
 		"memory.promote": "confirm", "memory.evolve": "confirm"}
 	for _, rules in layers:

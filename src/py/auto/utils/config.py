@@ -15,7 +15,7 @@ from auto.utils.data import AutoError, merge, yamlLoad
 # -----------------------------------------------------------------------------
 
 
-RUNTIME_KEYS = ("engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated")
+RUNTIME_KEYS = ("engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated", "tools")
 RUNTIME_SETTINGS = frozenset(RUNTIME_KEYS)
 
 # -----------------------------------------------------------------------------
@@ -25,7 +25,7 @@ RUNTIME_SETTINGS = frozenset(RUNTIME_KEYS)
 # -----------------------------------------------------------------------------
 
 
-def loadConfig(project: Path, sources: dict | None = None, policyLayers: list | None = None) -> dict:
+def loadConfig(project: Path, sources: dict | None = None, policyLayers: list | None = None, configurationLayers: list | None = None) -> dict:
 	"""Merge home, XDG and project configuration, preferring TOML at each location."""
 	xdg = os.environ.get("XDG_CONFIG_HOME")
 	configHome = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
@@ -57,6 +57,8 @@ def loadConfig(project: Path, sources: dict | None = None, policyLayers: list | 
 			if policyLayers is not None and "policy" in value:
 				policyLayers.append((str(file), value["policy"]))
 			result = merge(result, value)
+			if configurationLayers is not None:
+				configurationLayers.append((str(file), value))
 	return result
 
 

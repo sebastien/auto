@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import re
 
+from liquid.exceptions import LiquidError
+
 from auto.features.elaboration.materialize import materialize
+from auto.features.elaboration.allocation import BudgetAllocation
+from auto.features.elaboration.methodology import validateMethodology
 from auto.features.elaboration.model import TaskElaboration, createElaborationFromDict
-from auto.features.memory.config import validateAgents
+from auto.features.memory.config import defaultAgents, validateAgents
 from auto.features.plan.gaps import prepareGap
 from auto.features.plan.model import GAP_KINDS, GapKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanGet, PlanRevise, PlanStatus, dependencyGraph, tasksAt
@@ -14,9 +18,10 @@ from auto.features.plan.policy import EFFECT, PolicyResolve, taskRestrictions
 from auto.features.plan.references import latestRun
 from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.features.task.model import createTaskFromText, taskText
-from auto.features.task.operations import RunList, RunOutput, TaskGet, TaskStart, TaskValidate, effectiveTask
+from auto.features.task.operations import RunOutput, TaskGet, TaskStart, TaskValidate, effectiveTask
+from auto.features.script.config import commands
 from auto.runtime.model import RunStatus, budgetValue
-from auto.runtime.operations import Resolve
+from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, atomicWrite, digest, document, documentText, identifier, identity, jsonText, sections, yamlLoad
 from auto.utils.references import relocateMeta
 
@@ -28,7 +33,7 @@ from auto.utils.references import relocateMeta
 # -----------------------------------------------------------------------------
 
 
-def proposed(context, elaboration: TaskElaboration):
+def proposed(context, elaboration: TaskElaboration, *, dry: bool = False, deferred=None):
 	"""Validate an elaboration's targets and compute its revision changes."""
 	path = planPath(context)
 	tasks = tasksAt(path)
@@ -53,30 +58,20 @@ def proposed(context, elaboration: TaskElaboration):
 		id = identifier(value["id"])
 		if id == "root" or id in tasks or (path / "tasks" / (id + ".md")).exists() or (path / ".history" / (id + ".md")).exists():
 			raise AutoError(f"Task id is not new: {id}")
-		task = materialize(context, value, target)
+		fields = set()
+		task = materialize(context, value, target, dry=dry, deferred=fields if dry else None)
+		if deferred is not None:
+			deferred[id] = fields
 		tasks[id] = task
 		new.append(task)
 		change = {"op": RevisionOp.REPLACE if value.get("replaces") else RevisionOp.ADD, "task": task.asDict()}
 		if value.get("replaces"):
 			change["old"] = value["replaces"]
 		changes.append(change)
-	# Allocate only unspecified dimensions, with explicit allocations deducted first.
-	planBudget = budgetValue(tasks["root"].meta.get("budget"))
-	parentBudget = budgetValue(tasks[target].meta.get("budget"))
-	runs = RunList(context)
-	for key in planBudget.keys() | parentBudget.keys():
-		remaining = min(planBudget.get(key, float("inf")) - sum(run["usage"].get(key, 0) for run in runs), parentBudget.get(key, float("inf")))
-		retained = [task for task in tasks.values() if task.id != "root" and task.meta.get("parent", "root") == target and task not in new]
-		remaining -= sum(max(0, budgetValue(task.meta.get("budget")).get(key, 0)
-			- sum(run["usage"].get(key, 0) for run in runs if run["task"] == task.id)) for task in retained)
-		explicit = sum(budgetValue(task.meta.get("budget")).get(key, 0) for task in new)
-		unallocated = [task for task in new if key not in task.meta.get("budget", {})]
-		for task in unallocated:
-			share = max(0, remaining - explicit) / len(unallocated)
-			task.meta.setdefault("budget", {})[key] = int(share) if key == "tokens" else share
-			for change in changes:
-				if isinstance(change.get("task"), dict) and change["task"]["id"] == task.id:
-					change["task"] = task.asDict()
+	BudgetAllocation(context, tasks, new, target).allocate()
+	for change in changes:
+		if isinstance(change.get("task"), dict):
+			change["task"] = tasks[change["task"]["id"]].asDict()
 	return tasks, new, changes
 
 
@@ -118,21 +113,33 @@ def policyGapCovers(gap, task, kind, effect, rule, ref, staged) -> bool:
 
 def asElaboration(context, value) -> TaskElaboration:
 	"""Normalise a text, mapping or model elaboration to the model."""
-	if isinstance(value, TaskElaboration):
-		return value
 	if isinstance(value, str):
-		return ElaborationParse(context, value)
-	return createElaborationFromDict(value)
+		value = ElaborationParse(context, value)
+	elif not isinstance(value, TaskElaboration):
+		value = createElaborationFromDict(value)
+	if value.methodology is not None and (not isinstance(value.methodology, str) or value.methodology and not isReference(value.methodology)):
+		raise AutoError("Methodology must be a reference string")
+	return value
 
 
 def _apply(context, plan, elaboration: TaskElaboration, run) -> dict:
-	"""Apply an elaboration under the plan lock, idempotently by run."""
+	"""Prepare outside the writer lock, then commit against the captured revision."""
 	context = context.derive(plan=planPath(context, plan), evidence=[], author=run["id"] if isinstance(run, dict) else run)
+	if context.cancelled():
+		raise AutoError("Elaboration application cancelled", "cancelled")
 	baseRevision = (journal(context.plan) or [{}])[-1].get("id")
-	violations = ElaborationValidate(context, context.plan, elaboration)
+	readonly = context.derive(allowShell=False, variables=dict(context.variables))
+	methodSource = Resolve(readonly, elaboration.methodology) if elaboration.methodology else None
+	violations = ElaborationValidate(context, context.plan, elaboration, methodSource=methodSource)
 	if violations:
 		raise AutoError(jsonText(violations), "output")
-	_, new, changes = proposed(context, elaboration)
+	if context.cancelled():
+		raise AutoError("Elaboration application cancelled", "cancelled")
+	prepared = proposed(context, elaboration)
+	violations = ElaborationValidate(context, context.plan, elaboration, prepared=prepared, methodSource=methodSource)
+	if violations:
+		raise AutoError(jsonText(violations), "output")
+	tasks, new, changes = prepared
 	gaps, staged = policyGaps(context, elaboration, new)
 	revision = identity()
 	records, gapOps = [], []
@@ -140,13 +147,27 @@ def _apply(context, plan, elaboration: TaskElaboration, run) -> dict:
 		value = prepareGap(context, context.plan, {key: value for key, value in gap.items() if key != "name"}, revision, staged)
 		records.append({"kind": "gap", "value": value})
 		gapOps.append({"op": RevisionOp.RAISE, "gap": value["id"]})
-	pins = []
 	for ref in elaboration.context:
-		content = Resolve(context, ref["ref"] if isinstance(ref, dict) else ref)
-		pins.append({"ref": content.ref, "digest": content.digest})
-	return PlanRevise(context, context.plan, changes, elaboration.rationale or elaboration.summary or "Elaboration",
-		revision=revision, records=records, extraOps=gapOps, provenance=pins,
-		learnings=elaboration.learnings, expectedRevision=baseRevision, elaborationRun=context.author)
+		Resolve(context, ref["ref"] if isinstance(ref, dict) else ref)
+	if methodSource:
+		current = Resolve(readonly, elaboration.methodology)
+		if (current.ref, current.digest) != (methodSource.ref, methodSource.digest):
+			raise AutoError("An input changed while applying the elaboration: " + elaboration.methodology, "output")
+	allocation = BudgetAllocation(context, tasks, new, elaboration.task)
+	pins = {}
+	for pin in context.evidence:
+		if pin["ref"] in pins and pins[pin["ref"]]["digest"] != pin["digest"]:
+			raise AutoError("An input changed while applying the elaboration: " + pin["ref"], "output")
+		pins[pin["ref"]] = pin
+	with locked(context.plan):
+		if context.cancelled():
+			raise AutoError("Elaboration application cancelled", "cancelled")
+		if (journal(context.plan) or [{}])[-1].get("id") != baseRevision:
+			raise AutoError("Plan changed during elaboration validation; validate and retry")
+		allocation.validate()
+		return PlanRevise(context, context.plan, changes, elaboration.rationale or elaboration.summary or "Elaboration",
+			revision=revision, records=records, extraOps=gapOps, provenance=list(pins.values()),
+			learnings=elaboration.learnings, expectedRevision=baseRevision, elaborationRun=context.author)
 
 
 
@@ -171,7 +192,10 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 	if "budget" in settings:
 		elaborator.meta["budget"] = settings["budget"]
 	remaining = {key: max(0, amount - planData["usage"].get(key, 0)) for key, amount in budgetValue(planData.get("budget")).items()}
-	for key, amount in budgetValue(definition.meta.get("budget")).items():
+	parentBudget = definition.meta.get("budget")
+	if task != "root":
+		parentBudget = effectiveTask(context.derive(allowShell=False, variables=dict(context.variables)), definition).meta.get("budget")
+	for key, amount in budgetValue(parentBudget).items():
 		remaining[key] = min(remaining.get(key, amount), amount)
 	elaboratorBudget = budgetValue(effectiveTask(context, elaborator).meta.get("budget"))
 	for key, amount in remaining.items():
@@ -182,9 +206,11 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 		"outputs": {id: "task:" + id for id in planData["tasks"] if latestRun(context.plan, id, True)}}
 	goal = {"goal": definition.meta.get("goal"), "output": definition.meta.get("output"), "artifact": definition.meta.get("artifact"),
 		"post": definition.sections.get("Post"), "evaluation": definition.sections.get("Evaluation")}
+	for key, section, commandKey in (("post", "Post", "post"), ("evaluation", "Evaluation", "eval")):
+		if definition.meta.get(commandKey):
+			goal[key] = {"commands": commands(definition.meta[commandKey]), "content": definition.sections.get(section, "")}
 	inputs = {"goal": jsonText(goal), "state": jsonText(state), "budget": jsonText(remaining) if remaining else ""}
-	if "policy" in elaborator.meta.get("inputs", {}):
-		inputs["policy"] = jsonText(PolicyResolve(context, context.plan, task))
+	inputs["policy"] = jsonText(PolicyResolve(context, context.plan, task))
 	if not elaborator.meta.get("inputs", {}).get("context"):
 		inputs["context"] = list(planData.get("inputs", {}).values())
 	if not elaborator.meta.get("inputs", {}).get("learnings"):
@@ -220,13 +246,14 @@ def ElaborationParse(context, text: str) -> TaskElaboration:
 	return elaboration
 
 
-def ElaborationValidate(context, plan, elaboration) -> list:
-	"""Return all available violations without modifying plan or knowledge storage."""
+def ElaborationValidate(context, plan, elaboration, *, prepared=None, methodSource=None) -> list:
+	"""Return available violations without writes; apply rechecks resolved metadata."""
 	context = context.derive(plan=planPath(context, plan), evidence=[])
 	violations = []
 	try:
 		elaboration = asElaboration(context, elaboration)
-		tasks, new, _ = proposed(context, elaboration)
+		deferred = {}
+		tasks, new, _ = prepared if prepared is not None else proposed(context, elaboration, dry=True, deferred=deferred)
 		gaps, staged = policyGaps(context, elaboration, new)
 		for task in new:
 			violations.extend(TaskValidate(context, task, graph=False))
@@ -249,44 +276,14 @@ def ElaborationValidate(context, plan, elaboration) -> list:
 				if not any(policyGapCovers(gap, task, kind, effect, rule, ref, staged) for gap in gaps):
 					requirement = "checkpoint" if kind == GapKind.APPROVAL else "grant decision gap"
 					violations.append({"element": "task:" + task.id, "message": f"Effect {effect} ({rule}) requires a {requirement}"})
-		meta = PlanGet(context).get("budget", {})
-		limits = budgetValue(meta)
-		usage = {key: sum(run["usage"].get(key, 0) for run in RunList(context)) for key in limits}
-		parent = tasks[elaboration.task]
-		parentBudget = budgetValue(parent.meta.get("budget"))
-		for key in limits.keys() | parentBudget.keys():
-			available = min(limits.get(key, float("inf")) - usage.get(key, 0), parentBudget.get(key, float("inf")))
-			allocated = sum(budgetValue(effectiveTask(context, task).meta.get("budget")).get(key, 0) for task in new)
-			retained = [task for task in tasks.values()
-				if task.id != "root" and task.meta.get("parent", "root") == elaboration.task and task not in new]
-			allocated += sum(max(0, budgetValue(task.meta.get("budget")).get(key, 0)
-				- sum(run["usage"].get(key, 0) for run in RunList(context) if run["task"] == task.id)) for task in retained)
-			if allocated > available:
-				raise AutoError(f"Elaborated {key} budgets exceed remaining budget")
+		BudgetAllocation(context, tasks, new, elaboration.task).validate()
 		for ref in elaboration.context:
 			Resolve(context, ref["ref"] if isinstance(ref, dict) else ref)
 		if elaboration.methodology:
-			content = Resolve(context, elaboration.methodology)
-			method, _ = document(content.text)
-			phases = method.get("phases", [])
-			order = {phase["id"]: index for index, phase in enumerate(phases)}
-			for phase in phases:
-				members = [task for task in tasks.values() if task.meta.get("phase") == phase["id"]]
-				if not members:
-					raise AutoError(f"Missing methodology phase: {phase['id']}")
-				for artifact in phase.get("artifacts", []):
-					if not any(task.meta.get("artifact") == artifact for task in members):
-						raise AutoError(f"Missing phase artifact: {artifact}")
-				if phase.get("gate") == "approval" and not all(task.meta.get("hints", {}).get("gate") == "approval" for task in members):
-					raise AutoError(f"Missing phase approval gate: {phase['id']}")
-			for id, deps in graph.items():
-				phase = tasks[id].meta.get("phase")
-				if phase:
-					if phase not in order:
-						raise AutoError(f"Unknown methodology phase: {phase}")
-					if any(order.get(tasks[dep].meta.get("phase"), -1) > order[phase] for dep in deps):
-						raise AutoError(f"Task {id} depends on a later phase")
-	except (AutoError, ValueError, KeyError, TypeError) as error:
+			content = methodSource or Resolve(context.derive(allowShell=False, variables=dict(context.variables)), elaboration.methodology)
+			validateMethodology(context, content, tasks, graph, deferred=deferred,
+				overrides={value["id"]: value for value in elaboration.tasks})
+	except (AutoError, ValueError, KeyError, TypeError, LiquidError) as error:
 		violations.append({"element": "elaboration", "message": str(error)})
 	return violations
 
@@ -295,27 +292,34 @@ def ElaborationApply(context, plan, elaboration, run) -> dict:
 	"""Apply a validated elaboration as a single plan revision."""
 	path = planPath(context, plan)
 	elaboration = asElaboration(context, elaboration)
-	with locked(path):
-		recover(context, path)
-		runId = run["id"] if isinstance(run, dict) else run
-		for revision in journal(path):
-			if revision.get("elaborationRun") == runId:
-				return revision
+	runId = run["id"] if isinstance(run, dict) else run
+	if not isinstance(runId, str) or not runId:
+		raise AutoError("Elaboration application requires its originating run ID")
+	application = path / ".applications" / digest(runId.encode()).removeprefix("sha256:")
+	application.mkdir(parents=True, exist_ok=True)
+	with locked(application):
+		with locked(path):
+			recover(context, path)
+			for revision in journal(path):
+				if revision.get("elaborationRun") == runId:
+					return revision
 		return _apply(context, path, elaboration, run)
 
 
 def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None) -> dict:
 	"""Create a root and run the ordinary Elaborator to produce its first revision."""
+	if not isinstance(goal, str) or not goal.strip():
+		raise AutoError("Plan creation requires a non-empty goal")
 	inputs = context.inputs if inputs is None else inputs
+	budget = budgetValue(budget)
 	if effects is not None and (not isinstance(effects, list) or any(not isinstance(effect, str) or not EFFECT.fullmatch(effect) for effect in effects)):
 		raise AutoError("Requested effects must be a list of dotted effect names")
 	if effects and context.author != "human":
 		raise AutoError("Only a human may request goal effects")
-	if agents is not None:
-		validateAgents(context, agents)
+	agents = defaultAgents(context) if agents is None else list(validateAgents(context, agents))
 	name = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:48].rstrip("-") or "plan"
-	if name == "catalogue":
-		name = "plan-catalogue"
+	if name in {"catalogue", "agent"}:
+		name = "plan-" + name
 	path = context.project / ".auto/plans" / name
 	if path.exists():
 		name += "-" + identity().rsplit("-", 1)[-1]
@@ -323,7 +327,7 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 	path.mkdir(parents=True, exist_ok=False)
 	root = {"id": name, "goal": goal, **({"requested_effects": effects} if effects else {}),
 		**({"agents": agents} if agents is not None else {}),
-		**relocateMeta({"inputs": inputs or {}}, context.project), "budget": budgetValue(budget)}
+		**relocateMeta({"inputs": inputs or {}}, context.project), "budget": budget}
 	atomicWrite(path / "plan.md", documentText(root, "# " + goal + "\n"))
 	if effects:
 		base = "auto:" + name

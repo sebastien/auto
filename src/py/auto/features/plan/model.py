@@ -59,6 +59,81 @@ class RevisionOp(StrEnum):
 	RECORD = "record"
 	GRANT = "grant"
 	ABANDON = "abandon"
+	HOLD = "hold"
+	RELEASE = "release"
+
+
+class PlanEventKind(StrEnum):
+	"""Durable event names exposed to plan supervisors."""
+
+	REVISED = "PlanRevised"
+	RUN_STARTED = "RunStarted"
+	RUN_WAITING = "RunWaiting"
+	RUN_ENDED = "RunEnded"
+	GAP_RAISED = "GapRaised"
+	GAP_RESOLVED = "GapResolved"
+	DECISION_RECORDED = "DecisionRecorded"
+	GAP_DISMISSED = "GapDismissed"
+	HELD = "PlanHeld"
+	RELEASED = "PlanReleased"
+	CONTINUATION_STARTED = "ContinuationStarted"
+	CONTINUATION_STOPPED = "ContinuationStopped"
+	ENDED = "PlanEnded"
+
+
+class ContinuationStop(StrEnum):
+	"""Reasons a sequential plan continuation stops."""
+
+	WAITING = "waiting"
+	FAILED = "failed"
+	BUDGET = "budget"
+	HELD = "held"
+	ENDED = "ended"
+	BLOCKED = "blocked"
+	CANCELLED = "cancelled"
+
+
+@dataclass(slots=True)
+class Hold:
+	"""A human's durable suspension of plan progression."""
+
+	mode: str
+	author: str
+	reason: str
+	revision: str
+
+	def asDict(self) -> dict:
+		return {"mode": self.mode, "author": self.author, "reason": self.reason, "revision": self.revision}
+
+
+@dataclass(slots=True)
+class Continuation:
+	"""A single sequential progression, with a durable stop record."""
+
+	id: str
+	started: str
+	ended: str | None = None
+	runs: list = field(default_factory=list)
+	stop: str | None = None
+
+	def asDict(self) -> dict:
+		return {"id": self.id, "started": self.started, "ended": self.ended, "runs": self.runs, "stop": self.stop}
+
+
+@dataclass(slots=True)
+class PlanEvent:
+	"""One append-only plan event, sequenced under the plan writer lock."""
+
+	seq: int
+	date: str
+	kind: str
+	ref: str
+	data: dict = field(default_factory=dict)
+	author: str | None = None
+
+	def asDict(self) -> dict:
+		return {"seq": self.seq, "date": self.date, "kind": self.kind, "ref": self.ref, "data": self.data,
+			**({"author": self.author} if self.author is not None else {})}
 
 
 @dataclass(slots=True)

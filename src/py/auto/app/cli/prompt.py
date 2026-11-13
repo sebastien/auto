@@ -6,10 +6,14 @@ import os
 import sys
 from importlib.util import find_spec
 from pathlib import Path
+from urllib.parse import quote
+
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError, ValidationError
 
 from auto.app.operations import Descriptor
 from auto.runtime.model import Event
-from auto.utils.data import AutoError
+from auto.utils.data import AutoError, jsonText, yamlLoad
 
 # -----------------------------------------------------------------------------
 #
@@ -196,7 +200,7 @@ class Prompter:
 		if need and not self.filled:
 			self.say(need, "italic")
 		self.filled = True
-		label = name.replace("_", " ").capitalize()
+		label = descriptor.label or name.replace("_", " ").capitalize()
 		help = descriptor.help + (" (Enter to skip)" if optional else "")
 		candidates = candidatesFor(name, descriptor, context, arguments or {})
 		if descriptor.kind == "choice":
@@ -238,13 +242,53 @@ class Prompter:
 			return self.prompt("Answer", name="answer", check=lambda text: None if text.strip() else "An answer is required").strip()
 		answer = {}
 		for field in event["fields"]:
-			label = str(field.get("title") or field.get("label") or field["id"])
+			name = field.get("id", field.get("key"))
+			if not isinstance(name, str) or not name:
+				raise AutoError("Question field requires an id or key")
+			if any((answer.get(condition["key"]) == condition.get("value")) != (condition.get("op") == "eq") for condition in field.get("when", [])):
+				continue
+			if field.get("hidden"):
+				if "default" in field:
+					answer[name] = field["default"]
+				continue
+			label = str(field.get("title") or field.get("label") or name)
 			options = [(str(option.get("value", option.get("label"))), str(option.get("label", ""))) if isinstance(option, dict) else (str(option), "")
 				for option in field.get("options") or []]
-			if options:
-				answer[field["id"]] = self.choose(label, options, help=field.get("description", ""))
-			else:
-				answer[field["id"]] = self.prompt(label, help=field.get("description", "")).strip()
+			type = field.get("type", "text")
+			kind = field.get("kind") or {"string": "text", "integer": "value", "number": "value", "boolean": "value", "multiselect": "structured"}.get(type, type)
+			if options and type != "multiselect" and not field.get("custom"):
+				kind = "choice"
+			if kind not in {"text", "multiline", "path", "choice", "value", "structured"}:
+				raise AutoError(f"Unsupported question field kind: {kind}; answer through the originating interface")
+			schema = dict(field.get("schema", {}))
+			if type in {"integer", "number", "boolean", "string"}:
+				schema.setdefault("type", type)
+			elif type == "multiselect":
+				schema.setdefault("type", "array")
+				schema.setdefault("items", {"type": "string", **({"enum": [value for value, _ in options]} if not field.get("custom") else {})})
+			for key in ("minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "pattern", "format"):
+				if key in field:
+					schema[key] = field[key]
+			try:
+				Draft202012Validator.check_schema(schema)
+			except SchemaError as error:
+				raise AutoError(f"Invalid question field schema: {error}") from error
+			validator = Draft202012Validator(schema, format_checker=FormatChecker())
+			def parse(text):
+				try:
+					value = yamlLoad(text) if kind in {"value", "structured"} or type in {"integer", "number", "boolean", "multiselect"} else text
+					jsonText(value)
+					validator.validate(value)
+				except (ValidationError, TypeError, ValueError) as error:
+					raise AutoError(f"Invalid {label}: {str(error).partition(chr(10))[0]}") from error
+				return value
+			default = field.get("default", "")
+			default = default if isinstance(default, str) else jsonText(default)
+			value = self.ask("question-" + quote(name, safe=""), Descriptor(kind, field.get("description", ""),
+				field.get("suffix", ""), candidates=lambda context, arguments: options, label=label), None,
+				default=default, optional=field.get("required") is False, check=parse)
+			if value is not None:
+				answer[name] = parse(value)
 		return answer
 
 # EOF

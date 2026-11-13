@@ -70,6 +70,60 @@ enabled = true
 ```
 
 Nested tables are merged and available to features through the runtime context.
+
+Memory agents are configured separately from an engine's harness agent:
+
+```toml
+[memory]
+default_agents = ["auto:agent/ui-designer"]
+
+[memory.agents.ui-designer]
+# agent defaults to "agent-ui-designer/agent:UiDesigner"
+# triggers = ["plan-ended", "decision", "backlog:24"]
+```
+
+Plan creation snapshots `default_agents` unless `--agents` is given;
+`--agents '[]'` selects none. Defining an agent alone does not enable it by
+default. Plan runs receive bounded Memo wake layers and performer-owned capture
+instructions. The configured Memo agent and its private observation log must
+already exist with retained identities; consolidation creates no learning stores
+implicitly.
+
+```sh
+auto consolidation status auto:agent/ui-designer
+auto consolidation run auto:agent/ui-designer --phases '[verify, derive]'
+```
+
+Consolidation uses an agent-scoped task run, validates its change set through
+Memo in dry mode, and stages application for recovery after interruption.
+Concurrent requests coalesce. Project and agent allowances reserve capacity
+before execution and charge measured usage separately from plan budgets. An
+explicit `--overrideAllowance` can override project caps while preserving user
+restrictions and the per-run budget. Allowance-blocked requests stay pending.
+Decision inputs use event cursors that advance only after application; existing
+staged applications are reconciled before a new run. Optional `triggers` default
+to `[]`. Selected agents can request consolidation on plan completion, relevant
+decisions or a `backlog:N` threshold checked after task completion.
+
+Successful CLI operations flush their primary output before checking and
+processing housekeeping. MCP checks run in a separate task after the tool
+result is prepared. Each invocation processes at most one pending pass per
+agent; requests arriving during a pass remain pending for another invocation.
+Failures are retained in agent maintenance status and do not replace the
+command's result. There is no housekeeping daemon.
+
+Project owners can configure interface record resolvers:
+
+```toml
+[resolvers]
+auto-agent = "auto-agent excerpt"
+```
+
+Auto runs the command with `REFERENCE --budget BYTES` as separate arguments,
+without a shell, from the project directory. It expects a JSON excerpt object.
+Exit `3` or a missing executable means unavailable; other errors fail resolution.
+Commands and output remain subject to execution and byte limits.
+
 Execution defaults belong under `[runtime]` (or `runtime:` in YAML); flat
 runtime settings and unknown keys within that section are rejected. Script
 frontmatter and CLI flags remain flat.
@@ -104,6 +158,10 @@ output. Script-specific metadata is not included.
 ```sh
 bin/auto plan create 'Document the project architecture' --engine pi
 bin/auto plan status --plan document-the-project-architecture
+bin/auto plan continue --plan document-the-project-architecture
+bin/auto plan events --plan document-the-project-architecture --since 0 --follow --format json
+bin/auto plan hold Pause 'Review the current result' --plan document-the-project-architecture
+bin/auto plan release 'Ready to proceed' --plan document-the-project-architecture
 bin/auto task run TASK_ID --plan document-the-project-architecture
 bin/auto gap list --plan document-the-project-architecture
 bin/auto gap decide GAP_ID 'answer' 'Reason for the choice' --plan document-the-project-architecture
@@ -114,8 +172,19 @@ bin/auto plan refine 'Address the review findings' --plan document-the-project-a
 Plans live under `.auto/plans/`; gaps and decisions are Memo records under
 `.memo/`. `AUTO_PLAN` selects a plan for subsequent commands. Plan creation
 and refinement execute the built-in Elaborator and its checks. A Waiting
-result requires a decision before execution can resume. Run ready tasks
-explicitly, then run their aggregate parent (including `root`).
+result requires a decision before execution can resume. `plan continue` runs
+ready tasks and aggregates (including `root`) sequentially until the plan ends,
+needs a decision, fails, reaches its budget or is held. Failed runs are not
+retried automatically. `task run` remains available for explicit attempts.
+
+Deciding a gap records the answer without starting execution. A running
+continuation resumes the waiting run at its next selection; otherwise run
+`plan continue` when ready. The Python `RunAnswer` operation explicitly answers
+and resumes one run, and terminal question prompts use it.
+
+`Pause` lets the current run finish; `Stop` cancels it. Holds persist, and
+releasing one starts no work. Plan events cover manual operations as well as
+continuations and can be followed or resumed from their sequence cursor.
 
 Use `decision record` for choices made outside a gap. It records the question,
 answer, rationale, author and optional concerns and source in Memo and the plan
@@ -124,6 +193,7 @@ journal. Decisions can be recorded after a plan ends without reopening it.
 `--format json` provides structured output. Exit statuses: `0` success,
 `1` failure, `2` invalid CLI usage, `3` Waiting/Blocked/Skipped, `124` timeout,
 `130` cancellation. Each command has `--help`.
+Continuation stops other than an ended or failed plan use pending status `3`.
 
 In a terminal, execution shows a transient activity line on stderr with elapsed
 time and reported cost; task budgets are shown when configured. Cost and token

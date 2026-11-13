@@ -64,6 +64,7 @@ src/py/auto/
   wiring.py                 # Composition root: reference resolvers
   integration/
     process.py              # Shared subprocess boundary
+    resolvers.py            # Bounded owner-configured excerpt commands
     opencode/
       engine.py             # OpenCode integration
     pi/
@@ -92,6 +93,9 @@ src/py/auto/
       store.py              # Journal, lock and recovery
       references.py         # Plan-scoped references and run discovery
       gaps.py               # Gap operations and Memo reconciliation
+      gates.py              # Readiness of tasks guarded by output approvals
+      events.py             # Durable plan events and their repair
+      control.py            # Hold revisions and continuation state
       policy.py             # Plan policy: effects, rules and grants
     elaboration/
       model.py              # TaskElaboration model
@@ -101,6 +105,8 @@ src/py/auto/
     memorisation/
       model.py              # Agent runtime facet, MemoryConsolidation
       operations.py         # Consolidation, triggers, decision cursors, wake
+    orchestration/
+      operations.py         # Sequential continuation, selection, limits and hints
   app/
     operations.py           # Exposure metadata shared by interfaces
     cli/
@@ -121,7 +127,7 @@ tests/
 - Keep files under 1000 lines, split into submodules as they grow.
 - Follow `review-py` standards.
 - Depend downward: `utils` and `runtime` know no feature; integrations implement
-  the contracts in `runtime/integration.py`; `script → task → plan → elaboration`;
+  the contracts in `runtime/integration.py`; `script → task → plan → elaboration → orchestration`;
   `app` projects feature operations. Reference-scheme wiring lives in
   `wiring.py`, the only module that knows both the runtime and the features.
 - Operations are `PascalCase` (`{Noun}{Verb}`); helpers and model members are

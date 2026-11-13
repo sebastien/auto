@@ -20,6 +20,8 @@ class Fx:
 
 	def start(self, context, request):
 		config = request["config"]
+		if "tools" in config:
+			raise AutoError("fx ask cannot restrict tools per run; use an engine supporting tools")
 		if config.get("agent"):
 			raise AutoError("fx ask does not support named agent profiles")
 		if config.get("isolated", False):

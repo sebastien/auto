@@ -90,6 +90,30 @@ class PromptTests(unittest.TestCase):
 		with self.prompter("\r") as prompter:
 			self.assertIsNone(prompter.ask("budget", DESCRIPTORS["budget"], None, optional=True))
 
+	def testBudgetPromptValidatesDomainBeforeAccepting(self):
+		exposure = next(item for item in EXPOSURES if item.name == "PlanCreate")
+		attempts = []
+		def check(text):
+			attempts.append(text)
+			return cli.coerceArguments(exposure, {"budget": text})
+		with self.prompter("oops\r\x15cost: 2\r") as prompter:
+			self.assertEqual(prompter.ask("budget", DESCRIPTORS["budget"], None, check=check), "cost: 2")
+		self.assertIn("oops", attempts)
+
+	def testNamespacedMissingInputCanBeFilledAndExpanded(self):
+		from auto.features.script.operations import ScriptExpand
+		from auto.runtime.model import Context
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			file = root / "script.md"
+			file.write_text("Hello {{ inputs.name }}")
+			context = Context(project=root)
+			self.assertEqual(cli.missingInputs(context, str(file)), ["name"])
+			with self.prompter("Ada\r") as prompter:
+				name = cli.missingInputs(context, str(file))[0]
+				context.inputs[name] = prompter.ask(name, Descriptor("value"), context)
+			self.assertTrue(ScriptExpand(context, str(file)).startswith("Hello Ada"))
+
 	def testEndOfInputCancels(self):
 		with self.prompter("\x04") as prompter, self.assertRaises(KeyboardInterrupt):
 			prompter.ask("rationale", DESCRIPTORS["rationale"], None)
@@ -101,6 +125,40 @@ class PromptTests(unittest.TestCase):
 			event = {"type": Event.SCRIPT_QUESTION, "content": "Choose", "fields": [
 				{"id": "colour", "title": "Colour", "options": ["red", "blue"]}, {"id": "why", "type": "text"}]}
 			self.assertEqual(prompter.question(event), {"colour": "blue", "why": "because"})
+
+	def testQuestionFieldsHonorKindsConstraintsAndBackendKeys(self):
+		fields = [
+			{"key": "count", "title": "Count", "type": "integer", "minimum": 2, "maximum": 4},
+			{"key": "enabled", "type": "boolean"},
+			{"id": "notes", "kind": "multiline", "label": "Review notes"},
+			{"id": "optional", "required": False},
+			{"key": "hidden", "hidden": True, "default": "kept"},
+			{"key": "not-needed", "when": [{"key": "count", "op": "eq", "value": 4}]}]
+		with self.prompter("one\r\x153\rfalse\rline one\rline two" + ESC_ENTER + "\r") as prompter:
+			result = prompter.question({"content": "Review", "fields": fields})
+		self.assertEqual(result, {"count": 3, "enabled": False, "notes": "line one\nline two", "hidden": "kept"})
+		self.assertIn("Review notes", self.screen.getvalue())
+
+	def testStructuredAndPathQuestionFieldsUseCommonValidation(self):
+		with tempfile.TemporaryDirectory() as directory:
+			file = Path(directory) / "answer.md"
+			file.write_text("Answer")
+			fields = [{"id": "data", "kind": "structured", "schema": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}},
+				{"id": "file", "kind": "path", "suffix": ".md"}]
+			with self.prompter("x: no\r\x15x: 2\r" + str(file) + "\r") as prompter:
+				result = prompter.question({"content": "Choose", "fields": fields})
+			self.assertEqual(result, {"data": {"x": 2}, "file": str(file)})
+
+	def testInvalidQuestionSchemasFailBeforePrompting(self):
+		with self.prompter("") as prompter, self.assertRaisesRegex(cli.AutoError, "Invalid question field schema"):
+			prompter.question({"fields": [{"id": "count", "type": "integer", "minimum": "not a number"}]})
+		with self.prompter("") as prompter, self.assertRaisesRegex(cli.AutoError, "originating interface"):
+			prompter.question({"fields": [{"id": "external", "type": "external"}]})
+
+	def testArgumentDescriptorCanOverrideDisplayLabel(self):
+		with self.prompter("hello\r") as prompter:
+			self.assertEqual(prompter.ask("internal", Descriptor(label="Friendly label"), None), "hello")
+		self.assertIn("Friendly label", self.screen.getvalue())
 
 	def testMissingVerbIsChosen(self):
 		with self.session("list\r"):
@@ -117,6 +175,24 @@ class PromptTests(unittest.TestCase):
 		self.assertEqual(status, 0)
 		self.assertIn("Hello world", output)
 		self.assertIn(f"› auto script expand {script} --input name=world", self.screen.getvalue())
+
+	def testTransitiveDefaultsAndLoopInputsDoNotPrompt(self):
+		from auto.runtime.model import Context
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			child = root / "child.md"
+			child.write_text('---\ninputs:\n  base: ""\n  rev: ""\n---\n{{ base }}{{ inputs.rev }}{{ extra }}')
+			script = root / "script.md"
+			script.write_text('---\neach:\n  rev: [first]\n---\n@./child.md')
+			context = Context(project=root)
+			self.assertEqual(cli.missingInputs(context, str(script)), ["extra"])
+			context.inputs["extra"] = "given"
+			self.assertEqual(cli.missingInputs(context, str(script)), [])
+			child.write_text('---\ninputs:\n  base: ""\n  rev: ""\n---\n{{ base }}{{ inputs.rev }}')
+			with self.session("") as prompter:
+				status, _ = self.invoke("script", "expand", str(script))
+			self.assertEqual(status, 0)
+			self.assertFalse(prompter.filled)
 
 	def testEffectsAreConfirmed(self):
 		with tempfile.TemporaryDirectory() as directory, patch("auto.features.elaboration.operations.PlanCreate") as create:
@@ -141,6 +217,9 @@ class PromptTests(unittest.TestCase):
 	def testCommandLine(self):
 		args = cli.parser().parse_args(["gap", "decide", "g1", "yes", "it is fine", "--plan", "p"])
 		self.assertEqual(cli.commandLine(args, args.exposure), "auto gap decide g1 yes 'it is fine' --plan p")
+		args = cli.parser().parse_args(["plan", "events", "--follow", "--plan", "p"])
+		command = cli.commandLine(args, args.exposure)
+		self.assertEqual(command, "auto plan events --follow --plan p")
 
 
 if __name__ == "__main__":

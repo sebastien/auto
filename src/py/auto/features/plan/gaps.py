@@ -82,6 +82,8 @@ def applyPending(context, run) -> dict | None:
 	from auto.features.task.operations import runDirectory
 	if not readJson(runDirectory(context, run) / "state.json", {}).get("applyElaboration"):
 		return None
+	if any(row.get("elaborationRun") == run["id"] for row in journal(planPath(context))):
+		return None
 	from auto.features.elaboration.operations import ElaborationApply, ElaborationParse
 	from auto.features.task.operations import RunOutput
 	return ElaborationApply(context, context.plan, ElaborationParse(context, RunOutput(context, run)), run)
@@ -120,7 +122,7 @@ def GapList(context, plan=None, filter: dict | None = None) -> list:
 
 
 def GapDecide(context, gap: str, answer, rationale: str) -> dict:
-	"""Resolve a gap with a decision, resuming its waiting run."""
+	"""Resolve a gap with a durable decision; continuation resumes waiting work."""
 	path = planPath(context)
 	store = Knowledge(context)
 	with locked(path):
@@ -143,13 +145,18 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 		request = value.get("runtime_policy")
 		if request and request["rule"] == "deny" and answer == {"grant": request["effect"], "scope": request["scope"]}:
 			operations.append({"op": RevisionOp.GRANT, "effect": request["effect"], "scope": request["scope"], "source": decision["identity"]})
+		elif not request and value.get("gap_kind") == GapKind.DECISION and value.get("effects") \
+			and isinstance(answer, dict) and set(answer) == {"grant", "scope"}:
+			from auto.features.plan.policy import EFFECT
+			from auto.features.plan.operations import tasksAt
+			effect, scope = answer["grant"], answer["scope"]
+			validScopes = {planRef(path)} | {f"{planRef(path)}/task/{task}" for task in value["needed_by"] if task in tasksAt(path)}
+			if context.author != "human" or not isinstance(effect, str) or not EFFECT.fullmatch(effect) \
+				or effect not in value["effects"] or not isinstance(scope, str) or scope not in validScopes:
+				raise AutoError("Grant requires a human decision naming an effect and scope covered by the gap")
+			operations.append({"op": RevisionOp.GRANT, "effect": effect, "scope": scope, "source": decision["identity"]})
 		commit(context, path, operations, revision=revision, reason=rationale,
 			records=[{"kind": "decision", "value": decision}, {"kind": "gap", "value": updated, "expected": value["digest"], "base": value}])
-	# Resume only after leaving the commit lock; model checks can call Auto themselves.
-	from auto.features.task.operations import resumeGap
-	result = resumeGap(context, gap, answer)
-	if result:
-		applyPending(context, result)
 	return decision
 
 
@@ -182,8 +189,12 @@ def GapDismiss(context, gap: str, rationale: str) -> dict:
 		recover(context, path)
 		repairLocked(context, path)
 		value = Knowledge(context).get(f"{planRef(path)}/gap/{gap}")
-		if value["status"] != GapState.OPEN:
+		from auto.features.plan.gates import outputRun
+		outputGate = outputRun(context, value) is not None
+		if value["status"] != GapState.OPEN and not (outputGate and value["status"] == GapState.RESOLVED):
 			raise AutoError("Gap is not open")
+		if outputGate and (context.author != "human" or not isinstance(rationale, str) or not rationale.strip()):
+			raise AutoError("Waiving an output gate requires a human rationale")
 		revision = identity()
 		updated = {**value, "status": GapState.DISMISSED, "rationale": rationale, "resolved_revision": revision}
 		records = [{"kind": "gap", "value": updated, "expected": value["digest"], "base": value}]
@@ -197,12 +208,14 @@ def PlanRepair(context, plan=None) -> dict:
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
-	from auto.features.task.operations import resumeGap, RunList
-	for gap in GapList(context, path, {"status": GapState.RESOLVED}):
-		decision = Knowledge(context).get(f"{planRef(path)}/decision/{gap['decision']}")
-		resumeGap(context, gap["id"], decision["answer"])
+	from auto.features.task.operations import RunList, reconcileRunWorkers
+	reconcileRunWorkers(context, path)
 	for run in RunList(context, {"status": RunStatus.SUCCEEDED}):
 		applyPending(context, run)
+	from auto.features.plan.events import repairEvents
+	from auto.features.plan.control import reconcileContinuations
+	reconcileContinuations(context, path)
+	repairEvents(context, path)
 	return {"revision": (journal(path) or [{}])[-1].get("id")}
 
 # EOF

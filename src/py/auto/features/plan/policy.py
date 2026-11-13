@@ -6,6 +6,8 @@ import re
 
 from auto.features.plan.model import GapKind, GapState, RevisionOp, createPlan
 from auto.features.plan.store import commit, journal, locked, planPath, recover
+from auto.features.plan.references import definitionPath
+from auto.features.task.model import Task
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.operations import Engine, Knowledge, Resolve
 from auto.utils.data import AutoError, digest
@@ -82,6 +84,9 @@ def PolicyResolve(context, plan=None, task=None):
 	layers = policyLayers(context, meta)
 	from auto.features.plan.operations import tasksAt
 	tasks = tasksAt(path)
+	if isinstance(task, Task):
+		definition, task = task, task.id
+		tasks[task] = definition
 	if task is not None and task not in tasks:
 		raise AutoError(f"Unknown task: {task}")
 	effects = set(BUILTINS)
@@ -153,7 +158,7 @@ def shellPermitted(context, task):
 	base = "auto:" + meta["id"]
 	if any(op.get("effect") == "shell.run" and op.get("scope") in {base, base + "/task/" + task.id} for _, op in journalGrants(path)):
 		return True
-	return task.path.exists() and "shell.run" in task.meta.get("effects", []) and "shell.run" not in taskPolicyBlocked(context, task)
+	return definitionPath(path, task.id).is_file() and "shell.run" in task.meta.get("effects", []) and "shell.run" not in taskPolicyBlocked(context, task)
 
 
 def runtimeRule(context, task, effect):

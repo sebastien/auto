@@ -20,6 +20,8 @@ class Llm:
 
 	def start(self, context, request):
 		config = request["config"]
+		if config.get("tools"):
+			raise AutoError("llm runs without tools and cannot enable them; use tools: [] or another engine")
 		if config.get("provider"):
 			raise AutoError("llm integration does not support a separate provider setting")
 		if config.get("agent"):

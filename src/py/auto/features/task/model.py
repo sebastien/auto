@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 
 from auto.features.script.model import Script
@@ -64,9 +65,11 @@ class Task:
 	sections: dict
 	path: Path
 	description: str = ""
+	# Transient authoring state; taskText/asDict never persist this projection.
+	projectDefaults: Callable[[dict], dict] | None = field(default=None, repr=False, compare=False)
 
 	def script(self, section: str = "Process") -> Script:
-		return Script(self.sections.get(section, ""), self.path, self.meta)
+		return Script(self.sections.get(section, ""), self.path, self.meta, str(self.path) + "#" + section)
 
 	def asDict(self) -> dict:
 		return {**self.meta, "id": self.id, "sections": self.sections, "description": self.description, "path": str(self.path)}

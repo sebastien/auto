@@ -46,6 +46,9 @@ class EngineTests(unittest.TestCase):
 			result = list(ScriptStart(ctx.derive(limits=Limits({})), Script("Hello", root / "hello.md", {"isolated": True})))[-1]
 			self.assertEqual(result["status"], "Succeeded")
 			self.assertIn("--no-context-files", (root / "args").read_text())
+			self.assertIn("--no-extensions", (root / "args").read_text())
+			self.assertNotIn("--no-mcp", (root / "args").read_text())
+			self.assertNotIn("--no-approve", (root / "args").read_text())
 			self.assertEqual(ctx.limits.usage["tokens"], 4)
 			for temperature in (0, .1):
 				with self.subTest(temperature=temperature):
@@ -55,6 +58,43 @@ class EngineTests(unittest.TestCase):
 					self.assertEqual(result[-1]["output"], "Hello")
 			result = list(ScriptStart(ctx.derive(limits=Limits({"tokens": 2})), Script("Hello", root / "hello.md")))[-1]
 			self.assertEqual(result["failure"]["kind"], "budget")
+			for meta, expected, absent in (
+				({"tools": []}, ["--no-tools"], "--tools"),
+				({"tools": ["read", "grep"]}, ["--tools", "read,grep"], "--no-tools"),
+				({"provider": "openai", "model": "gpt-6-luna"}, ["--model", "gpt-6-luna", "--provider", "openai"], "--no-tools"),
+			):
+				with self.subTest(meta=meta):
+					result = list(ScriptStart(ctx.derive(limits=Limits({})), Script("Hello", root / "hello.md", meta)))[-1]
+					self.assertEqual(result["status"], "Succeeded")
+					args = (root / "args").read_text().splitlines()
+					self.assertEqual(args[args.index(expected[0]):args.index(expected[0]) + len(expected)], expected)
+					self.assertNotIn(absent, args)
+
+	def testPiCurrentJsonAgentEndAndAbortedMessages(self):
+		from unittest.mock import patch
+		from auto.integration.pi.engine import Pi
+		for stop, terminal in (("stop", "agent_end"), ("stop", "agent_settled"), ("aborted", "agent_end"), ("error", "agent_end")):
+			with self.subTest(stop=stop, terminal=terminal):
+				events = [
+					{"type": "message_start", "message": {"role": "assistant"}},
+					{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}],
+						"usage": {"totalTokens": 4, "cost": {"total": .01}}, "stopReason": stop}},
+					{"type": terminal},
+				]
+				data = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+				context = Context(config={"engine": "pi"}, limits=Limits({"tokens": 10}))
+				def stream():
+					yield 0, data
+					yield 2, 0
+				with patch("auto.integration.pi.engine.streamProcess", return_value=stream()):
+					if stop == "stop":
+						result = list(Pi().start(context, {"config": {}, "prompt": "Work"}))[-1]
+						self.assertEqual(result["status"], "Succeeded")
+						self.assertEqual(result["output"], "Done")
+					else:
+						with self.assertRaises(AutoError):
+							list(Pi().start(context, {"config": {}, "prompt": "Work"}))
+				self.assertEqual(context.limits.usage["tokens"], 4)
 
 	def testOpenCodeFormsAndCancellation(self):
 		class Stub(OpenCode):
@@ -161,6 +201,12 @@ class EngineTests(unittest.TestCase):
 	def testUnsupportedExecutionSettingsStillFail(self):
 		for config, reason in (
 			({"engine": "pi", "agent": "custom", "temperature": .1}, "named agents"),
+			({"engine": "pi", "provider": "openai"}, "needs a model"),
+			({"engine": "llm", "tools": ["read"]}, "without tools"),
+			({"engine": "opencode", "tools": []}, "cannot restrict tools"),
+			({"engine": "fx", "tools": []}, "cannot restrict tools"),
+			({"engine": "pi", "tools": "read"}, "tools must be a list"),
+			({"engine": "pi", "tools": ["read; rm"]}, "tools must be a list"),
 			({"engine": "opencode", "isolated": True, "temperature": .1}, "isolation"),
 			({"engine": "opencode", "isolated": False, "prompt": "Custom", "temperature": .1}, "system prompt"),
 		):

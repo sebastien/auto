@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from auto.utils.data import merge
+from auto.utils.data import AutoError, merge
 
 # -----------------------------------------------------------------------------
 #
@@ -27,13 +27,18 @@ def relocateMeta(meta: dict, base: Path) -> dict:
 	"""Rewrite source-relative metadata values to absolute paths from `base`."""
 	result = merge(meta)
 	for group in ("inputs", "params", "output"):
-		for key, value in result.get(group, {}).items():
+		mapping = result.get(group, {})
+		if not isinstance(mapping, dict) or any(not isinstance(name, str) for name in mapping):
+			raise AutoError(f"{group} must be a string-keyed mapping")
+		for key, value in mapping.items():
 			if isinstance(value, str) and value.startswith(("./", "../")):
 				result[group][key] = str((base / value).resolve())
-	for key in ("profile", "artifact", "cwd"):
+	for key in ("profile", "artifact"):
 		value = result.get(key)
 		if isinstance(value, str) and value.startswith(("./", "../")):
 			result[key] = str((base / value).resolve())
+	if isinstance(result.get("cwd"), str) and not Path(result["cwd"]).is_absolute():
+		result["cwd"] = str((base / result["cwd"]).resolve())
 	return result
 
 # EOF

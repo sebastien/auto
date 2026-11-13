@@ -131,13 +131,18 @@ requires a grant.
 
 A grant is the record of an explicit request, made by a human:
 
-- *Goal*: a plan goal written by a human may request effects (eg. "and commit
-  them"). Plan creation determines the requested effects from the goal and
-  records them as grants with the root task definition as source. A goal
-  written by an Elaborator or a run grants nothing.
+- *Goal*: a human requests effects explicitly through the `effects` argument
+  of `PlanCreate` (`--effects '[vcs.commit]'` in the CLI). Plan creation records
+  these requests as grants with the root task definition and its digest as
+  source; changing that definition expires the grants. Goal prose alone never
+  grants an effect. An Elaborator or a run cannot request goal grants.
 - *Decision*: a decision by a human may grant effects, typically by answering
   a gap raised for a denied effect (see Planning). The grant is recorded with
-  the Decision as source.
+  the Decision as source. A planning grant gap declares its `effects`; answering
+  it with `{"grant": "effect.name", "scope": "auto:plan/task/id"}` records the
+  grant in the same revision as the resolution. The effect must be covered by
+  the gap, and the scope must be its plan or one of its `needed_by` tasks.
+  A plain approval is insufficient to lift a denial.
 
 Task definitions, Elaborator outputs, run outputs and learnings never grant
 effects, even when they state them. Granting is recorded in the plan journal

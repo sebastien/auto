@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from auto.features.task.model import Task, createTaskFromText
-from auto.runtime.operations import Resolve
-from auto.utils.data import merge
+from copy import deepcopy
+
+from auto.features.task.model import Task, createTaskFromText, taskText
+from auto.features.plan.model import createPlan
+from auto.features.plan.policy import shellPermitted
+from auto.features.task.operations import TaskGet
+from auto.features.script.config import validateConfig
+from auto.features.elaboration.parameters import resolveParameters
+from auto.features.elaboration.metadata import MetadataProjection
+from auto.features.elaboration.templates import ParameterTemplate, Unknown
+from auto.features.elaboration.sources import TemplateSources
+from auto.runtime.operations import Resolve, Value, isReference
+from auto.utils.data import AutoError, document, documentText, merge
 from auto.utils.references import relocate, relocateMeta
+from auto.utils.config import RUNTIME_KEYS
 
 # -----------------------------------------------------------------------------
 #
@@ -14,22 +25,111 @@ from auto.utils.references import relocate, relocateMeta
 # -----------------------------------------------------------------------------
 
 
-def materialize(context, value: dict, parent: str) -> Task:
+def materialize(context, value: dict, parent: str, *, dry: bool = False, deferred=None) -> Task:
 	"""Instantiate a task from its template and elaborated fields."""
 	definition = dict(value)
+	deferred = set() if deferred is None else deferred
+	generated = {"_template_sources", "_template_bindings", "_template_scope"} & definition.keys()
+	if generated:
+		raise AutoError("Elaborated tasks cannot supply generated template metadata: " + ", ".join(sorted(generated)))
 	meta, parts, description = {}, {}, ""
+	deferredProfile, outputProjection = False, None
 	if definition.get("from"):
 		ref = definition["from"]
+		expected = ref.get("digest") if isinstance(ref, dict) else None
 		ref = ref["ref"] if isinstance(ref, dict) else ref
 		content = Resolve(context, ref)
-		template = createTaskFromText(content.text, content.path)
+		if expected is not None and content.digest != expected:
+			raise AutoError("Task template changed since its pinned revision")
+		meta, body = document(content.text)
+		validateConfig({key: item for key, item in meta.items() if key in {"pre", "post", "transform", "apply", "eval"}})
+		if not isinstance(meta.get("params", {}), dict) or not isinstance(definition.get("params", {}), dict):
+			raise AutoError("Template parameters must be mappings")
+		params = merge(relocateMeta({"params": meta.get("params", {})}, content.path.parent)["params"],
+			relocateMeta({"params": definition.get("params", {})}, context.project)["params"])
+		live = context.derive(defaults=context.policyDefaults) if context.policyDefaults is not None else context
+		allowed = context.allowShell and (dry or shellPermitted(live, TaskGet(live, parent)))
+		parameterContext = context.derive(allowShell=allowed and not dry,
+			variables={key: value for key, value in context.variables.items() if key != "_policyDeniedAction"})
+		resolved, defaults = resolveParameters(parameterContext, content.path, meta, params,
+			lambda ctx, value, config: Value(ctx, value, context.project, config), dry=dry,
+			inherited=relocateMeta({key: value for key, value in definition.items() if key in RUNTIME_KEYS}, context.project))
+		sources = TemplateSources(context, meta.get("_template_sources"), task=definition["id"], parameterContext=parameterContext,
+			inherited=defaults, dry=dry)
+		sectionDefaults = {}
+		compiler = ParameterTemplate({**resolved, **({"__template_values": meta["_template_bindings"]} if meta.get("_template_bindings") else {})}, context.maxBytes,
+			onFile=lambda ref, namespace, inline, conditional, section: sources.transclude(ref, content.path.parent, namespace,
+				inline=inline, conditional=conditional, inherited=sectionDefaults.setdefault(section, merge(sources.inherited))))
+		compiled = {}
+		for key, item in meta.items():
+			if key in {"params", "_template_bindings", "_template_sources"}:
+				continue
+			if key in {"pre", "post", "apply", "eval"}:
+				compiled[key] = compiler.expand(item, mode="shell") if isinstance(item, str) else [compiler.expand(command, mode="shell") for command in item]
+			else:
+				slots = True if key == "inputs" else {"schema", "template"} if key == "output" else None
+				value = compiler.value(item, slots=slots, partial=dry, deferred=deferred, path=(key,))
+				if not isinstance(value, Unknown):
+					compiled[key] = value
+				elif key == "title":
+					# Presence is known, but truth/type checks require the resolved title.
+					compiled[key] = item
+				elif key == "profile" and "profile" not in definition:
+					deferredProfile = True
+		# Companions inherit the winning contract as well as runtime settings.
+		# Relocate before passing it down so a nested file cannot rebase it.
+		sources.inherited = sources.inheritedDefaults(compiled, content.path.parent,
+			relocateMeta({key: item for key, item in definition.items()
+				if key in {*RUNTIME_KEYS, "inputs", "output"}}, context.project), defaults, deferred)
+		outputProjection = sources.inherited.get("output", {})
+		selection = merge(relocateMeta({key: item for key, item in compiled.items() if key == "artifact"}, content.path.parent),
+			relocateMeta({key: item for key, item in definition.items() if key == "artifact"}, context.project))
+		contract = sources.framework(merge(selection, sources.inherited), content.path.parent, resolved,
+			compileChecks=True, contractOnly=True)
+		sources.inherited = merge(contract, sources.inherited)
+		if dry and ("artifact",) in deferred and "artifact" not in definition:
+			# The selected artifact may supply any missing contract field.
+			sources.inherited["output"] = Unknown()
+		body = compiler.expand(body, partial=dry)
+		if sources.records:
+			compiled["_template_sources"] = sources.records
+		definition["params"] = deepcopy({name: params[name] if isinstance(item, Unknown) else "\\" + item if isinstance(item, str) else item for name, item in resolved.items()})
+		compiled["params"] = definition["params"]
+		if compiler.bindings or meta.get("_template_bindings"):
+			compiled["_template_bindings"] = merge(meta.get("_template_bindings", {}), compiler.bindings)
+		template = createTaskFromText(documentText(compiled, body), content.path)
+		if dry and compiler.possibleProcess:
+			# A Process supplied by an unresolved branch is checked after Values
+			# resolve; keep the known sections available for independent checks.
+			template.sections.setdefault("Process", "")
 		meta = relocateMeta(template.meta, content.path.parent)
 		parts = {name: relocate(body, content.path.parent) for name, body in template.sections.items()}
 		description = template.description
 		definition["from"] = {"ref": ref, "digest": content.digest}
 	merged = merge(meta, relocateMeta({key: item for key, item in definition.items() if key not in {"sections", "description"}}, context.project))
+	if not deferredProfile and (merged.get("profile") is None or merged.get("profile") == ""):
+		profile = createPlan(context.plan).meta.get("profile")
+		if profile:
+			merged["profile"] = relocateMeta({"profile": profile}, context.plan)["profile"]
 	merged["id"], merged["parent"] = definition["id"], parent
-	return Task(definition["id"], merged, {**parts, **{name: relocate(body, context.project) for name, body in definition.get("sections", {}).items()}},
+	sources = TemplateSources(context, merged.get("_template_sources"), task=definition["id"],
+		parameterContext=parameterContext if definition.get("from") else None, inherited=merged, dry=dry)
+	if definition.get("from"):
+		params = {**resolved, **({"__template_values": merged["_template_bindings"]} if merged.get("_template_bindings") else {})}
+	else:
+		params = {name: item[1:] if isinstance(item, str) and item.startswith("\\") else
+			Unknown() if isinstance(item, str) and (item.startswith("!") or isReference(item)) else item
+			for name, item in merged.get("params", {}).items()}
+	sources.framework(merged, context.plan / "tasks", params, compileChecks=bool(definition.get("from")),
+		outputProjection=outputProjection if dry else None)
+	if sources.records:
+		merged["_template_sources"] = sources.records
+	task = Task(definition["id"], merged, {**parts, **{name: relocate(body, context.project) for name, body in definition.get("sections", {}).items()}},
 		context.plan / "tasks" / (definition["id"] + ".md"), definition.get("description", description))
+	if len(taskText(task).encode("utf-8")) > context.maxBytes:
+		raise AutoError("Materialised task exceeds byte limit")
+	if dry:
+		task.projectDefaults = MetadataProjection(deferred, definition).defaults
+	return task
 
 # EOF

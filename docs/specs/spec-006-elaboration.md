@@ -89,6 +89,10 @@ defaults:
 | Governance | Evaluation, `hints.gate`, gaps | No evaluation, no gate |
 | Structure | `phase`, `hints.refine`, `hints.elaborate` | — |
 
+The root task's `profile` is the plan default allocation profile. An elaborated
+task inherits it only when neither the task nor its template selects a profile;
+relative references keep the directory of the definition that supplied them.
+
 ### Hints
 
 Hints are advisory: they inform Orchestration, which decides how to act on

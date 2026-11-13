@@ -23,6 +23,9 @@ def streamProcess(options: ProcessOptions, args: list[str], config: dict, stdin:
 	# Keep Context callers working while the public boundary is the effect view.
 	if not isinstance(options, ProcessOptions):
 		options = options.process
+	if options.cancelled():
+		raise AutoError("Execution cancelled", "cancelled")
+	deadline = time.monotonic() + (options.limits.remaining() if options.limits else 3600)
 	try:
 		process = subprocess.Popen(args, cwd=config.get("cwd", options.project),
 			env={**options.environ, **config.get("env", {})}, stdin=subprocess.PIPE,
@@ -30,7 +33,6 @@ def streamProcess(options: ProcessOptions, args: list[str], config: dict, stdin:
 	except OSError as error:
 		raise AutoError(f"Cannot launch {args[0]}: {error}", "system") from error
 	data, offset, total = stdin.encode(), 0, 0
-	deadline = time.monotonic() + (options.limits.remaining() if options.limits else 3600)
 	try:
 		with selectors.DefaultSelector() as selector:
 			for number, pipe in enumerate((process.stdout, process.stderr)):

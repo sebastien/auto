@@ -150,6 +150,7 @@ depends on its source:
 | `cwd`, `env.*` | config | string | Working directory and environment overrides |
 | `prompt` | config | string | Replace system instructions |
 | `isolated` | config | boolean | Isolate ambient context where supported; default `false` |
+| `tools` | config | list | Allowlist of the engine's tool names; `[]` disables all tools. Absent: the engine's own tools. An engine that cannot apply it fails the run |
 | `inputs.*` | input | Value | Input data |
 | `params.*` | param | Value | Behaviour parameters |
 | `output.format` | output | string | Output format; default `markdown` |

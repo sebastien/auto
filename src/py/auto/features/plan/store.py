@@ -59,7 +59,9 @@ def locked(path: Path):
 		try:
 			yield
 		finally:
-			HELD.paths = held
+			# A run lock can outlive the plan writer lock acquired before it.
+			# Remove only this ownership entry instead of restoring a stale set.
+			HELD.paths = getattr(HELD, "paths", set()) - {path}
 
 
 def journal(path: Path) -> list:
@@ -71,6 +73,23 @@ def journal(path: Path) -> list:
 		return [json.loads(line) for line in file.read_text().splitlines() if line]
 	except ValueError as error:
 		raise AutoError("Invalid plan journal; refusing to overwrite history", "system") from error
+
+
+@contextmanager
+def exclusive(path, description):
+	"""Take a nonblocking process lock on a stable inode, never trusting its age."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	with path.open("a+") as stream:
+		try:
+			fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+		except BlockingIOError:
+			stream.seek(0)
+			raise AutoError(f"{description} already has a running continuation: {stream.read().strip()}",
+				recovery="Follow the running plan with auto plan events --follow.") from None
+		try:
+			yield stream
+		finally:
+			fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 def append(path: Path, revision: dict) -> None:
@@ -130,11 +149,17 @@ def recover(context, path: Path) -> None:
 			atomicWrite(file, content)
 	append(path, pending["revision"])
 	(path / ".pending.json").unlink()
+	# Event projection follows the durable revision and may be repaired separately.
+	from auto.features.plan.events import recordRevision
+	recordRevision(context, path, pending["revision"])
 
 
 def commit(context, path: Path, operations: list, writes: dict | None = None, records: list | None = None,
 	reason: str = "", revision: str | None = None, **metadata) -> dict:
 	"""Stage and publish a validated change; caller holds the plan lock."""
+	# Capture the preceding status before a new revision can obscure a transition.
+	from auto.features.plan.events import recordPlanStatus
+	recordPlanStatus(context, path)
 	if "provenance" in metadata:
 		metadata["context"] = metadata.pop("provenance")
 	row = Revision(id=revision or identity(), author=context.author, date=timestamp(), reason=reason, operations=operations, metadata=metadata).asDict()

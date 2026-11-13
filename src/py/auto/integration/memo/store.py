@@ -29,6 +29,15 @@ class MemoKnowledge:
 		self.backend.invalidate()
 		return self.backend.listEntries()
 
+	def memorySnapshot(self):
+		"""Capture a stable view for wake allocation without writing learning material."""
+		from auto.integration.memo.memory import MemoMemorySnapshot
+		return MemoMemorySnapshot(self.project)
+
+	def consolidation(self, agent: str):
+		from auto.integration.memo.consolidation import MemoConsolidation
+		return MemoConsolidation(self.project, agent)
+
 	def record(self, entry):
 		# Memo owns these fields; they are neither Auto payload nor write intent.
 		value = {key: item for key, item in entry.meta.items() if key not in {"uuid", "created", "updated"}}

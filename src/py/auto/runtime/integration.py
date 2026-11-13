@@ -49,4 +49,53 @@ class KnowledgeIntegration(Protocol):
 		"""Resolve a record reference to content."""
 		...
 
+@runtime_checkable
+class AgentMemoryIntegration(Protocol):
+	"""Optional knowledge capability for a read-only, consistent agent snapshot."""
+
+	def memorySnapshot(self):
+		"""Return an object with wake, minimums and model operations over fixed material."""
+		...
+
+
+@runtime_checkable
+class ConsolidationIntegration(Protocol):
+	"""Optional Memo maintenance capability, including restart-safe application."""
+
+	def consolidation(self, agent: str):
+		"""Return due, compact, validate and apply operations for one Memo agent."""
+		...
+
+
+class RunScopeIntegration(Protocol):
+	"""Storage, permission and final application hooks for a prepared task run."""
+
+	def directory(self, context, run):
+		"""Locate one run within this scope."""
+		...
+
+	def variables(self, context, path, run) -> dict:
+		"""Supply scope variables without resolving task inputs."""
+		...
+
+	def save(self, context, path, run, state=None):
+		"""Durably persist active state or a terminal receipt."""
+		...
+
+	def policy(self, context, run, state):
+		"""Return the effective task and execution policy."""
+		...
+
+	def authorizeRequest(self, context, effect) -> bool:
+		"""Authorize an engine tool effect without creating a plan gap."""
+		...
+
+	def finish(self, context, path, run, state):
+		"""Validate and apply output before the lifecycle publishes success."""
+		...
+
+	def check(self, context, path, run, state):
+		"""Run mandatory scope validation after Post and before Evaluation."""
+		...
+
 # EOF

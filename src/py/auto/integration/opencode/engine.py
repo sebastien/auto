@@ -55,6 +55,8 @@ class OpenCode:
 
 	def start(self, context, request):
 		config = request["config"]
+		if "tools" in config:
+			raise AutoError("OpenCode API cannot restrict tools per run; use agent permissions, or an engine supporting tools")
 		if config.get("isolated", False):
 			raise AutoError("OpenCode API cannot guarantee ambient-context isolation; use isolated: false or an isolating engine")
 		if "prompt" in config:
