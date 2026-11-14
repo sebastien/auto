@@ -12,9 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto.features.elaboration.operations import PlanCreate
+from auto.features.elaboration.operations import PlanCreate, planName
 from auto.features.memory.config import agentsFor, defaultAgents, memoryPolicy
 from auto.features.memory.accounting import constraintsFor
+from auto.features.plan.store import planPath
 from auto.integration.resolvers import validateResolvers
 from auto.runtime.config import contextFor
 from auto.runtime.model import Content, Context, Limits
@@ -70,10 +71,31 @@ class MemoryConfigurationTests(unittest.TestCase):
 			context = contextFor(project)
 		self.assertEqual(memoryPolicy(context, "ux")["memory.evolve"], "deny")
 
-	def testAgentAndCataloguePlanIdsAreReserved(self):
+	def testPlanIdsAreNumberedAndResolvableByNumber(self):
+		plans = self.root / ".auto/plans"
+		(plans / "add-tests").mkdir(parents=True)
+		(plans / "001-taken").mkdir()
 		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: plan):
-			for goal in ("agent", "catalogue"):
-				self.assertEqual(PlanCreate(self.context, goal).name, "plan-" + goal)
+			names = [PlanCreate(self.context, goal).name for goal in ("agent", "catalogue", "Fix the login bug")]
+		# Numbering keeps the reserved words agent and catalogue out of ids; used numbers are skipped, hex-like slugs are not.
+		self.assertEqual(names, ["000-agent", "002-catalogue", "003-fix-login-bug"])
+		self.assertEqual((plans / ".counter").read_text(), "004\n")
+		self.assertEqual(planPath(self.context, "003"), (plans / "003-fix-login-bug").resolve())
+		with patch.dict("os.environ", {"HOME": str(self.root / "home"), "XDG_CONFIG_HOME": str(self.root / "xdg")}, clear=True):
+			self.assertEqual(contextFor(self.root, plan="002").plan, plans / "002-catalogue")
+		(plans / "002-other").mkdir()
+		(plans / "002-other/plan.md").write_text("---\nid: 002-other\n---\n")
+		with self.assertRaisesRegex(AutoError, "Ambiguous plan"):
+			planPath(self.context, "002")
+
+	def testPlanIdsAreCompact(self):
+		for goal, name in (("Create a simple standalone HTML webpage with a chat UI. Do not add backend integration for now.", "standalone-html-webpage-chat"),
+			("Document the project architecture", "document-project-architecture"),
+			("Fix the login bug\nIt fails on Safari", "fix-login-bug"),
+			("Create a", "create-a"), ("!!!", "plan"),
+			("Supercalifragilisticexpialidocious-and-antidisestablishmentarianism", "supercalifragilisticexpialidocio")):
+			with self.subTest(goal=goal):
+				self.assertEqual(planName(goal), name)
 
 	def testTriggerConfigurationRejectsUnknownAndMalformedThresholds(self):
 		for triggers in ("decision", ["unknown"], ["backlog:0"], ["backlog:-1"], ["backlog:2.5"], [None]):

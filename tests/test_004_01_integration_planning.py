@@ -13,7 +13,7 @@ from auto.features.elaboration.operations import ElaborationApply, ElaborationPa
 from auto.features.memory.config import agentsFor, housekeepingFor, memoryPolicy, validateAgents
 from auto.features.plan.gaps import DecisionRecord, GapDecide, GapDismiss, GapList, GapRaise, PlanRepair
 from auto.features.plan.model import createDecisionFromDict
-from auto.features.plan.operations import PlanAbandon, PlanRevise, PlanStatus, PlanReady
+from auto.features.plan.operations import PlanAbandon, PlanList, PlanRevise, PlanStatus, PlanReady
 from auto.features.plan.store import journal
 from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunAnswer, RunCheck, RunEvaluate
 from auto.runtime.model import Content, Context
@@ -135,6 +135,23 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(PlanStatus(self.ctx)["status"], "Succeeded")
 		with self.assertRaises(AutoError):
 			TaskUpdate(self.ctx, "first", {"title": "changed"})
+
+	def testPlanListSummarisesAndFilters(self):
+		self.add("first")
+		broken = self.root / ".auto/plans/broken"
+		broken.mkdir()
+		(broken / "plan.md").write_text("---\nid: [unclosed\n---\n")
+		plans = {plan["id"]: plan for plan in PlanList(self.ctx)}
+		self.assertEqual(set(plans), {"demo", "broken"})
+		self.assertEqual({key: plans["demo"][key] for key in ("status", "goal", "tasks", "done", "gaps", "hold")},
+			{"status": "Draft", "goal": "demo", "tasks": 2, "done": 0, "gaps": 0, "hold": None})
+		revisions = journal(self.plan)
+		self.assertLessEqual(plans["demo"]["created"], revisions[0]["date"])
+		self.assertGreaterEqual(plans["demo"]["updated"], revisions[-1]["date"])
+		run = TaskStart(self.ctx, "first")
+		self.assertEqual(PlanList(self.ctx, {"id": "demo"})[0]["updated"], run["ended"])
+		self.assertEqual(plans["broken"]["status"], "Unreadable")
+		self.assertEqual([plan["id"] for plan in PlanList(self.ctx, {"status": "Active"})], ["demo"])
 
 	def testDecisionWithoutGapIsDurableAndResolvable(self):
 		answer = {"database": "sqlite"}
@@ -295,6 +312,11 @@ Work
 			ElaborationApply(self.ctx, self.plan, elaboration, "test-run")
 		self.assertEqual(journal(self.plan), [])
 		self.assertFalse((self.plan / "tasks").exists())
+
+	def testElaborationToleratesFenceWithoutNewline(self):
+		# Seen live: a model wrote the opening fence and first key on one line.
+		elaboration = ElaborationParse(self.ctx, "---task: root\nsummary: S\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n")
+		self.assertEqual((elaboration.task, elaboration.summary, [item["id"] for item in elaboration.tasks]), ("root", "S", ["a"]))
 
 	def testElaborationSingleRevisionWithGaps(self):
 		elaboration = {"task": "root", "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}], "gaps": [{"name": "audience", "kind": "decision", "question": "Who?", "needed_by": ["a"]}]}

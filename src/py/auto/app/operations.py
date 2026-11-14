@@ -209,6 +209,7 @@ EXPOSURES = [
 		effects=True, ask=("budget",)),
 	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True,
 		effects=True, needsPlan=True),
+	Exposure("PlanList", "plan.operations", (), "Find the plans of a project", mcp=True, optional=("filter",)),
 	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True, needsPlan=True),
 	Exposure("PlanContinue", "orchestration.operations", (), "Run a plan until it needs a human", stream=True, passPlan=True, effects=True, needsPlan=True),
 	Exposure("PlanHold", "plan.control", ("mode", "reason"), "Pause or stop a plan", passPlan=True, effects=True, needsPlan=True),

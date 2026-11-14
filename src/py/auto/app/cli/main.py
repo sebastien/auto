@@ -109,6 +109,15 @@ def parser():
 	config.set_defaults(argumentParser=config)
 	for name in CONTEXT_KEYS:
 		config.add_argument("--" + name)
+	from auto.features.usage.operations import DEFAULT_GROUPS, GROUPS
+	usage = nouns.add_parser("usage", help="Summarise engine runs, duration, tokens and cost",
+		description="Summarise .auto/usage.jsonl. Groups: " + ", ".join(GROUPS) + ".")
+	usage.set_defaults(argumentParser=usage)
+	usage.add_argument("--by", default=",".join(DEFAULT_GROUPS), help="Comma-separated fields to group by (default: %(default)s)")
+	usage.add_argument("--since", help="Only entries since a duration (7d, 12h, 2w) or ISO date")
+	usage.add_argument("--where", action="append", default=[], metavar="FIELD=VALUE", help="Only entries whose field equals value; repeatable")
+	usage.add_argument("--entries", action="store_true", help="List entries instead of totals")
+	usage.add_argument("--format", choices=("text", "tsv", "json"), default="text")
 	nouns.add_parser("help", help="Show the operation reference")
 	return root
 
@@ -133,6 +142,8 @@ def main(argv=None) -> int:
 				args.argumentParser.error("a verb is required", recovery="Choose one of: " + ", ".join(verb for verb, _ in verbs) + ".")
 			argv.insert(argv.index(args.noun) + 1, prompter.choose("auto " + args.noun, verbs, help="Choose a command"))
 			args = cli.parse_args(argv)
+		if args.noun == "usage":
+			return showUsage(contextFor(), args)
 		sources = {} if args.noun == "config" else None
 		context = contextFor(plan=args.plan, engine=args.engine, provider=args.provider, model=args.model, agent=getattr(args, "harnessAgent", args.agent), sources=sources)
 		if args.noun == "config":
@@ -249,6 +260,70 @@ def showConfig(config: dict, sources: dict, prefix: tuple = ()) -> None:
 	print(style(f"{'SETTING':<{nameWidth}}  {'VALUE':<{valueWidth}}  SOURCE", "1;2"))
 	for name, value, source in items:
 		print(f"{style(name, '36')}{' ' * (nameWidth - width(name) + 2)}{value}{' ' * (valueWidth - width(value) + 2)}{style(source, '2')}")
+
+
+ENTRY_COLUMNS = ("ts", "plan", "kind", "task", "engine", "provider", "model", "status", "duration_s", "tokens", "cost")
+TOTAL_COLUMNS = ("runs", "failed", "duration_s", "tokens", "cost", "partial")
+
+
+def showUsage(context, args) -> int:
+	"""Print usage journal totals or entries as a table, TSV or JSON."""
+	from auto.features.usage.operations import UsageEntries, UsageSummary
+	where = {}
+	for item in args.where:
+		key, separator, value = item.partition("=")
+		if not separator or not key:
+			raise AutoError(f"Invalid --where: {item}", recovery="Use --where FIELD=VALUE, eg. --where engine=pi.")
+		where[key] = value
+	by = tuple(name.strip() for name in args.by.split(",") if name.strip())
+	entries, skipped = UsageEntries(context, args.since, where)
+	if skipped:
+		print(f"Skipped {skipped} unreadable line(s) in .auto/usage.jsonl", file=sys.stderr)
+	rows = entries if args.entries else UsageSummary(entries, by)
+	columns = ENTRY_COLUMNS if args.entries else (*by, *TOTAL_COLUMNS)
+	if args.format == "json":
+		print(json.dumps(rows, ensure_ascii=False))
+		return 0
+	if args.format == "tsv":
+		print("\t".join(columns))
+		for row in rows:
+			print("\t".join("" if row.get(name) is None else str(row[name]) for name in columns))
+		return 0
+	if not rows:
+		print("No usage recorded" + (" for this selection" if args.since or where else " yet: runs append to .auto/usage.jsonl") + ".")
+		return 0
+	partial = 0 if args.entries else sum(row["partial"] for row in rows)
+	hasTotal = not args.entries and by and len(rows) > 1
+	if hasTotal:
+		rows = [*rows, {**UsageSummary(entries, ())[0], by[0]: "total"}]
+	def cell(name, value):
+		if value is None:
+			return "-"
+		if name == "duration_s":
+			minutes, seconds = divmod(round(value), 60)
+			return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
+		if name == "cost":
+			return f"${value:.4f}" if value < 1 else f"${value:.2f}"
+		if name == "tokens":
+			return f"{value:,}"
+		if name == "ts":
+			return value[:19].replace("T", " ")
+		return str(value)
+	headers = [{"duration_s": "DURATION"}.get(name, name.upper()) for name in columns]
+	table = [[cell(name, row.get(name)) for name in columns] for row in rows]
+	widths = [max(width(text) for text in column) for column in zip(headers, *table)]
+	numeric = {index for index, name in enumerate(columns) if name in (*TOTAL_COLUMNS, "tokens", "cost", "duration_s")}
+	color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+	def line(cells, total=False):
+		text = "  ".join(" " * (size - width(value)) + value if index in numeric else value + " " * (size - width(value))
+			for index, (value, size) in enumerate(zip(cells, widths)))
+		return f"\033[1m{text}\033[0m" if color and total else text.rstrip()
+	print(f"\033[1;2m{line(headers)}\033[0m" if color else line(headers))
+	for index, cells in enumerate(table):
+		print(line(cells, total=hasTotal and index == len(table) - 1))
+	if partial:
+		print(f"{partial} run(s) reported incomplete or no usage; tokens and cost are lower bounds.", file=sys.stderr)
+	return 0
 
 
 def commandNeed(exposure) -> str:

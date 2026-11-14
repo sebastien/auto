@@ -56,6 +56,17 @@ def validateConfig(value: dict) -> None:
 			raise AutoError(f"Input name is reserved: {next(iter(each))}")
 
 
+def planDirectory(plans: Path, name: str) -> Path:
+	"""Return the plan directory named `name`, or the only one numbered `name` (eg. `00a`)."""
+	path = plans / name
+	if path.exists() or not plans.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+		return path
+	matches = sorted(plans.glob(name + "-*/plan.md"))
+	if len(matches) > 1:
+		raise AutoError(f"Ambiguous plan: {name}", recovery="Use one of: " + ", ".join(match.parent.name for match in matches) + ".")
+	return matches[0].parent if matches else path
+
+
 def contextFor(directory: Path | None = None, plan: str | None = None, sources: dict | None = None, **overrides) -> Context:
 	"""Build the operation context from flags, environment and configuration."""
 	cwd = (directory or Path.cwd()).resolve()
@@ -70,7 +81,7 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	selected = plan or os.environ.get("AUTO_PLAN")
 	planPath = None
 	if selected:
-		planPath = Path(selected).resolve() if "/" in selected or Path(selected).is_dir() else project / ".auto/plans" / identifier(selected)
+		planPath = Path(selected).resolve() if "/" in selected or Path(selected).is_dir() else planDirectory(project / ".auto/plans", identifier(selected))
 	else:
 		planPath = next((p for p in (cwd, *cwd.parents) if (p / "plan.md").is_file() and p.parent.name == "plans"), None)
 	explicit = {}

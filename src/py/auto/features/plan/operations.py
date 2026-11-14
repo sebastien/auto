@@ -139,9 +139,32 @@ def PlanGet(context, id=None) -> dict:
 
 
 def PlanList(context, filter: dict | None = None) -> list:
-	"""List plans, filtered by status or field."""
-	result = [PlanStatus(context, path) for path in sorted((context.project / ".auto/plans").glob("*")) if (path / "plan.md").is_file()]
+	"""List plan summaries, filtered by status or field; unreadable plans are listed, not fatal."""
+	result = []
+	for path in sorted((context.project / ".auto/plans").glob("*/plan.md")):
+		path = path.parent
+		try:
+			plan = createPlan(path)
+			status = PlanStatus(context, path)
+		except (AutoError, OSError, ValueError) as error:
+			result.append({"id": path.name, "status": "Unreadable", "error": str(error), "path": str(path)})
+			continue
+		result.append({"id": status["id"], "status": status["status"], "goal": str(plan.meta.get("goal") or plan.description or "").strip().partition("\n")[0],
+			"tasks": len(status["tasks"]), "done": sum(state == RunStatus.SUCCEEDED for state in status["tasks"].values()), "gaps": len(status["gaps"]),
+			"hold": (status["hold"] or {}).get("mode"), "usage": status["usage"], **planDates(context, path), "path": str(path)})
 	return [plan for plan in result if all(plan.get(key) == value for key, value in (filter or {}).items())]
+
+
+def planDates(context, path: Path) -> dict:
+	"""Derive when a plan was created and last changed from its revisions and runs, else from plan.md."""
+	from datetime import datetime, timezone
+	from auto.features.task.operations import RunList
+	dates = [row["date"] for row in journal(path) if row.get("date")]
+	for run in RunList(context.derive(plan=path)):
+		dates += [date for date in (run.get("started"), run.get("ended")) if date]
+	dates.append(datetime.fromtimestamp((path / "plan.md").stat().st_mtime, timezone.utc).isoformat())
+	dates.sort(key=lambda date: datetime.fromisoformat(date))
+	return {"created": dates[0], "updated": dates[-1]}
 
 
 def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:

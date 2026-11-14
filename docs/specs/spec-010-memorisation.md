@@ -87,6 +87,7 @@ Memoriser interface: the well-known inputs of a Memoriser, each a Value (see
 | `due` | The agent's due work (Memo `AgentDue`) | Auto |
 | `record` | References to the record cited by the due observations: run journals, plan events, decisions, transcripts | Auto |
 | `decisions` | References to the decisions new to the agent (see Decisions) | Auto |
+| `accepted` | Proposals accepted by a human and not yet taken up, with their acceptance (see Policy) | Auto |
 | `phases` | Phases requested, defaulting to all | Auto |
 | `authorization` | Whether promotion and perspective changes may be applied or must be proposed | Auto, from policy |
 | `budget` | Budget of the run | Auto |
@@ -207,6 +208,9 @@ the agent lock:
    answer, an accepted or rejected proposal) is noted as an observation
    resolving them, and a later consolidation takes it up, re-deriving an
    accepted proposal against the current material rather than replaying it.
+   A proposal is accepted by an observation that `resolves` it, written by
+   anyone but a consolidation pass (eg. an interface acting on a human's
+   confirmation); it is rejected by one that `dismisses` it.
 
 The run receipt records the report. Consolidation never raises gaps and never
 blocks a plan: it is cheap, and its
@@ -232,6 +236,14 @@ plan. An effect without a rule uses its recommended rule above.
 lets the Memoriser include the change in `changes`; `confirm` makes it a
 logged proposal, not a checkpoint; `deny` makes it neither. Memorisation
 never needs, and is never granted, `vcs`, `net.write` or `data.delete`.
+
+Accepted proposals are the human confirmation that `confirm` asks for: the
+next consolidation receives them (`accepted`), and its `authorization` allows
+the `memory.promote` and `memory.evolve` effects that its rules leave to
+`confirm`, never those denied. Once that pass is applied, its accepted
+proposals are taken up, recorded in the agent scope (`accepted.json`), and
+grant nothing further; a pass that fails or is not applied leaves them for the
+next one.
 
 ## Actuation
 

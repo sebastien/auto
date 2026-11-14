@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -15,6 +14,7 @@ from liquid.exceptions import LiquidError
 from auto.features.script.config import commands, composedMeta, validateConfig
 from auto.features.script.model import Script, createScript
 from auto.features.script.templates import Renderer
+from auto.features.usage.operations import UsageRecord
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
 from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
@@ -96,20 +96,6 @@ def ended(kind, reason, status=None) -> dict:
 COMPLETE_USAGE_ENGINES = frozenset({"opencode", "pi"})
 
 
-def journalRun(context: Context, entry: dict) -> None:
-	"""Append one engine invocation to the project usage journal."""
-	path = context.project / ".auto" / "usage.jsonl"
-	# Ephemeral scripts outside an auto project must not create project state.
-	if context.defaults.get("journal", True) is False or not path.parent.is_dir():
-		return
-	# One O_APPEND write per line keeps concurrent writers from interleaving.
-	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-	try:
-		os.write(fd, (jsonText(entry) + "\n").encode())
-	finally:
-		os.close(fd)
-
-
 def executePrepared(context: Context, request: dict, journal: dict | None = None):
 	"""Drive one engine stream; answers are sent back through the generator."""
 	config = request["config"]
@@ -144,7 +130,7 @@ def executePrepared(context: Context, request: dict, journal: dict | None = None
 		entry.update(duration_s=round(time.monotonic() - started, 3), tokens=delta.get("tokens"),
 			cost=round(delta["cost"], 6) if "cost" in delta else None, usage_complete=reported and name in COMPLETE_USAGE_ENGINES)
 		try:
-			journalRun(context, entry)
+			UsageRecord(context, entry)
 		except OSError:
 			pass  # Accounting must never fail a run.
 

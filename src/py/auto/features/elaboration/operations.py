@@ -308,6 +308,23 @@ def ElaborationApply(context, plan, elaboration, run) -> dict:
 		return _apply(context, path, elaboration, run)
 
 
+PLAN_NAME_FILLER = frozenset("""a an the and or but of for to in on at by with from into onto as is are be it its them this that these those
+	now please some new simple basic small very just also then using via create make build""".split())
+
+
+def planName(goal: str, words: int = 4, size: int = 32) -> str:
+	"""Derive a compact plan id from the significant words of the goal's first sentence."""
+	sentence = re.split(r"(?<=[.!?])\s|\n", goal.strip(), maxsplit=1)[0]
+	tokens = re.findall(r"[a-z0-9]+", sentence.lower())
+	kept = [token for token in tokens if token not in PLAN_NAME_FILLER] or tokens
+	name = ""
+	for token in kept[:words]:
+		if name and len(name) + 1 + len(token) > size:
+			break
+		name = f"{name}-{token}" if name else token[:size]
+	return name or "plan"
+
+
 def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None) -> dict:
 	"""Create a root and run the ordinary Elaborator to produce its first revision."""
 	if not isinstance(goal, str) or not goal.strip():
@@ -319,14 +336,19 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 	if effects and context.author != "human":
 		raise AutoError("Only a human may request goal effects")
 	agents = defaultAgents(context) if agents is None else list(validateAgents(context, agents))
-	name = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:48].rstrip("-") or "plan"
-	if name in {"catalogue", "agent"}:
-		name = "plan-" + name
-	path = context.project / ".auto/plans" / name
-	if path.exists():
-		name += "-" + identity().rsplit("-", 1)[-1]
-		path = path.with_name(name)
-	path.mkdir(parents=True, exist_ok=False)
+	plans = context.project / ".auto/plans"
+	plans.mkdir(parents=True, exist_ok=True)
+	# The plans lock makes the counter safe across concurrent creations.
+	with locked(plans):
+		counter = plans / ".counter"
+		number = int(counter.read_text().strip() or "0", 16) if counter.exists() else 0
+		used = {path.name.partition("-")[0] for path in plans.iterdir()}
+		while f"{number:03x}" in used:
+			number += 1
+		name = f"{number:03x}-{planName(goal)}"
+		path = plans / name
+		path.mkdir(exist_ok=False)
+		atomicWrite(counter, f"{number + 1:03x}\n")
 	root = {"id": name, "goal": goal, **({"requested_effects": effects} if effects else {}),
 		**({"agents": agents} if agents is not None else {}),
 		**relocateMeta({"inputs": inputs or {}}, context.project), "budget": budget}

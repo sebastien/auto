@@ -37,7 +37,8 @@ def planPath(context, plan=None) -> Path:
 			'Task runs take a task ID defined in that plan, not a catalogue Markdown path.')
 	path = Path(path)
 	if not path.is_absolute() and len(path.parts) == 1:
-		path = context.project / ".auto/plans" / path
+		from auto.runtime.config import planDirectory
+		path = planDirectory(context.project / ".auto/plans", path.name)
 	if not (path / "plan.md").exists():
 		raise AutoError(f"Plan not found: {path}", recovery='Point --plan at a directory containing plan.md, '
 			'or create a plan with auto plan create "<goal>". Check AUTO_PLAN if you did not pass --plan.')

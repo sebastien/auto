@@ -61,7 +61,7 @@ class PolicyTest(unittest.TestCase):
 				with self.assertRaises(AutoError):
 					PlanCreate(context.derive(author="agent"), "Commit", effects=["vcs.commit"])
 			resolved = PolicyResolve(context, path)
-			self.assertEqual(resolved["grants"][0]["source"], "auto:write-notes-and-commit-them/task/root/definition")
+			self.assertEqual(resolved["grants"][0]["source"], "auto:000-write-notes-commit/task/root/definition")
 			(path / "plan.md").write_text((path / "plan.md").read_text() + "\nChanged goal\n")
 			self.assertEqual(PolicyResolve(context, path)["grants"], [])
 

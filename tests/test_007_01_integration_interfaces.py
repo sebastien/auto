@@ -75,7 +75,7 @@ class InterfaceTests(unittest.TestCase):
 		result = self.cli("plan")
 		self.assertEqual(result.returncode, 2)
 		self.assertIn("a verb is required", result.stderr)
-		self.assertIn("Choose one of: create, refine, status", result.stderr)
+		self.assertIn("Choose one of: create, refine, list, status", result.stderr)
 		result = self.cli("script", "expand", "./not-there.md", "--format", "json")
 		self.assertEqual(result.returncode, 1)
 		self.assertIn("auto script expand --help", json.loads(result.stdout)["failure"]["recovery"])

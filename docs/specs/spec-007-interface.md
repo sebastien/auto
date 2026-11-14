@@ -124,6 +124,7 @@ flags (eg. `--plan`) as the default context.
 | `ScriptExpand` | `script expand` | — | Inspect the prompt of a script while authoring it |
 | `PlanCreate` | `plan create` | — | Start a plan from a goal |
 | `PlanRefine` | `plan refine` | — | Refine a plan, or decompose a task, on demand |
+| `PlanList` | `plan list` | `plan_list` | Find the plans of a project, and pick one to follow |
 | `PlanStatus` | `plan status` | `plan_status` | Follow a plan; give agents the plan state |
 | `PlanContinue` | `plan continue` | — | Run a plan until it needs a human (see [Orchestration](spec-009-orchestration.md)) |
 | `PlanHold` | `plan hold` | — | Pause or stop a running plan |

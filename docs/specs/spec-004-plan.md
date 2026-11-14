@@ -198,6 +198,13 @@ Optional definition of done of the plan.
 - `plan.md` uses the task format (see Task). `id` is the plan id, while the
   root task id is always `root`; `budget` is the plan budget, which the root
   task runs draw from like any other run.
+- `PlanCreate` names a plan `NNN-slug`: `NNN` is an incremental number of at
+  least three hex digits, kept in `.auto/plans/.counter` and skipping numbers
+  already used; `slug` is up to four significant words of the goal's first
+  sentence (articles, conjunctions, pronouns and generic verbs such as
+  "create" are dropped), at most 32 characters, never cut mid-word.
+- A plan may be selected by its id or by its number alone (eg. `--plan 00a`),
+  when exactly one plan has that number.
 - Task ids are unique within the plan, and `root` is reserved.
 - Tasks may reference scripts and assets outside the plan by `PATH`.
 
@@ -257,7 +264,12 @@ Plan:
   task, and elaborates the root task, producing the first revision.
   `effects` records explicit human requests as grants (see Plan Policy).
 - `PlanGet(context,id)`: returns a plan.
-- `PlanList(context,filter?)`: lists plans, filtered by status.
+- `PlanList(context,filter?)`: lists plan summaries (id, status, goal, task
+  and gap counts, hold, usage, `created` and `updated`), filtered by field.
+  Dates are derived, not stored: the earliest and latest of the revision
+  dates, run start and end times, and the `plan.md` modification time.
+  Unreadable plans are
+  listed as `Unreadable` with their error rather than failing the list.
 - `PlanRefine(context,plan,reason,task?)`: elaborates the task (by default
   the root task) on the current state, applying the result as a new revision.
 - `PlanRevise(context,plan,changes,reason)`: applies a manual revision.

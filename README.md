@@ -153,23 +153,44 @@ value. Terminal output is shown as a table; set `NO_COLOR` to disable color.
 This includes configured values such as secrets, so take care when sharing its
 output. Script-specific metadata is not included.
 
+### Usage
+
+Every engine run in a project with an `.auto` directory appends a line to
+`.auto/usage.jsonl`: engine, provider, model, status, duration, tokens and
+cost. Set `journal = false` in configuration to disable it.
+
+```sh
+auto usage                          # totals by engine, provider and model
+auto usage --by day,model --since 7d
+auto usage --where plan=docs --entries
+auto usage --format tsv > usage.tsv # or --format json
+```
+
+Groups and filters accept `day`, `month`, `project`, `plan`, `kind`, `run`,
+`task`, `engine`, `provider`, `model` and `status`. Tokens and cost show `-`
+when no run in a group reported usage; `PARTIAL` counts runs whose usage is
+missing or incomplete (`llm`, `fx`), so their totals are lower bounds.
+
 ## Plans
 
 ```sh
 bin/auto plan create 'Document the project architecture' --engine pi
-bin/auto plan status --plan document-the-project-architecture
-bin/auto plan continue --plan document-the-project-architecture
-bin/auto plan events --plan document-the-project-architecture --since 0 --follow --format json
-bin/auto plan hold Pause 'Review the current result' --plan document-the-project-architecture
-bin/auto plan release 'Ready to proceed' --plan document-the-project-architecture
-bin/auto task run TASK_ID --plan document-the-project-architecture
-bin/auto gap list --plan document-the-project-architecture
-bin/auto gap decide GAP_ID 'answer' 'Reason for the choice' --plan document-the-project-architecture
-bin/auto decision record 'Which document format?' 'markdown' 'Easy to review' --concerns '[documentation]' --source 'conversation:review' --plan document-the-project-architecture
-bin/auto plan refine 'Address the review findings' --plan document-the-project-architecture
+bin/auto plan list
+bin/auto plan status --plan 000
+bin/auto plan continue --plan 000
+bin/auto plan events --plan 000 --since 0 --follow --format json
+bin/auto plan hold Pause 'Review the current result' --plan 000
+bin/auto plan release 'Ready to proceed' --plan 000
+bin/auto task run TASK_ID --plan 000
+bin/auto gap list --plan 000
+bin/auto gap decide GAP_ID 'answer' 'Reason for the choice' --plan 000
+bin/auto decision record 'Which document format?' 'markdown' 'Easy to review' --concerns '[documentation]' --source 'conversation:review' --plan 000
+bin/auto plan refine 'Address the review findings' --plan 000
 ```
 
-Plans live under `.auto/plans/`; gaps and decisions are Memo records under
+Plans live under `.auto/plans/NNN-slug/`, eg. `000-document-project-architecture`,
+where `NNN` is an incremental hex number; `--plan` takes the full id or just
+the number. Gaps and decisions are Memo records under
 `.memo/`. `AUTO_PLAN` selects a plan for subsequent commands. Plan creation
 and refinement execute the built-in Elaborator and its checks. A Waiting
 result requires a decision before execution can resume. `plan continue` runs
