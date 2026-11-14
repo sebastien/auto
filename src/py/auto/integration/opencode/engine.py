@@ -157,6 +157,10 @@ class OpenCode:
 				yield {"type": Event.SCRIPT_META, "name": "usage", "value": dict(accounted)}
 				if context.limits:
 					context.limits.check()
+				if messages and messages[-1] is lastAssistant and lastAssistant.get("error"):
+					error = lastAssistant["error"]
+					kind = "cancelled" if isinstance(error, dict) and error.get("type") == "aborted" else "system"
+					raise AutoError(jsonText(error), kind)
 				if messages and messages[-1]["type"] == "idle":
 					# A session can report idle while its final message is still
 					# content-less in the listing; settle briefly before giving up.

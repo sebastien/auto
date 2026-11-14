@@ -4,6 +4,7 @@ from pathlib import Path
 
 from auto.features.elaboration.catalogue import layers
 from auto.features.script.sources import ScriptSources
+from auto.features.script.model import Script
 from auto.features.elaboration.metadata import MetadataProjection
 from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, document, identifier
@@ -37,13 +38,10 @@ def validateMethodology(context, content, tasks, graph, *, deferred=None, overri
 
 	sources = {id: ScriptSources(context, task.meta.get("_template_sources")) for id, task in tasks.items()}
 	def identities(ref, path):
-		keys = {("reference", ref)}
-		if ref.startswith(("./", "../", "/", "auto:catalogue/")):
-			keys.add(("file", str(Path(path).resolve()), ref.partition("#")[2]))
-		return frozenset(keys)
+		return frozenset({("reference", ref), Script("", Path(path), ref=ref).identity})
 
 	def capturedPath(path, selector):
-		key = ("file", str(path.resolve()), selector)
+		key = Script("", path, ref=str(path) + ("#" + selector if selector else "")).identity
 		for source in sources.values():
 			for record in source.records.values():
 				keys = identities(record["ref"], record["path"])

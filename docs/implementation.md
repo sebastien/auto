@@ -195,6 +195,12 @@ parameter shell effects that completed before their results became durable.
 Commands with external effects must therefore be idempotent or deduplicate
 externally; only staged/committed application replay avoids repeating them.
 
+Methodology artifact matching and captured-source lookup normalize numeric line
+selector aliases (`L1-1` and `L01-001`) consistently with script resource identity.
+Canonical custom-owner references keep opaque owner revisions and remain usable
+from retained snapshots. Different line ranges, owner identities or resources do
+not become aliases merely because their selected bytes or origins match.
+
 Runs of plans with agents capture Memo wake layers once, before resolving task
 inputs. Memo material and its clock remain fixed during multi-agent allocation;
 world and recent allowances are shared, preserving each layer's admission
@@ -320,6 +326,15 @@ Scripts are ephemeral. Tasks create unique run directories, journals, saved
 execution state and immutable terminal receipts. Later reassessments append
 usage to the journal; reads project that usage without rewriting receipts.
 
+Every engine invocation (script, task, elaboration, assessment or memory run)
+appends one line to `.auto/usage.jsonl` when the project has an `.auto`
+directory: `ts`, `project`, `plan`, `kind`, `run`, `task`, `engine`, the
+`provider` and `model` reported by the engine (else configured), `status`,
+`failure`, `duration_s`, and the invocation's `tokens` and `cost` delta.
+Usage is `null` when the engine reported none; `usage_complete` is true only
+for engines that report full usage (OpenCode, Pi). A resumed run logs one line
+per invocation under the same `run`. Set `journal = false` to disable it.
+
 Plan mutations hold a filesystem writer lock and stage `.pending.json` before
 publishing files, Memo records and a revision. `PlanRepair` rolls staged work
 forward, reconciles orphan Memo records, repairs plan events and applies
@@ -426,6 +441,13 @@ Question crash checks preserve a durable Waiting session for explicit resumption
 without replaying Pre. A worker killed while resuming instead becomes a durable
 system failure with its decision and measured usage retained, without replaying
 the model or Apply.
+
+Successful resumed Elaborators apply their output through the continuation's
+supervised worker, so Stop holds can interrupt parameter effects even though the
+model run has already ended. Their successful receipts remain immutable and the
+pending output can be applied after release. After-success refinement hints also
+use shared result handling: they run for a task resumed after a question, not
+only for a task completing in its initial invocation.
 
 `GapDecide` records a decision without resuming work. Continuation handles
 resolved waiting runs at its next selection, and caps execution with the plan's
@@ -582,6 +604,13 @@ execution is blocked by account/model compatibility. LLM requires an API key
 not configured here. A real API-seeded OpenCode check also verifies native form
 and permission detachment/checkpoint resumption, including both permission
 approval and rejection through a fresh adapter. It does not invoke a provider,
-and cleans up its fixture session. Model-generated question/resume and provider
-cancellation remain unverified. `AUTO_LIVE_ENGINES=1` enables these live checks;
-normal test runs skip them.
+and cleans up its fixture session. Live provider-driven checks also verify
+model-generated questions answered/cancelled from another Python process and
+model-requested file-read permissions approved/rejected from another process.
+They retain the native session, do not repeat Pre, and clear pending native
+forms/permissions. A rejected native tool call may end with an assistant
+`aborted` error and no idle marker; the adapter now maps that terminal error to
+Cancelled rather than waiting until its time budget expires. Other terminal
+assistant errors become system failures, while errors preceding a newer user
+turn are ignored. `AUTO_LIVE_ENGINES=1` enables these live checks; normal test runs
+skip them.

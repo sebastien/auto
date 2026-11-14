@@ -77,19 +77,21 @@ class AgentRunScope:
 		run["validation"], run["report"] = preview, value["report"]
 		state["consolidation"] = {"agent": self.config["agent"], "value": value, "effects": preview["effects"],
 			"proposal_effects": preview.get("proposal_effects", []), "cursors": state.get("decisionCursors", {})}
-		self.authorize(context, preview["effects"])
+		state["consolidation"]["grants"] = state.get("grants", [])
+		state["consolidation"]["accepted"] = state.get("accepted", [])
+		self.authorize(context, preview["effects"], state)
 		self.authorizeProposals(context, state["consolidation"])
 
 	def finish(self, context, path, run, state):
 		staged = readJson(path / "staged.json")
 		if staged is None:
 			staged = state["consolidation"]
-			self.authorize(context, staged["effects"])
+			self.authorize(context, staged["effects"], staged)
 			self.authorizeProposals(context, staged)
 			atomicWrite(path / "staged.json", jsonText(staged))
 		if staged["agent"] != self.config["agent"]:
 			raise AutoError("Agent reference changed; reconcile the staged consolidation against its original Memo agent", "system")
-		self.authorize(context, staged["effects"])
+		self.authorize(context, staged["effects"], staged)
 		self.authorizeProposals(context, staged)
 		firstAttempt = not staged.get("attempted", False)
 		staged["attempted"] = True
@@ -112,10 +114,16 @@ class AgentRunScope:
 		if not application["complete"]:
 			raise AutoError("Memo has not completed the staged consolidation; reconcile before retrying", "system")
 		advanceCursors(path.parent.parent, staged.get("cursors", {}))
+		consumeAccepted(path.parent.parent, staged.get("accepted", []))
 		emit(path, {"type": Event.CONSOLIDATION_APPLIED, "application": application})
 
-	def authorize(self, context, effects):
+	def authorization(self, context, state=None):
+		"""The memory policy, with the effects granted by accepted proposals for this pass."""
 		policy = memoryPolicy(context, self.name)
+		return {effect: "allow" if effect in (state or {}).get("grants", []) and rule == "confirm" else rule for effect, rule in policy.items()}
+
+	def authorize(self, context, effects, state=None):
+		policy = self.authorization(context, state)
 		blocked = {effect: policy.get(effect, "deny") for effect in effects if policy.get(effect) != "allow"}
 		if blocked:
 			raise AutoError(f"Consolidation changes require proposals or removal under memory policy: {blocked}", "output")
@@ -124,6 +132,30 @@ class AgentRunScope:
 		policy = memoryPolicy(context, self.name)
 		if any(policy[effect] == "deny" for proposal in staged.get("proposal_effects", []) for effect in proposal):
 			raise AutoError("Consolidation proposes a denied memory effect", "output")
+
+
+GRANTABLE = ("memory.promote", "memory.evolve")
+
+
+def acceptedInputs(context, scope, root):
+	"""Accepted proposals not yet taken up by an applied pass, and the effects they grant.
+
+	An accepted proposal grants the effects its policy leaves to confirmation
+	(never denied ones) to the next pass only, which re-derives it against
+	current memory; once that pass is applied, the proposal is taken up.
+	"""
+	taken = set(readJson(root / "accepted.json") or [])
+	passes = {path.name for path in runDirectories(root)}
+	accepted = [proposal for proposal in scope.session.accepted(passes) if proposal["id"] not in taken]
+	policy = memoryPolicy(context, scope.name)
+	return accepted, [effect for effect in GRANTABLE if accepted and policy.get(effect) == "confirm"]
+
+
+def consumeAccepted(root, accepted):
+	if accepted:
+		with requestLock(root):
+			taken = list(dict.fromkeys([*(readJson(root / "accepted.json") or []), *accepted]))
+			atomicWrite(root / "accepted.json", jsonText(taken))
 
 
 def sessionFor(context, config):
@@ -141,6 +173,7 @@ def reconcile(context, scope, root):
 		application = readJson(path / "application.json") or {}
 		if staged and application.get("complete") and not application.get("rejected"):
 			advanceCursors(root, staged.get("cursors", {}))
+			consumeAccepted(root, staged.get("accepted", []))
 		if staged and not application.get("complete"):
 			state = readJson(path / "state.json")
 			scope.finish(context, path, run, state)
@@ -245,7 +278,9 @@ def startRun(context, scope, config, pending, path, run, state, overrideAllowanc
 		session.compact()
 		inputs = session.due()
 		decisions, state["decisionCursors"] = decisionInputs(context, scope.name, config)
-		inputs.update(decisions=decisions, phases=pending["phases"], authorization=memoryPolicy(context, scope.name), budget=run["budget"],
+		accepted, state["grants"] = acceptedInputs(context, scope, path.parent.parent)
+		state["accepted"] = [proposal["id"] for proposal in accepted]
+		inputs.update(decisions=decisions, accepted=accepted, phases=pending["phases"], authorization=scope.authorization(context, state), budget=run["budget"],
 			instructions=config.get("instructions", ""), consolidation={"id": run["id"], "reason": pending["reasons"]})
 		state["inputs"] = inputs
 		run["usage"]["time"] += time.monotonic() - started

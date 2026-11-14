@@ -1,6 +1,7 @@
 """Immutable source material carried by a materialised script definition."""
 
 import os
+import re
 from pathlib import Path
 
 from auto.runtime.model import Content
@@ -26,8 +27,12 @@ class ScriptSources:
 
 	@staticmethod
 	def key(ref, base):
+		"""Normalize source origins and numeric selectors without reading the filesystem."""
 		ref = ref.strip('"')
 		target, marker, selector = ref.partition("#")
+		lines = re.fullmatch(r"L(\d+)-(\d+)", selector)
+		if lines:
+			selector = f"L{int(lines[1])}-{int(lines[2])}"
 		if target.startswith(("./", "../", "/")):
 			path = Path(target)
 			target = os.path.abspath(path if path.is_absolute() else base / path)
@@ -39,7 +44,7 @@ class ScriptSources:
 		if record is None:
 			# Materialisation relocates root paths to canonical targets; nested
 			# source text keeps its authored aliases, including symlinks.
-			record = next((item for item in self.records.values() if isinstance(item, dict) and item.get("ref") == key), None)
+			record = next((item for item in self.records.values() if isinstance(item, dict) and self.key(item["ref"], base) == key), None)
 		return record
 
 	def resolve(self, ref, base):

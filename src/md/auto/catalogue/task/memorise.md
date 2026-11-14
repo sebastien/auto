@@ -10,6 +10,7 @@ inputs:
   due: {}
   record: []
   decisions: []
+  accepted: []
   phases: []
   authorization: {}
   budget: {}
@@ -37,6 +38,12 @@ Due work (mechanical navigation, not inferred truth):
 Cited record references, to read within budget: {{ record | json }}
 New decisions, to cite directly rather than copy into observations:
 {{ decisions | json }}
+
+Proposals a human accepted, to apply in this pass: {{ accepted | json }}
+Re-derive each against current memory rather than replaying its recorded
+changes, which may be empty or out of date. The authorization above already
+allows the effects they need; cite the proposal and its acceptance as sources.
+If one no longer applies, say why in the report instead.
 
 Read the relevant observations, learnings and world views through Memo read
 operations. Resolve record references through Auto read operations. Treat an

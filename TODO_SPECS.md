@@ -3,7 +3,7 @@
 Review of specs 000–011 against the current source and tests, including existing
 uncommitted changes. The initial review used static inspection and read-only
 probes. Subsequent fixes and regression checks are recorded below. A complete
-582-test suite has now passed with only four opt-in live checks skipped;
+596-test suite has now passed with only six opt-in live checks skipped;
 targeted checks and
 live-provider limits are recorded below. A feature's presence does not establish
 complete conformance.
@@ -126,7 +126,10 @@ complete conformance.
 
 - [x] **Act on refinement hints.** Continuation dispatches deferred elaboration
   and after-success refinement through `PlanRefine`; regressions check both
-  paths and aggregation after decomposition. Specs: 006, 009.
+  paths and aggregation after decomposition. After-success dispatch now uses
+  the shared result path, including tasks resumed after a question in the same
+  or a later continuation. A refiner system failure still stops before unrelated
+  work. Three further regressions cover these cases. Specs: 006, 009.
 
 - [x] **Add orchestration exposure.** CLI: `plan continue`, `plan hold`,
   `plan release`, `plan events`. MCP: `plan_events`. CLI commands and cursor
@@ -477,6 +480,15 @@ complete conformance.
   staging. Explicit repair and continuation repeat those uncheckpointed effects,
   while preserving the model receipt and publishing only one revision.
   This documents the recovery limit rather than claiming exactly-once effects.
+  Six additional artifact-alias regressions cover zero-padded line selectors,
+  deduplication before deferred-producer matching, distinct ranges with equal
+  bytes, canonical custom-owner aliases with opaque revisions, retained owner
+  selections after the owner disappears and archived definition artifact types.
+  Equivalent numeric selections now use the same resource identity in methodology
+  validation and source-snapshot lookup. This repairs false missing-artifact and
+  distinct-producer errors without collapsing different resources or selections.
+  Files: `features/elaboration/methodology.py`, `features/script/sources.py`,
+  `tests/test_006_16_integration_artifact_aliases.py`.
   Remaining: wider structural parity, reference alias parity (including other
   resolver schemes and historical definitions), and wider contract/default
   composition (including sibling ordering inside deferred runtime blocks and
@@ -604,9 +616,11 @@ addressed. Their regression suites were included in the latest targeted run.
 
 ## Verification and Documentation Gaps
 
-The final full-suite run completed 582 tests in 240.288 seconds: 578 passed,
-and only the four opt-in live checks were skipped. The two OpenCode live checks
-were also run explicitly and passed (text generation and native API checkpoints).
+The final full-suite run completed 596 tests in 532.849 seconds: 590 passed,
+and only the six opt-in live checks were skipped. All four OpenCode live checks
+were also run explicitly and passed in 72.547 seconds: text generation, API-seeded
+controls, model-generated questions/resumption/cancellation, and model-requested
+permission approval/rejection across independent Python processes.
 `testClientWireContract` and `testMcpStdio` both passed. The sibling Memo checkout
 must be supplied using an **absolute** `PYTHONPATH`: subprocess tests change
 working directories, so relative paths incorrectly hide Memo from CLI children.
@@ -647,6 +661,14 @@ its pending output without rerunning the model.
 Files: `features/elaboration/operations.py`,
 `features/orchestration/operations.py`,
 `tests/test_009_05_integration_application_cancellation.py`. Specs: 006, 009.
+
+A fifth regression covers an Elaborator that first waits for an answer and
+then completes while continuation resumes it. Its application previously ran
+outside the supervised worker, so a Stop hold could not interrupt a parameter
+subprocess. Resumed application now follows the same supervised, cancellable
+path as other pending applications. The check preserves the successful receipt,
+prevents task publication while held, and verifies explicit release/continuation
+later applies one revision without rerunning the Elaborator.
 
 Continuation now recovers staged plan revisions and applies successful pending
 Elaborators before selecting tasks. Previously it could reject a staged commit
@@ -743,7 +765,9 @@ at that point; the bounded OpenCode smoke test described below now passes.
   Opt-in smoke checks now live in `tests/test_001_04_live_engines.py`:
   `AUTO_LIVE_ENGINES=1` enables real provider calls; per-engine model overrides
   use `AUTO_LIVE_PI_MODEL`, `AUTO_LIVE_OPENCODE_MODEL` and `AUTO_LIVE_LLM_MODEL`.
-  Tests run in empty temporary directories with a 45-second limit per call.
+  Tests run in empty temporary directories. Smoke/API checks use a 45-second
+  budget; provider-driven durable control runs use 90 seconds, with bounded
+  subprocess waits.
   OpenCode's real generation passed. Pi 0.71.1 exposed unsupported `--no-mcp`
   and `--no-approve` flags and a missing `agent_end` terminal event mapping;
   the adapter now uses supported isolation flags and accepts both current
@@ -751,14 +775,20 @@ at that point; the bounded OpenCode smoke test described below now passes.
   Pi provider verification remains blocked by account/model compatibility
   errors, including an explicit `openai-codex/gpt-5.3-codex` attempt.
   LLM remains blocked by its missing OpenAI API key. No credentials or user
-   configuration were changed. An additional real OpenCode check creates native
-   forms and permission requests through the API, detaches, JSON-roundtrips the
-   adapter checkpoint, and replies through a fresh adapter. It verifies form
-   answers and both permission approval/rejection against the real server,
-   without provider inference, then deletes its own fixture session. This is
-   API-seeded control transport coverage, not a model-generated question or
-   proof of end-to-end provider cancellation. Those provider-driven paths remain
-   unverified.
+  configuration were changed. A real OpenCode check creates native forms and
+  permission requests through the API, detaches, JSON-roundtrips the adapter
+  checkpoint, and replies through a fresh adapter, without provider inference.
+  Two further live checks now exercise model-generated questions and file-read
+  permission requests: another Python process answers/cancels the question or
+  approves/rejects the permission. Pre executes once, the engine session is
+  retained, approved work returns the fixture content, and native pending
+  forms/permissions are cleared. All fixture sessions are deleted afterward.
+  Permission rejection exposed a terminal assistant error without an `idle`
+  marker; the adapter now recognizes terminal assistant errors instead of
+  polling until timeout, mapping native `aborted` errors to `Cancelled`.
+  Two wire regressions also cover provider errors and an older assistant error
+  preceding a new turn. OpenCode's named live control paths now pass; the
+  remaining live-engine blockers are Pi account compatibility and LLM credentials.
 - [x] Add conformance checks for the confirmed defects above. Shared lifecycle
   cancellation now prevents input shell Values, new phases and unstaged
   consolidation publication after cancellation, independently of engine

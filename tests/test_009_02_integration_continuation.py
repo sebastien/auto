@@ -506,6 +506,52 @@ else:
 		self.assertEqual([call.kwargs["task"] for call in refineOperation.call_args_list], ["deferred", "root"])
 		self.assertEqual([run["task"] for run in RunList(self.context)], ["child", "deferred", "root"])
 
+	def testAfterSuccessRefinementRunsAfterAQuestionResumes(self):
+		class Engine:
+			def start(inner, context, request):
+				if "answer" not in request:
+					yield {"type": "ScriptQuestion", "content": "Continue?"}
+				else:
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Done"}
+		self.context.engines["fake"] = Engine()
+		self.add("work", hints={"refine": "after"})
+		with patch("auto.features.orchestration.operations.PlanRefine", return_value={"run": {"status": "Succeeded"}}) as refine:
+			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "waiting")
+			refine.assert_not_called()
+			run = RunList(self.context)[0]
+			GapDecide(self.context, run["gap"], "yes", "Continue")
+			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "ended")
+			refine.assert_called_once()
+			self.assertEqual(refine.call_args.kwargs["task"], "root")
+		self.assertEqual(len(RunList(self.context, {"task": "work"})), 1)
+
+	def testSameContinuationResumesQuestionAndThenRefinesBeforeRootStarts(self):
+		class Engine:
+			def start(inner, context, request):
+				if "answer" not in request:
+					yield {"type": "ScriptQuestion", "content": "Continue?"}
+				else:
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Done"}
+		self.context.engines["fake"] = Engine()
+		self.add("work", hints={"refine": "after"})
+		with patch("auto.features.orchestration.operations.PlanRefine", return_value={"run": {"status": "Succeeded"}}) as refine:
+			for event in PlanContinue(self.context, self.plan):
+				if event["kind"] == "RunWaiting":
+					GapDecide(self.context, event["data"]["gap"], "yes", "Continue")
+				if event["kind"] == "RunStarted" and event["data"]["task"] == "root":
+					refine.assert_called_once()
+			self.assertEqual(event["data"]["stop"], "ended")
+			refine.assert_called_once()
+
+	def testAfterSuccessRefinementSystemFailureStopsBeforeIndependentWork(self):
+		self.add("work", hints={"refine": "after"})
+		self.add("independent")
+		failed = {"run": {"status": "Failed", "failure": {"kind": "system", "reason": "Refiner failed"}}}
+		with patch("auto.features.orchestration.operations.PlanRefine", return_value=failed) as refine:
+			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
+			refine.assert_called_once()
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["work"])
+
 	def testFailureHasPrecedenceOverOpenGaps(self):
 		self.add("bad")
 		self.add("waiting")

@@ -63,6 +63,33 @@ class MemoConsolidation:
 		except (MemoError, OSError) as error:
 			raise AutoError(f"Memo due work unavailable: {error}", "system") from error
 
+	def accepted(self, passes):
+		"""Proposals accepted by a resolution not written by a consolidation pass, and not dismissed.
+
+		`passes` are the run ids of this agent's consolidations, the writers of
+		the proposals themselves; their resolutions are withdrawals, not acceptances.
+		"""
+		from memo.model import MemoError
+		from memo.plugins.agent.observations import observationSnapshot
+		try:
+			items = list(observationSnapshot(self.memo, self.agent)["log"].log.items)
+		except (MemoError, OSError) as error:
+			raise AutoError(f"Memo observations unavailable: {error}", "system") from error
+		proposals = {item.id: item for item in items if item.meta.get("type") == "proposal"}
+		resolutions, dismissed = {}, set()
+		for item in items:
+			for target in item.meta.get("dismisses", []) or []:
+				dismissed.add(target["item"] if isinstance(target, dict) else target)
+			if item.writer in passes:
+				continue
+			for target in item.meta.get("resolves", []) or []:
+				if target in proposals:
+					resolutions.setdefault(target, item)
+		return [{"id": key, "text": proposals[key].text, "reason": proposals[key].meta.get("reason", ""),
+			"changes": proposals[key].meta.get("change", []), "sources": proposals[key].sources,
+			"accepted": {"id": item.id, "text": item.text, "sources": item.sources}}
+			for key, item in resolutions.items() if key not in dismissed]
+
 	def validate(self, value):
 		from memo.model import MemoError
 		from memo.plugins.agent.consolidation import agentConsolidate, prepareConsolidation

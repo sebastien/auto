@@ -184,7 +184,7 @@ def PlanContinue(context, plan):
 					ctx = workerContext.derive(limits=Limits(remaining))
 					result = yield from perform(lambda: resumeGap(ctx, gap["id"], decision["answer"]))
 					if result:
-						applyPending(context, result)
+						yield from perform(lambda: applyPending(workerContext, result))
 				elif ready:
 					id = ready[0]
 					task = effectiveTask(context, tasks[id])
@@ -207,10 +207,6 @@ def PlanContinue(context, plan):
 					else:
 						attempted.add(id)
 						result = yield from perform(lambda: TaskStart(ctx, id))
-						if result["status"] == RunStatus.SUCCEEDED and task.meta.get("hints", {}).get("refine") == "after":
-							refinement = yield from perform(lambda: PlanRefine(ctx, path, "Successful task requests refinement", task="root"))
-							if isinstance(refinement, dict) and isinstance(refinement.get("run"), dict) and refinement["run"]["status"] != RunStatus.SUCCEEDED:
-								result = refinement["run"]
 				else:
 					if any(run["status"] in {RunStatus.PENDING, RunStatus.RUNNING} for run in runs):
 						yield from events()
@@ -222,6 +218,11 @@ def PlanContinue(context, plan):
 					if planHold(path):
 						stop = ContinuationStop.HELD
 						break
+					completed = tasks.get(result.get("task"))
+					if result.get("status") == RunStatus.SUCCEEDED and completed and completed.meta.get("hints", {}).get("refine") == "after":
+						refinement = yield from perform(lambda: PlanRefine(ctx, path, "Successful task requests refinement", task="root"))
+						if isinstance(refinement, dict) and isinstance(refinement.get("run"), dict) and refinement["run"]["status"] != RunStatus.SUCCEEDED:
+							result = refinement["run"]
 					if result.get("status") == RunStatus.FAILED and result.get("failure", {}).get("kind") == "system":
 						stop = ContinuationStop.FAILED
 						break

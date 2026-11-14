@@ -134,6 +134,57 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(deniedProposal["status"], "Failed")
 		self.assertIn("denied memory effect", deniedProposal["failure"]["reason"])
 
+	def testAcceptedProposalAuthorizesOnePassAndDismissedDoesNot(self):
+		from memo.plugins.agent.observations import observe
+		base = self.build
+		change = {"entry": self.owner.id, "expected": None, "properties": {"focus": "Inclusive design"},
+			"history": {"text": "Focus on inclusion", "sources": ["agent-ux/log:Observations item=" + self.item]}}
+		def applying(inputs):
+			change["expected"] = inputs["agent"]["revision"]
+			self.inputs = inputs
+			return {**base(inputs), "changes": [change]}
+		self.build = lambda inputs: {**base(inputs), "report": {"summary": "Propose", "proposals": [
+			{"text": "Focus on inclusion", "reason": "Observed need", "changes": [], "sources": ["agent-ux/log:Observations item=" + self.item]}]}}
+		proposed = ConsolidationStart(self.context, "ux")
+		self.assertEqual(proposed["status"], "Succeeded", proposed.get("failure"))
+		self.memo.backend.invalidate()
+		proposal = ConsolidationStatus(self.context, "ux")["proposals"][0]["id"]
+		# A dismissed proposal grants nothing.
+		observe(self.memo, self.owner.id, {"text": "Rejected", "sources": ["archive:conversation/2"], "meta": {"type": "response", "dismisses": [{"item": proposal, "reason": "Rejected by the owner"}]}}, "auto-agent:conversation/lobby")
+		self.build = applying
+		rejected = ConsolidationStart(self.context, "ux")
+		self.assertEqual(rejected["status"], "Failed", rejected)
+		self.assertEqual(self.inputs["accepted"], [])
+		self.assertEqual(self.inputs["authorization"]["memory.evolve"], "confirm")
+		# A second proposal, accepted by a human, grants its pass the confirmed effects.
+		self.build = lambda inputs: {**base(inputs), "report": {"summary": "Propose again", "proposals": [
+			{"text": "Focus on inclusion, again", "reason": "Observed need", "changes": [], "sources": ["agent-ux/log:Observations item=" + self.item]}]}}
+		self.assertEqual(ConsolidationStart(self.context, "ux")["status"], "Succeeded")
+		self.memo.backend.invalidate()
+		second = ConsolidationStatus(self.context, "ux")["proposals"][0]["id"]
+		observe(self.memo, self.owner.id, {"text": "Accepted", "sources": ["archive:conversation/3"], "meta": {"type": "response", "resolves": [second]}}, "auto-agent:conversation/lobby")
+		self.build = applying
+		accepted = ConsolidationStart(self.context, "ux")
+		self.assertEqual(accepted["status"], "Succeeded", accepted.get("failure"))
+		self.assertEqual([item["id"] for item in self.inputs["accepted"]], [second])
+		self.assertEqual(self.inputs["authorization"]["memory.evolve"], "allow")
+		self.assertEqual(self.inputs["authorization"]["memory.promote"], "allow")
+		self.memo.backend.invalidate()
+		self.assertEqual(self.memo.backend.get(self.owner.id).meta.get("focus"), "Inclusive design")
+		# Taken up: the next pass is back under policy.
+		change["properties"] = {"focus": "Accessible design"}
+		again = ConsolidationStart(self.context, "ux")
+		self.assertEqual(again["status"], "Failed", again)
+		self.assertEqual(self.inputs["accepted"], [])
+		self.assertIn("memory.evolve", again["failure"]["reason"])
+
+	def testAcceptedProposalsNeverLoosenDeniedEffects(self):
+		from auto.features.memory.consolidation import AgentRunScope
+		policy = {"memory.observe": "allow", "memory.consolidate": "allow", "memory.promote": "confirm", "memory.evolve": "deny"}
+		with patch("auto.features.memory.consolidation.memoryPolicy", return_value=policy):
+			authorization = AgentRunScope("ux", {}, None).authorization(self.context, {"grants": ["memory.promote", "memory.evolve"]})
+		self.assertEqual((authorization["memory.promote"], authorization["memory.evolve"]), ("allow", "deny"))
+
 	def testCliAgentArgumentDoesNotBecomeHarnessAgentAndMcpKeepsIt(self):
 		import asyncio
 		from auto.app.cli.main import parser, commandLine

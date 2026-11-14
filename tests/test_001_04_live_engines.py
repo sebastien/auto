@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -99,6 +100,93 @@ class LiveEngineTests(unittest.TestCase):
 				self.assertEqual(engine.api(context, "get", base + "/form")["data"], [])
 			finally:
 				api("delete", base)
+
+	def modelControls(self, actions):
+		from auto.features.plan.operations import PlanRevise
+		from auto.features.task.operations import RunGet, RunOutput, TaskStart
+		from auto.integration.memo.store import MemoKnowledge
+		for action in actions:
+			with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+				root = Path(directory)
+				plan = root / ".auto/plans/live"
+				plan.mkdir(parents=True)
+				(plan / "plan.md").write_text("---\nid: live\n---\n# Live control check\n")
+				config = {"engine": "opencode"}
+				if os.environ.get("AUTO_LIVE_OPENCODE_MODEL"):
+					config["model"] = os.environ["AUTO_LIVE_OPENCODE_MODEL"]
+				context = Context(project=root, plan=plan, config=config, knowledge=MemoKnowledge(root),
+					defaults={"policy": {"repo.read": "confirm"}}, limits=Limits({"time": 90}))
+				prompt = "Use the question tool now to ask me to choose between AUTO_RESUME_OK and NO. " \
+					"Wait for my answer. Then reply with exactly the chosen value, without explanation. " \
+					"Do not call any other tools or read/modify files."
+				if action in {"approve", "reject"}:
+					(root / "fixture.txt").write_text("AUTO_READ_OK")
+					prompt = "Use the read tool exactly once to read " + str(root / "fixture.txt") + ". " \
+						"If permission is granted, reply with exactly the file content. If permission is denied, " \
+						"reply with exactly DENIED and do not retry. Do not call any other tools or modify files."
+				PlanRevise(context, plan, [{"op": "add", "task": {"id": "question", "title": "Live question",
+					"pre": "printf x >> " + str(root / "pre-count"), "output": {"format": "text"},
+					"sections": {"Process": prompt}}}], "Add live control fixture")
+				run = TaskStart(context, "question")
+				session = run.get("runtime", {}).get("session")
+				try:
+					self.assertEqual(run["status"], "Waiting", run.get("failure", run))
+					self.assertTrue(session)
+					if action in {"answer", "cancel"}:
+						self.assertEqual(run["question"]["type"], "ScriptQuestion")
+						field = run["question"]["fields"][0]
+						key = field.get("key", field.get("id"))
+						option = next(item for item in field["options"]
+							if (item.get("label") if isinstance(item, dict) else item) == "AUTO_RESUME_OK")
+						answer = {key: option.get("value", option.get("label")) if isinstance(option, dict) else option}
+					else:
+						self.assertEqual(run["question"]["type"], "PolicyRequest")
+						self.assertEqual(run["question"]["effect"], "repo.read")
+						answer = action == "approve"
+					code = '''import json, sys
+from pathlib import Path
+from auto.features.task.operations import RunAnswer, RunCancel, RunGet
+from auto.integration.memo.store import MemoKnowledge
+from auto.runtime.model import Context
+root = Path(sys.argv[1])
+context = Context(project=root, plan=root / ".auto/plans/live", config={"engine": "opencode"}, knowledge=MemoKnowledge(root),
+    defaults={"policy": {"repo.read": "confirm"}})
+if sys.argv[3] != "cancel":
+    RunAnswer(context, sys.argv[2], json.loads(sys.argv[4]), "Live fixture answer")
+else:
+    RunCancel(context, sys.argv[2])
+print(json.dumps(RunGet(context, sys.argv[2])))
+'''
+					result = subprocess.run([sys.executable, "-c", code, directory, run["id"], action, json.dumps(answer)],
+						text=True, capture_output=True, timeout=100)
+					self.assertEqual(result.returncode, 0, result.stderr)
+					completed = RunGet(context, run)
+					expectedStatus = "Cancelled" if action in {"cancel", "reject"} else "Succeeded"
+					if completed["status"] != expectedStatus:
+						probe = context.derive(limits=Limits({"time": 10}))
+						messages = OpenCode().api(probe, "get", "/api/session/" + session + "/message?order=asc&limit=100")["data"]
+						self.fail(json.dumps({"failure": completed.get("failure"), "messages": [
+							{key: message[key] for key in ("type", "error", "outcome") if key in message} for message in messages]}))
+					self.assertEqual(completed["runtime"]["session"], session)
+					self.assertEqual((root / "pre-count").read_text(), "x")
+					if action in {"answer", "approve"}:
+						expected = {"answer": "AUTO_RESUME_OK", "approve": "AUTO_READ_OK"}[action]
+						self.assertEqual(RunOutput(context, run).strip(), expected)
+					else:
+						self.assertEqual(completed["failure"]["kind"], "cancelled")
+					probe = context.derive(limits=Limits({"time": 10}))
+					self.assertEqual(OpenCode().api(probe, "get", "/api/session/" + session + "/form")["data"], [])
+					self.assertEqual(OpenCode().api(probe, "get", "/api/session/" + session + "/permission")["data"], [])
+				finally:
+					if session:
+						subprocess.run(["opencode", "api", "delete", "/api/session/" + session],
+							text=True, capture_output=True, timeout=15, check=True)
+
+	def testOpenCodeModelQuestionsResumeOrCancelAcrossProcesses(self):
+		self.modelControls(("answer", "cancel"))
+
+	def testOpenCodeModelPermissionsApproveOrRejectAcrossProcesses(self):
+		self.modelControls(("approve", "reject"))
 
 
 # EOF

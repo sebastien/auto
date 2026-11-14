@@ -168,6 +168,43 @@ class EngineTests(unittest.TestCase):
 		self.assertEqual(result["status"], "Succeeded")
 		self.assertEqual(result["output"], "Done")
 
+	def testOpenCodeTerminalAssistantErrorsDoNotRequireAnIdleMarker(self):
+		for error, status in (({"type": "aborted", "message": "The user declined this tool call"}, "Cancelled"),
+			({"type": "provider", "message": "Provider rejected the request"}, "Failed")):
+			with self.subTest(error=error):
+				class Stub(OpenCode):
+					def api(inner, context, method, path, data=None, config=None):
+						if path.endswith("/form"):
+							return {"data": []}
+						if "/message?" in path:
+							return {"data": [{"id": "failed", "type": "assistant", "content": [], "error": error}]}
+						return {}
+				context = Context(engines={"opencode": Stub()}, config={"engine": "opencode"}, limits=Limits({"time": .5}))
+				events = list(ScriptStart(context, Script("Work", Path("work.md"))))
+				self.assertEqual(events[-1]["status"], status)
+				self.assertIn(error["message"], events[-1]["failure"]["reason"])
+
+	def testOpenCodeDoesNotTreatAnOlderAssistantErrorAsTheCurrentTurnFailure(self):
+		class Stub(OpenCode):
+			polls = 0
+			def api(inner, context, method, path, data=None, config=None):
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					inner.polls += 1
+					messages = [{"id": "old", "type": "assistant", "content": [],
+						"error": {"type": "aborted", "message": "An earlier turn ended"}},
+						{"id": "new", "type": "user", "text": "New work"}]
+					if inner.polls > 1:
+						messages += [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": "Done"}]},
+							{"id": "idle", "type": "idle", "outcome": "succeeded"}]
+					return {"data": messages}
+				return {}
+		context = Context(engines={"opencode": Stub()}, config={"engine": "opencode"}, limits=Limits({"time": 2}))
+		events = list(ScriptStart(context, Script("Work", Path("work.md"))))
+		self.assertEqual(events[-1]["status"], "Succeeded")
+		self.assertEqual(events[-1]["output"], "Done")
+
 	def testOpenCodePolicyPermissionAndResume(self):
 		class Stub(OpenCode):
 			def __init__(self):

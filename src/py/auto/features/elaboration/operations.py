@@ -220,6 +220,8 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 
 def ElaborationParse(context, text: str) -> TaskElaboration:
 	"""Parse the Markdown/YAML interchange format, excluding fenced example headings."""
+	# Models sometimes drop the newline after the opening fence (`---task: root`).
+	text = re.sub(r"\A---(?=[A-Za-z_])", "---\n", text)
 	meta, body = document(text)
 	_, parts = sections(body)
 	if not meta.get("task"):

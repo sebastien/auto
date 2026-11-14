@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -17,7 +19,7 @@ from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
 from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
-from auto.utils.data import AutoError, document, documentText, jsonText, merge
+from auto.utils.data import AutoError, document, documentText, jsonText, merge, timestamp
 
 
 # -----------------------------------------------------------------------------
@@ -91,9 +93,64 @@ def ended(kind, reason, status=None) -> dict:
 	return {"type": Event.SCRIPT_ENDED, "status": status or statusFor(kind), "output": None, "failure": {"kind": failureFor(kind), "reason": reason}}
 
 
-def executePrepared(context: Context, request: dict):
+COMPLETE_USAGE_ENGINES = frozenset({"opencode", "pi"})
+
+
+def journalRun(context: Context, entry: dict) -> None:
+	"""Append one engine invocation to the project usage journal."""
+	path = context.project / ".auto" / "usage.jsonl"
+	# Ephemeral scripts outside an auto project must not create project state.
+	if context.defaults.get("journal", True) is False or not path.parent.is_dir():
+		return
+	# One O_APPEND write per line keeps concurrent writers from interleaving.
+	fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+	try:
+		os.write(fd, (jsonText(entry) + "\n").encode())
+	finally:
+		os.close(fd)
+
+
+def executePrepared(context: Context, request: dict, journal: dict | None = None):
 	"""Drive one engine stream; answers are sent back through the generator."""
-	engine = Engine(context, request["config"].get("engine", RUNTIME_DEFAULTS["engine"]))
+	config = request["config"]
+	name = config.get("engine", RUNTIME_DEFAULTS["engine"])
+	entry = {"ts": timestamp(), "project": context.project.name, "plan": context.plan.name if context.plan else None,
+		"kind": "script", "run": None, "task": None, **(journal or {}),
+		"engine": name, "provider": config.get("provider"), "model": config.get("model"), "status": RunStatus.CANCELLED, "failure": None}
+	before, reported, started = dict(context.limits.usage) if context.limits else None, False, time.monotonic()
+	stream, answer = _executePrepared(context, request, name), None
+	try:
+		while True:
+			try:
+				event = stream.send(answer)
+			except StopIteration:
+				return
+			if event["type"] == Event.SCRIPT_META and event.get("name") == "usage":
+				reported = True
+			elif event["type"] == Event.SCRIPT_META and event.get("name") == "runtime" and isinstance(event.get("value"), dict):
+				value = event["value"]
+				entry.update({key: value[source] for key, source in (("provider", "provider"), ("provider", "resolved_provider"), ("model", "model"))
+					if isinstance(value.get(source), str)})
+			elif event["type"] == Event.SCRIPT_ENDED:
+				entry.update(status=event["status"], failure=event.get("failure"))
+			# A stream closed while asking is suspended, not cancelled.
+			if event["type"] != Event.SCRIPT_ENDED:
+				entry["status"] = RunStatus.WAITING if event["type"] in (Event.SCRIPT_QUESTION, Event.POLICY_REQUEST) else RunStatus.CANCELLED
+			answer = yield event
+	finally:
+		stream.close()
+		usage = dict(context.limits.usage) if context.limits else None
+		delta = {key: usage.get(key, 0) - before.get(key, 0) for key in ("tokens", "cost")} if usage is not None and reported else {}
+		entry.update(duration_s=round(time.monotonic() - started, 3), tokens=delta.get("tokens"),
+			cost=round(delta["cost"], 6) if "cost" in delta else None, usage_complete=reported and name in COMPLETE_USAGE_ENGINES)
+		try:
+			journalRun(context, entry)
+		except OSError:
+			pass  # Accounting must never fail a run.
+
+
+def _executePrepared(context: Context, request: dict, engineName: str):
+	engine = Engine(context, engineName)
 	stream, answer = None, None
 	try:
 		if context.cancelled():
