@@ -10,7 +10,7 @@ from pathlib import Path
 
 from auto.features.plan.model import Revision
 from auto.runtime.operations import Knowledge
-from auto.utils.data import AutoError, atomicWrite, identity, jsonText, readJson, timestamp
+from auto.utils.data import AutoError, atomicWrite, identifier, identity, jsonText, readJson, timestamp
 
 # -----------------------------------------------------------------------------
 #
@@ -26,6 +26,21 @@ HELD = threading.local()
 # OPERATIONS
 #
 # -----------------------------------------------------------------------------
+
+
+def runPlanPath(context, run) -> Path:
+	"""Resolve a run's owning plan, requiring a selection only for duplicate IDs."""
+	if context.plan is not None:
+		return planPath(context)
+	id = identifier(run["id"] if isinstance(run, dict) else run)
+	matches = [file.parent for file in sorted((context.project / ".auto/plans").glob("*/plan.md"))
+		if any((file.parent / "runs" / id / name).is_file() for name in ("receipt.json", "active.json"))]
+	if len(matches) == 1:
+		return matches[0].resolve()
+	if matches:
+		raise AutoError(f"Ambiguous run: {id}", recovery="Select its plan with --plan <name-or-path>. Matching plans: "
+			+ ", ".join(str(path) for path in matches) + ".")
+	raise AutoError(f"Run not found in this project: {id}", recovery="Check auto plan list, or use --plan <path> for a plan outside this project.")
 
 
 def planPath(context, plan=None) -> Path:

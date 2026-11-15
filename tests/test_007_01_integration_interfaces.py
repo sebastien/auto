@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,16 @@ class InterfaceTests(unittest.TestCase):
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn(exposure.need, result.stdout)
 
+	def testHumanResultsIncludeHelpWithoutChangingStdout(self):
+		result = self.cli("script", "expand", "-", stdin="Hello world")
+		self.assertEqual(result.returncode, 0, result.stderr)
+		self.assertTrue(result.stdout.startswith("Hello world"))
+		self.assertNotIn("Command help:", result.stdout)
+		self.assertIn("Command help: auto script expand --help", result.stderr)
+		structured = self.cli("script", "expand", "-", "--format", "json", stdin="Hello world")
+		self.assertTrue(json.loads(structured.stdout).startswith("Hello world"))
+		self.assertEqual(structured.stderr, "")
+
 	def testPolicyCliShowPreservesMcpResolveName(self):
 		with tempfile.TemporaryDirectory() as directory:
 			plan = Path(directory)
@@ -41,6 +52,146 @@ class InterfaceTests(unittest.TestCase):
 			self.assertIn("rules", json.loads(result.stdout))
 			exposure = next(item for item in EXPOSURES if item.name == "PolicyResolve")
 			self.assertEqual(exposure.toolName, "policy_resolve")
+
+	def testPlanStatusExplainsIdentityTasksAndExecution(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".git").mkdir()
+			plan = root / ".auto/plans/demo"
+			(plan / "tasks").mkdir(parents=True)
+			(plan / "plan.md").write_text("---\nid: demo\ngoal: Ship the search feature\n---\n# Search\n")
+			(plan / "tasks/index.md").write_text("---\nid: index\ntitle: Build the search index\n---\n## Process\n\nIndex documents\n")
+			result = self.cli("plan", "status", "--plan", str(plan), cwd=root)
+			self.assertEqual(result.returncode, 0, result.stderr)
+			for text in ("Plan: demo", "Goal: Ship the search feature", "Status: Draft",
+				"Execution: idle", "Tasks: 0/1 completed", "[Blocked] root", "Waiting on: index",
+				"[Ready] index — Build the search index"):
+				self.assertIn(text, result.stdout)
+			structured = self.cli("plan", "status", "--plan", str(plan), "--format", "json", cwd=root)
+			data = json.loads(structured.stdout)
+			self.assertEqual(data["tasks"], {"root": "Blocked", "index": "Ready"})
+			self.assertEqual(data["taskDetails"]["index"]["goal"], "Build the search index")
+			self.assertEqual(data["goal"], "Ship the search feature")
+			self.assertEqual(data["path"], str(plan))
+			held = self.cli("plan", "hold", "Pause", "Needs review", "--plan", str(plan), "--format", "json", cwd=root)
+			self.assertEqual(held.returncode, 0, held.stderr)
+			(plan / "continuation.json").write_text(json.dumps({"id": "continue1", "ended": "2026-01-01", "stop": "held"}))
+			result = self.cli("plan", "status", "--plan", str(plan), cwd=root)
+			self.assertIn("Hold: Pause — Needs review", result.stdout)
+			self.assertIn("Last continuation: stopped — held", result.stdout)
+			self.assertIn('Release hold when ready: auto plan release "REASON" --plan', result.stdout)
+			self.assertNotIn("Continue when ready:", result.stdout)
+
+	def testPlanStatusDistinguishesLifecycleFromExecutionAndShowsFailures(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".git").mkdir()
+			plan = root / ".auto/plans/demo"
+			run = plan / "runs/run1"
+			run.mkdir(parents=True)
+			(plan / "plan.md").write_text("---\nid: demo\n---\n# A plan without an explicit goal\n")
+			for state, status, execution in (("Running", "Active", "in flight: root"),
+				("Failed", "Failed", "idle"), ("Succeeded", "Succeeded", "idle")):
+				with self.subTest(state=state):
+					receipt = {"id": "run1", "task": "root", "status": state, "started": "2026-01-01",
+						"usage": {"tokens": 10, "cost": .01, "time": 2}, "children": {}}
+					if state == "Failed":
+						receipt["failure"] = {"kind": "engine", "reason": "Engine unavailable"}
+					(run / "receipt.json").write_text(json.dumps(receipt))
+					result = self.cli("plan", "status", "--plan", str(plan), cwd=root)
+					self.assertEqual(result.returncode, 1 if state == "Failed" else 0, result.stderr)
+					self.assertIn("Goal: # A plan without an explicit goal", result.stdout)
+					self.assertIn("Status: " + status, result.stdout)
+					self.assertIn("Execution: " + execution, result.stdout)
+					self.assertIn("Tasks: no subtasks (root only)", result.stdout)
+					self.assertIn(f"[{state}] root", result.stdout)
+					self.assertIn("Run: run1 (" + state + ")", result.stdout)
+					if state == "Failed":
+						self.assertIn("Failure: Engine unavailable", result.stdout)
+					structured = self.cli("plan", "status", "--plan", str(plan), "--format", "json", cwd=root)
+					self.assertEqual(json.loads(structured.stdout)["status"], status)
+
+	def testFailureInspectionHintsAreExecutableAndPreserveJson(self):
+		with tempfile.TemporaryDirectory(prefix="auto hints ") as directory:
+			root = Path(directory)
+			(root / ".git").mkdir()
+			plan = root / ".auto/plans/demo"
+			run = plan / "runs/failed1"
+			run.mkdir(parents=True)
+			(plan / "plan.md").write_text("---\nid: demo\n---\n# Demo\n")
+			receipt = {"id": "failed1", "task": "root", "status": "Failed", "started": "2026-01-01",
+				"failure": {"kind": "engine", "reason": "Engine unavailable"}, "children": {}}
+			(run / "receipt.json").write_text(json.dumps(receipt))
+			(run / "journal.jsonl").write_text(json.dumps({"type": "RunEnded", "status": "Failed"}) + "\n")
+			(run / "output.txt").write_text("Partial output")
+			status = self.cli("plan", "status", "--plan", str(plan), cwd=root)
+			inspect = next(line.strip().removeprefix("Inspect: ") for line in status.stdout.splitlines() if line.strip().startswith("Inspect: "))
+			result = self.cli(*shlex.split(inspect)[1:], cwd=root)
+			self.assertEqual(result.returncode, 1, result.stderr)
+			self.assertIn("Engine unavailable", result.stdout)
+			self.assertIn("Trace (follows live runs): auto run journal failed1 --plan", result.stderr)
+			self.assertIn("Stored output (if any): auto run output failed1 --plan", result.stderr)
+			trace = next(line.strip().removeprefix("Trace: ") for line in status.stdout.splitlines() if line.strip().startswith("Trace: "))
+			result = self.cli(*shlex.split(trace)[1:], cwd=root)
+			self.assertIn("RunEnded", result.stdout)
+			self.assertIn("Inspect: auto run get failed1 --plan", result.stderr)
+			result = self.cli("run", "output", "failed1", "--plan", str(plan), cwd=root)
+			self.assertEqual(result.returncode, 0, result.stderr)
+			self.assertEqual(result.stdout.strip(), "Partial output")
+			result = self.cli("run", "get", "failed1", "--plan", str(plan), "--format", "json", cwd=root)
+			self.assertEqual(json.loads(result.stdout)["failure"]["reason"], "Engine unavailable")
+			self.assertEqual(result.stderr, "")
+			# Failed historical runs must remain inspectable after a successful retry.
+			retry = plan / "runs/retry1"
+			retry.mkdir()
+			(retry / "receipt.json").write_text(json.dumps({**receipt, "id": "retry1", "status": "Succeeded",
+				"started": "2026-01-02", "failure": None}))
+			status = self.cli("plan", "status", "--plan", str(plan), cwd=root)
+			self.assertIn("Status: Succeeded", status.stdout)
+			history = status.stdout.split("Failure runs (including history):", 1)[1]
+			self.assertIn("Inspect: auto run get failed1 --plan", history)
+			self.assertIn("Trace: auto run journal failed1 --plan", history)
+
+	def testRunInspectionFindsPlanAndRejectsAmbiguousIds(self):
+		from unittest.mock import patch
+		with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"AUTO_PLAN": ""}):
+			root = Path(directory)
+			(root / ".git").mkdir()
+			for name in ("first", "second"):
+				plan = root / ".auto/plans" / name
+				plan.mkdir(parents=True)
+				(plan / "plan.md").write_text(f"---\nid: {name}\n---\n# {name}\n")
+			run = root / ".auto/plans/first/runs/run1"
+			run.mkdir(parents=True)
+			receipt = {"id": "run1", "task": "root", "status": "Succeeded", "started": "2026-01-01"}
+			(run / "receipt.json").write_text(json.dumps(receipt))
+			(run / "journal.jsonl").write_text('{"type": "RunEnded", "status": "Succeeded"}\n')
+			(run / "output.txt").write_text("Done")
+			for verb, expected in (("get", "Succeeded"), ("journal", "RunEnded"), ("output", "Done")):
+				result = self.cli("run", verb, "run1", "--format", "json", cwd=root)
+				self.assertEqual(result.returncode, 0, result.stderr)
+				self.assertIn(expected, result.stdout)
+			# Active runs are discoverable too, before a receipt exists.
+			active = root / ".auto/plans/second/runs/live1"
+			active.mkdir(parents=True)
+			(active / "active.json").write_text(json.dumps({**receipt, "id": "live1", "status": "Running"}))
+			result = self.cli("run", "get", "live1", "--format", "json", cwd=root)
+			self.assertEqual(json.loads(result.stdout)["status"], "Running")
+			duplicate = root / ".auto/plans/second/runs/run1"
+			duplicate.mkdir()
+			(duplicate / "receipt.json").write_text(json.dumps(receipt))
+			ambiguous = self.cli("run", "get", "run1", "--format", "json", cwd=root)
+			self.assertEqual(ambiguous.returncode, 2)
+			self.assertIn("Ambiguous run: run1", ambiguous.stdout)
+			self.assertIn("--plan", ambiguous.stderr)
+			for name in ("first", "second"):
+				self.assertIn(name, ambiguous.stderr)
+				selected = self.cli("run", "get", "run1", "--plan", name, "--format", "json", cwd=root)
+				self.assertEqual(selected.returncode, 0, selected.stderr)
+			missing = self.cli("run", "get", "missing", "--format", "json", cwd=root)
+			self.assertEqual(missing.returncode, 2)
+			self.assertIn("Run not found in this project: missing", missing.stdout)
+			self.assertIn("auto plan list", missing.stderr)
 
 	def testContinuationHoldsAndEventCursorCli(self):
 		with tempfile.TemporaryDirectory() as directory:

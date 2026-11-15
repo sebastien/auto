@@ -278,17 +278,18 @@ def PlanReady(context, plan=None) -> list:
 
 
 def PlanStatus(context, plan=None) -> dict:
-	"""Return the derived progress, gaps, budget and policy of a plan."""
+	"""Return the plan goal, task details, derived progress, gaps, budget and policy."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	from auto.features.plan.policy import PolicyResolve, taskPolicyBlocked
 	from auto.features.task.operations import RunList
-	meta = createPlan(path).meta
+	definition = createPlan(path)
+	meta = definition.meta
 	tasks, runs = tasksAt(path), RunList(context)
 	graph = dependencyGraph(context, tasks)
 	allGaps = GapList(context, path)
 	gaps = [gap for gap in allGaps if gap["status"] == GapState.OPEN]
-	states, policyTasks = {}, {}
+	states, policyTasks, details = {}, {}, {}
 	def state(id, run):
 		gapState = taskGapState(context, id, tasks, graph[id], allGaps)
 		if gapState:
@@ -301,6 +302,10 @@ def PlanStatus(context, plan=None) -> dict:
 		run = latestRun(path, id)
 		policyTasks[id] = {"effects": tasks[id].meta.get("effects", []), "blocked": taskPolicyBlocked(context, tasks[id])}
 		states[id] = state(id, run)
+		details[id] = {"goal": tasks[id].meta.get("goal") or tasks[id].description or id,
+			"parent": None if id == "root" else tasks[id].meta.get("parent", "root"),
+			"dependencies": sorted(graph[id]),
+			"run": {key: run[key] for key in ("id", "status", "failure", "question") if key in run} if run else None}
 	usage = {key: sum(run["usage"].get(key, 0) for run in runs) for key in ("tokens", "cost", "time")}
 	stale, staleRuns = [], []
 	for revision in journal(path):
@@ -335,7 +340,8 @@ def PlanStatus(context, plan=None) -> dict:
 		status = PlanState.DRAFT
 	policy = PolicyResolve(context, path)
 	policy["tasks"] = policyTasks
-	return {"id": meta["id"], "status": status, "tasks": states, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage, "hold": planHold(path),
+	return {"id": meta["id"], "goal": meta.get("goal") or definition.description or "", "path": str(path),
+		"status": status, "tasks": states, "taskDetails": details, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage, "hold": planHold(path),
 		"continuation": readJson(path / "continuation.json"),
 		"failures": [run["id"] for run in runs if run.get("failure")], "stale": stale, "staleRuns": staleRuns, "revision": (journal(path) or [{}])[-1].get("id")}
 

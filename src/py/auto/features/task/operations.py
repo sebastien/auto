@@ -21,7 +21,7 @@ from auto.features.plan.model import GapKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanRevise, dependencyGraph, tasksAt
 from auto.features.plan.policy import EFFECT, PolicyResolve, runtimeRule, shellPermitted, taskPolicyBlocked
 from auto.features.plan.references import latestRun, readReceipt, runDirectories
-from auto.features.plan.store import exclusive, journal, locked, planPath, recover
+from auto.features.plan.store import exclusive, journal, locked, planPath, recover, runPlanPath
 from auto.features.script.config import commands, validateConfig
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, conform, executePrepared, prepare
@@ -118,10 +118,10 @@ def effectiveTask(context, task: Task) -> Task:
 
 
 def runDirectory(context, run) -> Path:
-	"""Return the storage directory of a run in the current plan."""
+	"""Return a run's directory, discovering its plan when none is selected."""
 	if context.runScope is not None:
 		return context.runScope.directory(context, run)
-	return planPath(context) / "runs" / identifier(run["id"] if isinstance(run, dict) else run)
+	return runPlanPath(context, run) / "runs" / identifier(run["id"] if isinstance(run, dict) else run)
 
 
 def emit(path: Path, event: dict) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import shlex
 import sys
 import time
 import unicodedata
@@ -54,6 +55,75 @@ def costText(cost, budget=None) -> str:
 			return "—"
 		return "<$0.0001" if 0 < value < .0001 else f"${value:.4f}"
 	return amount(cost) + (" / " + amount(budget) if budget is not None else "")
+
+
+def planStatusText(value: dict) -> str:
+	"""Summarize plan identity, execution, task progress and blockers."""
+	tasks, details = value["tasks"], value["taskDetails"]
+	plan = shlex.quote(value["path"])
+	children = [id for id in tasks if id != "root"]
+	done = sum(tasks[id] == RunStatus.SUCCEEDED for id in children)
+	lines = [f"Plan: {safeText(value['id'])}", f"Goal: {safeText(value['goal'])}",
+		f"Status: {safeText(value['status'])}", f"Path: {safeText(value['path'])}"]
+	inFlight = [id for id, detail in details.items() if (detail["run"] or {}).get("status") in {"Pending", "Running", "Waiting"}]
+	continuation = value.get("continuation")
+	execution = "in flight: " + ", ".join(inFlight) if inFlight else "idle (no run in flight)"
+	if continuation and not continuation.get("ended"):
+		execution = "continuation in progress; " + execution
+	lines.append("Execution: " + safeText(execution))
+	if continuation and continuation.get("ended"):
+		lines.append("Last continuation: stopped — " + safeText(continuation.get("stop") or "unknown"))
+		if continuation.get("error"):
+			lines.append("  Error: " + safeText(continuation["error"]))
+	if value.get("hold"):
+		hold = value["hold"]
+		lines.append(f"Hold: {safeText(hold['mode'])} — {safeText(hold['reason'])}")
+	lines += ["", f"Tasks: {done}/{len(children)} completed (excluding root)" if children else "Tasks: no subtasks (root only)"]
+	for id, state in tasks.items():
+		detail = details[id]
+		lines.append(f"  [{safeText(state)}] {safeText(id)} — {safeText(detail['goal'])}")
+		if state == RunStatus.BLOCKED:
+			pending = [dependency for dependency in detail["dependencies"] if tasks[dependency] != RunStatus.SUCCEEDED]
+			if pending:
+				lines.append("    Waiting on: " + safeText(", ".join(pending)))
+			if value["policy"]["tasks"][id]["blocked"]:
+				lines.append("    Blocked by policy")
+		run = detail["run"]
+		if run:
+			lines.append(f"    Run: {safeText(run['id'])} ({safeText(run['status'])})")
+			lines.append(f"    Inspect: auto run get {shlex.quote(run['id'])} --plan {plan}")
+			if run.get("failure"):
+				lines.append("    Failure: " + safeText(run["failure"].get("reason") or run["failure"]))
+			if run.get("question"):
+				lines.append("    Question: " + safeText(run["question"]))
+	if value["gaps"]:
+		lines += ["", "Open gaps:"]
+		for gap in value["gaps"]:
+			lines.append(f"  {safeText(gap['id'])}: {safeText(gap.get('question', ''))}")
+	if value["failures"]:
+		lines += ["", "Failure runs (including history):"]
+		for run in value["failures"]:
+			lines.append(f"  {safeText(run)}")
+			lines.append(f"    Inspect: auto run get {shlex.quote(run)} --plan {plan}")
+			lines.append(f"    Trace: auto run journal {shlex.quote(run)} --plan {plan}")
+	if value["stale"] or value["staleRuns"]:
+		lines.append(f"Stale context: {len(value['stale'])} plan inputs, {len(value['staleRuns'])} runs")
+	usage, budget = value["usage"], value["budget"]
+	lines += ["", f"Usage: {usage['tokens']} tokens · {costText(usage['cost'], budget.get('cost'))} · {usage['time']:.1f}s"]
+	if budget:
+		lines.append("Budget: " + safeText(render(budget, "text")))
+	lines += ["", "Next steps:", f"  Plan history: auto plan events --plan {plan}"]
+	if value["gaps"]:
+		lines.append(f"  Inspect open gaps: auto gap list --plan {plan}")
+		lines.append("  Resolve a gap: auto gap decide --help")
+	if any(task["blocked"] for task in value["policy"]["tasks"].values()):
+		lines.append(f"  Inspect policy blockers: auto policy show --plan {plan}")
+	if value.get("hold"):
+		lines.append(f'  Release hold when ready: auto plan release "REASON" --plan {plan}')
+	elif not inFlight and not (continuation and not continuation.get("ended")) and value["status"] not in {"Succeeded", "Abandoned", "Failed"}:
+		lines.append(f"  Continue when ready: auto plan continue --plan {plan}")
+	lines.append("  Command help: auto plan status --help")
+	return "\n".join(lines)
 
 # -----------------------------------------------------------------------------
 #

@@ -14,7 +14,7 @@ from pathlib import Path
 from auto.app.operations import (DESCRIPTORS, EXPOSURES, Descriptor, coerceArguments, exitStatus, render, resolveContextArguments, resolvePayload,
 	resumeResult)
 from auto.app.cli import prompt
-from auto.app.cli.frontend import Frontend, width
+from auto.app.cli.frontend import Frontend, planStatusText, width
 from auto.runtime.config import CONTEXT_KEYS, RUNTIME_DEFAULTS, contextFor
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, merge, yamlLoad
@@ -206,11 +206,23 @@ def main(argv=None) -> int:
 			finally:
 				stream.close()
 		else:
-			if frontend:
+			if exposure.name == "PlanStatus" and args.format != "json":
+				print(planStatusText(result))
+			elif frontend:
 				frontend.result(result)
 			else:
 				print(render(result, args.format))
 		sys.stdout.flush()
+		if args.format != "json" and exposure.name in {"RunGet", "RunJournal", "RunOutput"}:
+			run = shlex.quote(arguments["run"])
+			plan = shlex.quote(str(context.plan))
+			print(f"Inspect: auto run get {run} --plan {plan}\n"
+				f"Trace (follows live runs): auto run journal {run} --plan {plan}\n"
+				f"Stored output (if any): auto run output {run} --plan {plan}", file=sys.stderr)
+		elif args.format != "json" and exposure.name != "PlanStatus":
+			if exposure.needsPlan:
+				print(f"Plan status: auto plan status --plan {shlex.quote(str(context.plan))}", file=sys.stderr)
+			print(f"Command help: auto {' '.join(exposure.words)} --help", file=sys.stderr)
 		from auto.features.memory.scheduler import HousekeepingCheck, diagnostic, hasWork
 		try:
 			if hasWork(context):
@@ -348,6 +360,9 @@ def complete(args, exposure, context, prompter):
 				else:
 					recovery = "Choose " + name + ": " + ", ".join(values[:5]) + "." if values else descriptor.recovery
 					raise AutoError(f"Unknown {name}: {value}", recovery=recovery or None)
+	if exposure.noun == "run" and getattr(args, "run", None) and context.plan is None:
+		from auto.features.plan.store import runPlanPath
+		context = context.derive(plan=runPlanPath(context, args.run))
 	if exposure.needsPlan:
 		from auto.features.plan.store import planPath
 		try:

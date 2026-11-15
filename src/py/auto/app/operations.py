@@ -219,6 +219,8 @@ EXPOSURES = [
 	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",), needsPlan=True,
 		noun="policy", verb="show", mcpVerb="resolve"),
 	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True, effects=True, needsPlan=True),
+	Exposure("RunGet", "task.operations", ("run",), "Inspect a run's status, failure and receipt", needsPlan=True),
+	Exposure("RunOutput", "task.operations", ("run",), "Read the stored output of a run", needsPlan=True),
 	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",), needsPlan=True),
 	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",), needsPlan=True),
 	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",),
