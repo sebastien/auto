@@ -277,6 +277,11 @@ def PlanReady(context, plan=None) -> list:
 	return [id for id, dependencies in graph.items() if ready(id, dependencies)]
 
 
+def templateRef(value):
+	"""Return the template reference of a task `from`, materialised as `{ref,digest}` or not."""
+	return value.get("ref") if isinstance(value, dict) else value or None
+
+
 def PlanStatus(context, plan=None) -> dict:
 	"""Return the plan goal, task details, derived progress, gaps, budget and policy."""
 	path = planPath(context, plan)
@@ -305,6 +310,7 @@ def PlanStatus(context, plan=None) -> dict:
 		details[id] = {"goal": tasks[id].meta.get("goal") or tasks[id].description or id,
 			"parent": None if id == "root" else tasks[id].meta.get("parent", "root"),
 			"dependencies": sorted(graph[id]),
+			"from": templateRef(tasks[id].meta.get("from")),
 			"run": {key: run[key] for key in ("id", "status", "failure", "question") if key in run} if run else None}
 	usage = {key: sum(run["usage"].get(key, 0) for run in runs) for key in ("tokens", "cost", "time")}
 	stale, staleRuns = [], []

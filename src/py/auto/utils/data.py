@@ -71,9 +71,9 @@ def yamlText(value: object) -> str:
 
 def _frontmatter(text: str):
 	"""Locate exact frontmatter boundaries for either Markdown line ending."""
-	if not re.match(r"---\r?\n", text):
+	if not re.match(r"---[ \t]*\r?\n", text):
 		return None
-	match = re.match(r"---\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", text, re.MULTILINE | re.DOTALL)
+	match = re.match(r"---[ \t]*\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", text, re.MULTILINE | re.DOTALL)
 	if not match:
 		raise AutoError("Unclosed YAML frontmatter")
 	return match

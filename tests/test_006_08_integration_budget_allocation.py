@@ -49,6 +49,16 @@ class BudgetAllocationTests(unittest.TestCase):
 		self.assertEqual(effectiveTask(self.ctx, TaskGet(self.ctx, "small")).meta["budget"], {"tokens": 5})
 		self.assertEqual(TaskStart(self.ctx, "small")["budget"]["tokens"], 5)
 
+	def testSucceededTasksReturnTheirUnspentAllocationToRefinements(self):
+		# Seen live: a refinement of a completed plan found its whole budget still reserved.
+		self.planBudget({"tokens": 100})
+		ElaborationApply(self.ctx, self.plan, {"task": "root", "tasks": [self.task("done")]}, "first")
+		self.assertEqual(TaskGet(self.ctx, "done").meta["budget"], {"tokens": 100})
+		refinement = {"task": "root", "tasks": [self.task("more", budget={"tokens": 50})]}
+		self.assertNotEqual(ElaborationValidate(self.ctx, self.plan, refinement), [])
+		self.assertEqual(TaskStart(self.ctx, "done")["status"], "Succeeded")
+		self.assertEqual(ElaborationValidate(self.ctx, self.plan, refinement), [])
+
 	def testExplicitAndProfileDimensionsPrecedeDerivedDimensions(self):
 		self.planBudget({"tokens": 100, "cost": 2, "time": "10s"})
 		profile = self.profile("mixed", {"tokens": 5, "cost": .25, "time": "2s"})
@@ -139,7 +149,8 @@ class BudgetAllocationTests(unittest.TestCase):
 		self.assertEqual(ElaborationValidate(self.ctx, self.plan, value), [])
 		ElaborationApply(self.ctx, self.plan, value, "retained-profile-capacity")
 		self.assertEqual(TaskGet(self.ctx, "selected").meta["budget"]["tokens"], 4)
-		self.assertEqual(TaskGet(self.ctx, "other").meta["budget"]["tokens"], 11)
+		# The succeeded retained task counts by its usage (3), not its unspent allocation too
+		self.assertEqual(TaskGet(self.ctx, "other").meta["budget"]["tokens"], 13)
 
 	def testParentUsesItsResolvedProfileAndExplicitDimensions(self):
 		self.planBudget({"tokens": 100, "cost": 2, "time": "10s"})

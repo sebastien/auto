@@ -8,5 +8,9 @@ setup :
 test :
 	uv run --extra mcp --extra interactive python -m unittest discover -s tests -p "test_*.py"
 
+# End-to-end scenarios against a real engine: they cost tokens (tests/gold/README.md)
+gold :
+	tests/gold/run.sh
+
 check : test
 	uv run python -m compileall -q src/py

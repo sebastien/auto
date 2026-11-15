@@ -67,6 +67,7 @@ class Event(StrEnum):
 	TASK_CHECKED = "TaskChecked"
 	TASK_EVALUATED = "TaskEvaluated"
 	TASK_EVALUATION_FAILED = "TaskEvaluationFailed"
+	TASK_REPAIRING = "TaskRepairing"
 	ASSESSMENT_USAGE = "AssessmentUsage"
 	GAP_RAISED = "GapRaised"
 	GAP_RESOLVED = "GapResolved"

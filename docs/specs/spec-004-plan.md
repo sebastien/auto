@@ -317,6 +317,11 @@ its journal:
 - *Gaps*: a question raised during a run (`ScriptQuestion`) is raised as
   a gap; the run is `Waiting` until a decision is made, and the answer is
   passed back to the run.
+- *Answers*: a run of a task is given the question, answer and rationale of
+  every resolved gap that lists the task or one of its ancestors in
+  `needed_by`, except approvals, ahead of its process. An Elaborator run is
+  given those of the task it elaborates, so a decomposition neither asks again
+  nor loses an answer. Tasks do not reference gaps in their inputs.
 - *Revisions*: every change to the plan, its tasks or its gaps appends
   a revision to the journal. The journal order is authoritative; the current
   revision is the last entry.

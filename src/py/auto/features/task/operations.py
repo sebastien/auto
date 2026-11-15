@@ -17,7 +17,7 @@ from auto.features.plan.gaps import GapDecide, GapList, GapRaise, applyPending, 
 from auto.features.plan.gates import taskGapState
 from auto.features.plan.events import recordPlanStatus, recordRun
 from auto.features.plan.control import planHold
-from auto.features.plan.model import GapKind, RevisionOp, createPlan
+from auto.features.plan.model import GapKind, GapState, RevisionOp, createPlan
 from auto.features.plan.operations import PlanRevise, dependencyGraph, tasksAt
 from auto.features.plan.policy import EFFECT, PolicyResolve, runtimeRule, shellPermitted, taskPolicyBlocked
 from auto.features.plan.references import latestRun, readReceipt, runDirectories
@@ -347,7 +347,11 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 		if "resolvedInputs" not in state:
 			state["resolvedInputs"] = Renderer(context, task.script()).bindings()["inputs"]
 		context.resolvedInputs = state["resolvedInputs"]
-		for phase in ("Pre", "Process", "Post", "Apply", "Evaluation"):
+		phases = ("Pre", "Process", "Post", "Apply", "Evaluation")
+		index = 0
+		while index < len(phases):
+			phase = phases[index]
+			index += 1
 			if context.cancelled():
 				raise AutoError("Run cancelled", FailureKind.CANCELLED)
 			if phase in state["completed"]:
@@ -377,6 +381,7 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 							value = conform(value, contract)
 						else:
 							request = prepare(context, task.script())
+							request["prompt"] = decisionsPrompt(state.get("decisions")) + request["prompt"] + repairPrompt(state.get("repair"))
 					elif phase == "Apply":
 						value = applyEffects(context, task)
 					else:
@@ -405,6 +410,15 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 			else:
 				run[phase.lower()] = value
 				emit(path, {"type": Event.TASK_CHECKED, "check": phase.lower(), "verdict": value})
+				if not value["pass"] and phase == "Post" and state.get("repairs", 0) < repairLimit(task):
+					# A corrective attempt: run the process again with the rejected output and its issues.
+					state["repairs"] = state.get("repairs", 0) + 1
+					state["repair"] = {"output": outputText(context.variables.get("result")), "reason": value["reason"]}
+					state["completed"] = [item for item in state["completed"] if item not in {"Process", "Post"}]
+					emit(path, {"type": Event.TASK_REPAIRING, "attempt": state["repairs"], "reason": value["reason"]})
+					saveRun(context, path, run, state)
+					index = phases.index("Process")
+					continue
 				if not value["pass"]:
 					run["status"] = RunStatus.SKIPPED if phase == "Pre" else RunStatus.FAILED
 					run["failure"] = {"kind": "input" if phase == "Pre" else "system" if phase == "Apply" else "output", "reason": value["reason"]}
@@ -717,6 +731,58 @@ def TaskReady(context, task) -> bool:
 	return all(latestRun(path, dependency, True) for dependency in dependencies)
 
 
+def lineage(tasks: dict, task: str) -> list:
+	"""Return a task and its ancestors, up to `root`."""
+	result = []
+	while task and task not in result:
+		result.append(task)
+		task = None if task == "root" else tasks[task].meta.get("parent", "root") if task in tasks else "root"
+	return result
+
+
+def gapDecisions(context, tasks: list, gaps: list) -> list:
+	"""Return the answers of the resolved gaps needed by any of `tasks`, approvals excepted."""
+	result = []
+	for gap in gaps:
+		if gap["status"] == GapState.RESOLVED and gap.get("decision") and set(tasks) & set(gap["needed_by"]) and gap["kind"] != GapKind.APPROVAL:
+			decision = Knowledge(context).get(f"{planRef(context.plan)}/decision/{gap['decision']}")
+			result.append({"gap": gap["id"], "decision": gap["decision"], "question": gap.get("question", ""),
+				"answer": decision.get("answer"), "rationale": decision.get("rationale", "")})
+	return result
+
+
+def repairLimit(task) -> int:
+	"""Corrective attempts a task allows after a failed Post (`repair`, default 0)."""
+	value = task.meta.get("repair", 0)
+	if type(value) is not int or value < 0:
+		raise AutoError("repair must be a non-negative integer")
+	return value
+
+
+def repairPrompt(repair: dict | None) -> str:
+	"""Ask for a corrected output, given the rejected one and the issues found."""
+	if not repair:
+		return ""
+	# Plain markers rather than a code fence, which models tend to copy into their reply.
+	return ("\n\n## Correction\n\nYour previous output was rejected by the checks of this task. Reply with"
+		" a complete, corrected output in the same format, addressing every issue below. Reply with the"
+		" output itself: do not wrap it in a code block or repeat the markers below.\n\n### Issues\n\n"
+		+ str(repair["reason"]).strip() + "\n\n### Rejected output\n\n<<<REJECTED\n" + repair["output"] + "\nREJECTED>>>\n")
+
+
+def decisionsPrompt(decisions: list | None) -> str:
+	"""Render the answers of the gaps a task needed, ahead of its process."""
+	if not decisions:
+		return ""
+	text = "## Decisions\n\nThe following questions were answered for this task. Follow these answers.\n"
+	for item in decisions:
+		answer = item["answer"] if isinstance(item["answer"], str) else jsonText(item["answer"]).strip()
+		text += f"\n- Question: {' '.join(str(item['question']).split())}\n  Answer: {answer}\n"
+		if item["rationale"]:
+			text += f"  Rationale: {' '.join(str(item['rationale']).split())}\n"
+	return text + "\n"
+
+
 def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: bool = False) -> dict:
 	"""Run to a terminal or Waiting boundary; each attempt gets a fresh identity."""
 	if inputs is not None:
@@ -763,7 +829,10 @@ def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: b
 			policyBlocked = taskPolicyBlocked(context, task) if not metaTask else {}
 			tasks = tasksAt(plan)
 			graph = dependencyGraph(context, tasks, taskInputs={task.id: runInputs})
-			gapState = taskGapState(context, task.id, tasks, graph.get(task.id, ()), GapList(context, plan), starting=True) if not metaTask else None
+			# Answers reach a task, the decomposition of its ancestors, and Elaborator runs through their target
+			subject = context.variables.get("target") if metaTask else task.id
+			gaps = GapList(context, plan) if subject else []
+			gapState = taskGapState(context, task.id, tasks, graph.get(task.id, ()), gaps, starting=True) if not metaTask else None
 			blocked = not metaTask and (bool(policyBlocked) or any(not latestRun(plan, dependency, True) for dependency in graph[task.id]) or gapState)
 			if blocked:
 				run.update(status=RunStatus.BLOCKED, ended=timestamp())
@@ -785,6 +854,9 @@ def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: b
 				"inputs": merge(runInputs, {"children": children} if children else {}),
 				"params": context.params, "completed": [], "target": context.variables.get("target", "root"),
 				"applyElaboration": context.variables.get("applyElaboration", False)}
+			decisions = gapDecisions(context, lineage(tasks, subject), gaps) if subject else []
+			if decisions:
+				state["decisions"] = decisions
 			# The harness and shell checks need the same Auto entry point and plan context.
 			state["config"] = merge(state["config"], {"env": {"AUTO_PLAN": str(plan)}})
 			run["status"] = RunStatus.RUNNING

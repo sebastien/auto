@@ -8,7 +8,15 @@ description: >-
 isolated: false
 profile: auto:catalogue/profile/default
 artifact: auto:catalogue/artifact/task-elaboration
+# Corrective attempts when the elaboration fails its checks
+repair: 2
+# Room for the first attempt and its corrections, within the plan budget
+budget:
+  tokens: 300000
+  time: 30m
 inputs:
+  # Id of the elaborated task, supplied by Auto
+  target: root
   goal: ""
   state: ""
   budget: ""
@@ -31,6 +39,10 @@ Breaks the goal of a task into child tasks and gaps. `goal`, `state` and
 You are elaborating a task: breaking its goal down into child tasks that,
 once run, deliver it. Your output is a TaskElaboration, applied to the plan
 after validation.
+
+The elaborated task is `{{ target }}`: set `task: {{ target }}` in the
+frontmatter. Its children are new tasks, with ids not used in the plan (never
+`{{ target }}` itself).
 
 ### Goal
 
@@ -93,9 +105,11 @@ of the task it affects.
 
 {{ policy }}
 
-Declare each task's expected effects. Do not plan around denied effects;
-request a human decision for a grant. Effects requiring confirmation need an
-approval checkpoint pinned to the task definition. Each policy gap must list
+Declare each task's expected effects. An effect listed in `grants` (for the
+plan, or for that task) is already authorised: raise no gap for it, whatever
+its rule. Otherwise, do not plan around denied effects; request a human
+decision for a grant. Effects requiring confirmation need an approval
+checkpoint pinned to the task definition. Each policy gap must list
 its effects in `effects`, name the affected task in `needed_by`, and mention
 each effect and its rule (`confirm` or `deny`) in its question. For an approval,
 include `subjects: ["task:ID/definition"]`; Auto pins the proposed definition.

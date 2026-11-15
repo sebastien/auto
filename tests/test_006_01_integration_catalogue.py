@@ -31,7 +31,8 @@ Produce the result.
 		class Fake:
 			def __init__(self):
 				self.calls = []
-				self.outputs = iter([elaboration, '{"pass":true,"reason":"Grounded"}', '{"score":0.9,"feedback":"Good"}'])
+				# Post is a deterministic shell check: the model elaborates, then evaluates
+				self.outputs = iter([elaboration, '{"score":0.9,"feedback":"Good"}'])
 			def start(self, context, request):
 				self.calls.append(request["prompt"])
 				yield {"type": "ScriptEnded", "status": "Succeeded", "output": next(self.outputs)}
@@ -41,8 +42,9 @@ Produce the result.
 			ctx.environ["PATH"] = str(Path(__file__).resolve().parents[1] / ".venv/bin") + os.pathsep + ctx.environ["PATH"]
 			result = PlanCreate(ctx, "A small goal")
 			self.assertTrue(result["applied"], result)
-			self.assertEqual(len(fake.calls), 3)
+			self.assertEqual(len(fake.calls), 2)
 			self.assertIn("coarse", fake.calls[0].lower())
+			self.assertIn("set `task: root`", fake.calls[0])
 			self.assertEqual(PlanStatus(ctx, result["plan"])["tasks"]["work"], "Ready")
 
 	def testProjectLayerAndCompanions(self):

@@ -80,13 +80,18 @@ def applyPending(context, run) -> dict | None:
 	if run["status"] != RunStatus.SUCCEEDED:
 		return None
 	from auto.features.task.operations import runDirectory
-	if not readJson(runDirectory(context, run) / "state.json", {}).get("applyElaboration"):
+	state = readJson(runDirectory(context, run) / "state.json", {})
+	if not state.get("applyElaboration"):
 		return None
 	if any(row.get("elaborationRun") == run["id"] for row in journal(planPath(context))):
 		return None
 	from auto.features.elaboration.operations import ElaborationApply, ElaborationParse
 	from auto.features.task.operations import RunOutput
-	return ElaborationApply(context, context.plan, ElaborationParse(context, RunOutput(context, run)), run)
+	elaboration = ElaborationParse(context, RunOutput(context, run))
+	# The run elaborated one task: never apply its output to another
+	if elaboration.task != state.get("target", "root"):
+		raise AutoError(f"Elaboration run {run['id']} targets {elaboration.task}, not {state.get('target', 'root')}", "output")
+	return ElaborationApply(context, context.plan, elaboration, run)
 
 
 

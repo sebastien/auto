@@ -15,19 +15,10 @@ A TaskElaboration: frontmatter with the elaboration fields, a `## Rationale`
 section, then one second level section per element (`## task: {id}`,
 `## gap: {name}`, `## remove: {id}`), each starting with a YAML block.
 
-## Post
-
-Check the elaboration against the following, and fail with the list of
-issues found:
-
-- Every input, file and catalogue entry referenced by a task is either a plan
-  input, the output of a task (`task:{id}`), a file listed or found in the
-  context, or an entry of the available framework.
-- Every gap has a `kind` and a question, and its `needed_by` lists at least
-  one task, or `root`.
-- Every task has a `title`, and a `### Process` section unless it uses `from`
-  or `hints: {elaborate: later}`.
-- No task id is `root`, and no id is used twice.
+Its structural rules (resolvable references, valid gaps, titles, a Process
+unless `from` or deferred, new and unique ids) are checked deterministically
+by `auto elaboration validate`, in the Post of the Elaborator
+(`auto:catalogue/check/elaboration-valid`), rather than judged by a model.
 
 ## Evaluation
 

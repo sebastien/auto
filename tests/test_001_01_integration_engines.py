@@ -235,6 +235,39 @@ class EngineTests(unittest.TestCase):
 		self.assertEqual(list(engine.start(context, request))[-1]["status"], "Succeeded")
 		self.assertTrue(any(path.endswith("/permission/per1/reply") and data == {"decision": "once"} for _, path, data in engine.calls))
 
+	def testOpenCodeDenialsCarryFeedbackSoTheTurnContinues(self):
+		class Stub(OpenCode):
+			def __init__(self):
+				self.calls = []
+			def api(self, context, method, path, data=None, config=None):
+				self.calls.append((method, path, data))
+				if path.endswith("/permission"):
+					return {"data": [] if any(call[1].endswith("/reply") for call in self.calls) else [{"id": "per1", "action": "skill", "resources": ["ponytail"]}]}
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					return {"data": [{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		def replies(engine):
+			return [data for _, path, data in engine.calls if path.endswith("/permission/per1/reply")]
+		# Answered within the stream
+		engine = Stub()
+		stream = engine.start(Context(variables={"_detach": True}), {"config": {}, "prompt": "Work", "policy": {}})
+		next(stream)
+		self.assertEqual(next(stream)["effect"], "engine.tool-skill")
+		self.assertEqual([stream.send(False), *stream][-1]["status"], "Succeeded")
+		# Answered when resuming, eg. from another process
+		resumed = Stub()
+		request = {"config": {}, "prompt": "Work", "policy": {}}
+		stream = resumed.start(Context(variables={"_detach": True}), request)
+		next(stream), next(stream)
+		stream.close()
+		request["answer"] = False
+		list(resumed.start(Context(variables={"_detach": True}), request))
+		for reply in (*replies(engine), *replies(resumed)):
+			self.assertEqual(reply["decision"], "reject")
+			self.assertIn("engine.tool-skill", reply["message"])
+
 	def testUnsupportedExecutionSettingsStillFail(self):
 		for config, reason in (
 			({"engine": "pi", "agent": "custom", "temperature": .1}, "named agents"),

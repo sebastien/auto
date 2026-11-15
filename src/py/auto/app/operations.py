@@ -233,7 +233,7 @@ EXPOSURES = [
 		optional=("phases", "reason", "overrideAllowance"), effects=True),
 	Exposure("ConsolidationStatus", "memory.consolidation", ("agent",), "Inspect agent consolidation and due work", mcp=True),
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
-		mcp=True, payload="elaboration", passPlan=True, violations=True, needsPlan=True),
+		optional=("task",), mcp=True, payload="elaboration", passPlan=True, violations=True, needsPlan=True),
 	Exposure("AuditValidate", "audit.operations", ("audit",), "Validate an audit report", mcp=True, payload="audit", violations=True),
 ]
 

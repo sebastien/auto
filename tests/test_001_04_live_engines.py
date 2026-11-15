@@ -161,7 +161,8 @@ print(json.dumps(RunGet(context, sys.argv[2])))
 						text=True, capture_output=True, timeout=100)
 					self.assertEqual(result.returncode, 0, result.stderr)
 					completed = RunGet(context, run)
-					expectedStatus = "Cancelled" if action in {"cancel", "reject"} else "Succeeded"
+					# A denial carries feedback, so the model continues its turn rather than being interrupted.
+					expectedStatus = "Cancelled" if action == "cancel" else "Succeeded"
 					if completed["status"] != expectedStatus:
 						probe = context.derive(limits=Limits({"time": 10}))
 						messages = OpenCode().api(probe, "get", "/api/session/" + session + "/message?order=asc&limit=100")["data"]
@@ -169,8 +170,8 @@ print(json.dumps(RunGet(context, sys.argv[2])))
 							{key: message[key] for key in ("type", "error", "outcome") if key in message} for message in messages]}))
 					self.assertEqual(completed["runtime"]["session"], session)
 					self.assertEqual((root / "pre-count").read_text(), "x")
-					if action in {"answer", "approve"}:
-						expected = {"answer": "AUTO_RESUME_OK", "approve": "AUTO_READ_OK"}[action]
+					if action in {"answer", "approve", "reject"}:
+						expected = {"answer": "AUTO_RESUME_OK", "approve": "AUTO_READ_OK", "reject": "DENIED"}[action]
 						self.assertEqual(RunOutput(context, run).strip(), expected)
 					else:
 						self.assertEqual(completed["failure"]["kind"], "cancelled")

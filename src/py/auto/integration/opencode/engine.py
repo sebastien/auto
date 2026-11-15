@@ -28,6 +28,15 @@ def permissionEffect(action, resources, project, cwd):
 		return "engine.external-" + action
 	return known.get(action, "engine.tool-" + (re.sub(r"[^a-z0-9_-]+", "-", action.lower()).strip("-") or "unknown"))
 
+
+def permissionReply(answer, effect):
+	"""Reply to a permission ask. Denials carry feedback, so the model sees a tool
+	failure and continues its turn rather than having the step interrupted."""
+	if answer is True:
+		return {"decision": "once"}
+	return {"decision": "reject", "message": f"Denied by the plan policy ({effect or 'unknown effect'}): this action"
+		" is not permitted for this task. Continue without it."}
+
 # -----------------------------------------------------------------------------
 #
 # DEFINITIONS
@@ -92,8 +101,8 @@ class OpenCode:
 			base = f"/api/session/{request['session']}"
 			if "answer" in request:
 				if "permission" in request:
-					decision = "once" if request.pop("answer") is True else "reject"
-					self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": decision}, config)
+					self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply",
+						permissionReply(request.pop("answer"), request.pop("effect", None)), config)
 				else:
 					self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
 			seen = request.setdefault("seen", {})
@@ -114,8 +123,10 @@ class OpenCode:
 						action = permission["action"]
 						resources = permission.get("resources", [])
 						effect = permissionEffect(action, resources, context.project, config.get("cwd", context.project))
+						request["effect"] = effect
 						answer = yield {"type": Event.POLICY_REQUEST, "effect": effect, "action": action + ": " + ", ".join(resources)}
-						self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", {"decision": "once" if answer is True else "reject"}, config)
+						request.pop("effect", None)
+						self.api(context, "post", base + f"/permission/{request.pop('permission')}/reply", permissionReply(answer, effect), config)
 				forms = self.api(context, "get", base + "/form", config=config).get("data", [])
 				if forms:
 					form = forms[0]

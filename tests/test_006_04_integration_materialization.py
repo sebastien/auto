@@ -14,7 +14,7 @@ from auto.features.script.model import Script
 from auto.features.script.templates import Renderer
 from auto.features.script.operations import ScriptInputs, prepare
 from auto.features.task.operations import RunCheck, TaskDependencies, TaskExpand, TaskGet, TaskStart, effectiveTask
-from auto.features.plan.operations import PlanRevise
+from auto.features.plan.operations import PlanRevise, PlanStatus
 from auto.features.plan.gaps import PlanRepair
 from auto.features.plan.store import journal
 from auto.runtime.operations import Resolve, Value
@@ -48,6 +48,7 @@ class MaterializationTests(unittest.TestCase):
 		self.assertEqual(task.meta["budget"]["tokens"], 100)
 		self.assertIn("Friendly: {{ data }}", task.sections["Process"])
 		self.assertNotIn("params.detail", task.sections["Process"])
+		self.assertEqual(PlanStatus(self.ctx, self.plan)["taskDetails"]["work"]["from"], str(file))
 		file.write_text("---\ntitle: Changed\n---\n## Process\nChanged template\n")
 		self.assertEqual(TaskStart(self.ctx, "producer")["status"], "Succeeded")
 		self.assertIn("Friendly: done", TaskExpand(self.ctx, "work"))

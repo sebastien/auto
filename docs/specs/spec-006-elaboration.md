@@ -59,7 +59,9 @@ TaskElaboration: the output of an Elaborator run.
 - `gaps`: gap definitions (see Plan), without their generated fields (`id`,
   `status`, `revision`), named locally so tasks and other gaps can refer to
   them within the elaboration
-- `context`: references the elaboration relied on (see Provenance)
+- `context`: references the elaboration relied on (see Provenance); a bare
+  relative path is read as a project `PATH`, and an entry that is not
+  a reference (prose) is ignored
 - `learnings`: references to the learnings applied
 
 Elaborated tasks are task definitions, using the task keys introduced by this
@@ -329,7 +331,9 @@ and apply its TaskElaboration.
   Orchestration.
 - *Budget*: Elaborator runs draw from `elaborator.budget`, itself drawn from
   the plan budget. Elaborated task budgets fit within the remaining plan
-  budget, and within the budget of the elaborated task, if any.
+  budget, and within the budget of the elaborated task, if any. The remaining
+  budget deducts the usage of all runs and the unspent allocations of
+  retained tasks that have not succeeded; a succeeded task reserves nothing.
 - *Grounding*: elaborated tasks only reference plan inputs, task outputs,
   framework files and assets that resolve. What cannot be resolved is raised
   as a gap rather than invented (see Plan elaboration).
@@ -347,7 +351,9 @@ and apply its TaskElaboration.
   the phase, that phase gates are raised, and that no task depends on a task
   of a later phase. Conformance is a Post check of the Elaborator (typically
   a shell check, see Task): a violation fails the run as `output`, with the
-  violations as feedback for a retry.
+  violations as feedback for a retry. The default Elaborator allows `repair`
+  attempts (see Task), so it corrects its output from the violations before
+  failing.
 - *Learnings*: when the Elaborator does not supply `learnings`, Auto supplies
   the plan learnings. Applied learnings are cited in the TaskElaboration and
   recorded in the revision.

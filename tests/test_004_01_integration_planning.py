@@ -275,6 +275,31 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(TaskStart(self.ctx, "unapplied")["status"], "Failed")
 		self.assertFalse((self.root / "never.txt").exists())
 
+	def testRepairRerunsTheProcessWithTheRejectedOutputAndIssues(self):
+		self.add("repaired", post="grep -q good || { echo 'Output must say good'; false; }", repair=1, sections={"Process": "Write it"})
+		self.engine.outputs = iter(["bad", "good"])
+		run = TaskStart(self.ctx, "repaired")
+		self.assertEqual(run["status"], "Succeeded", run)
+		self.assertEqual(RunOutput(self.ctx, run), "good")
+		first, second = self.engine.calls
+		self.assertNotIn("## Correction", first)
+		self.assertIn("## Correction", second)
+		self.assertIn("Output must say good", second)
+		self.assertIn("<<<REJECTED\nbad\nREJECTED>>>", second)
+		self.assertNotIn("```", second)
+		events = [json.loads(line) for line in (self.plan / "runs" / run["id"] / "journal.jsonl").read_text().splitlines()]
+		self.assertEqual([event["attempt"] for event in events if event["type"] == "TaskRepairing"], [1])
+
+	def testRepairAttemptsAreBounded(self):
+		self.add("unrepaired", post="false", sections={"Process": "Write it"})
+		self.add("exhausted", post="false", repair=2, sections={"Process": "Write it"})
+		self.engine.outputs = iter(["one", "two", "three", "four"])
+		self.assertEqual(TaskStart(self.ctx, "unrepaired")["status"], "Failed")
+		self.assertEqual(len(self.engine.calls), 1)
+		run = TaskStart(self.ctx, "exhausted")
+		self.assertEqual((run["status"], run["failure"]["kind"]), ("Failed", "output"))
+		self.assertEqual(len(self.engine.calls), 4)
+
 	def testRunObserverReceivesActivityWithoutChangingJournal(self):
 		self.add("observed", budget={"cost": 1})
 		events = []
@@ -318,6 +343,28 @@ Work
 		elaboration = ElaborationParse(self.ctx, "---task: root\nsummary: S\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n")
 		self.assertEqual((elaboration.task, elaboration.summary, [item["id"] for item in elaboration.tasks]), ("root", "S", ["a"]))
 
+	def testElaborationToleratesAReplyWrappedInOneCodeBlock(self):
+		# Seen live: a model fenced its whole reply, as the template is shown.
+		body = "---\ntask: root\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n"
+		for fence in ("````markdown\n", "```\n"):
+			elaboration = ElaborationParse(self.ctx, fence + body + fence.split("markdown")[0].strip() + "\n")
+			self.assertEqual((elaboration.task, [item["id"] for item in elaboration.tasks]), ("root", ["a"]))
+		# Inner YAML blocks alone are not mistaken for a wrapping block.
+		self.assertEqual(ElaborationParse(self.ctx, body).tasks[0]["title"], "A")
+
+	def testElaborationContextReadsBareRelativePathsAsProjectPaths(self):
+		# Seen live: models list files they read without the `./` of a PATH.
+		(self.root / "tools").mkdir()
+		(self.root / "tools/check.sh").write_text("true\n")
+		# Seen live too: prose notes, which are not references and are dropped.
+		elaboration = ElaborationParse(self.ctx, "---\ntask: root\ncontext:\n  - tools/check.sh\n  - auto:catalogue/task/audit\n  - ./README.md\n"
+			"  - plan goal and state supplied in the prompt\n  - \"confirmed decision: accent `#3a7d44`\"\n"
+			"---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n")
+		self.assertEqual(elaboration.context, ["./tools/check.sh", "auto:catalogue/task/audit", "./README.md"])
+		self.assertEqual(ElaborationParse(self.ctx, "---\ntask: root\ncontext:\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n").context, [])
+		elaboration.context = elaboration.context[:1]
+		self.assertEqual(ElaborationValidate(self.ctx, self.plan, elaboration), [])
+
 	def testElaborationSingleRevisionWithGaps(self):
 		elaboration = {"task": "root", "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}], "gaps": [{"name": "audience", "kind": "decision", "question": "Who?", "needed_by": ["a"]}]}
 		revision = ElaborationApply(self.ctx, self.plan, elaboration, "elaborator-run")
@@ -329,6 +376,53 @@ Work
 		self.assertEqual(PlanReady(self.ctx), ["a"])
 		PlanRepair(self.ctx)
 		self.assertEqual(len(journal(self.plan)), 2)
+
+	def testResolvedGapAnswersReachTheTasksThatNeedThem(self):
+		elaboration = {"task": "root", "tasks": [{"id": "a", "title": "A", "sections": {"Process": "Build it"}},
+			{"id": "b", "title": "B", "sections": {"Process": "Other work"}}],
+			"gaps": [{"name": "colour", "kind": "input", "question": "Which accent\ncolour?", "needed_by": ["a"]}]}
+		ElaborationApply(self.ctx, self.plan, elaboration, "elaborator-run")
+		GapDecide(self.ctx, GapList(self.ctx)[0]["id"], "#3a7d44", "Brand guide")
+		self.engine.outputs = iter(["one", "two"])
+		self.assertEqual(TaskStart(self.ctx, "a")["status"], "Succeeded")
+		self.assertEqual(TaskStart(self.ctx, "b")["status"], "Succeeded")
+		answered, other = self.engine.calls
+		self.assertIn("## Decisions", answered)
+		self.assertIn("- Question: Which accent colour?\n  Answer: #3a7d44\n  Rationale: Brand guide\n", answered)
+		self.assertLess(answered.index("#3a7d44"), answered.index("Build it"))
+		self.assertNotIn("## Decisions", other)
+
+	def testGapAnswersReachTheDecompositionOfTheTaskThatNeededThem(self):
+		self.add("site", "Build it")
+		gap = GapRaise(self.ctx, self.plan, {"kind": "input", "question": "Which colour?", "needed_by": ["site"]})
+		GapDecide(self.ctx, gap, "#3a7d44", "Brand guide")
+		PlanRevise(self.ctx, self.plan, [{"op": "add", "task": {"id": "styles", "title": "Styles", "parent": "site",
+			"sections": {"Process": "Style it"}}}], "Decompose")
+		TaskStart(self.ctx, "styles")
+		self.assertIn("Answer: #3a7d44", self.engine.calls[0])
+
+	def testElaborationValidationChecksTheTargetAndContextEntries(self):
+		self.add("site", "Build it")
+		elaboration = {"task": "other", "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}]}
+		messages = [item["message"] for item in ElaborationValidate(self.ctx, self.plan, elaboration, "site")]
+		self.assertTrue(any("must target site" in message for message in messages), messages)
+		elaboration = {"task": "site", "context": [{"plan": "root"}], "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}]}
+		messages = [item["message"] for item in ElaborationValidate(self.ctx, self.plan, elaboration, "site")]
+		self.assertTrue(any("Invalid context entry" in message for message in messages), messages)
+
+	def testGapAnswersExcludeApprovals(self):
+		self.add("a", "Build it")
+		gap = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Sign off?", "needed_by": ["a"],
+			"subjects": [{"ref": "task:a/definition", "digest": Resolve(self.ctx, "task:a/definition").digest}]})
+		GapDecide(self.ctx, gap, "approve", "Looks good")
+		TaskStart(self.ctx, "a")
+		self.assertNotIn("## Decisions", self.engine.calls[0])
+
+	def testValidationExplainsGapsUsedAsPlanInputs(self):
+		elaboration = {"task": "root", "tasks": [{"id": "a", "title": "A", "inputs": {"colour": "plan:colour"}, "sections": {"Process": "{{ colour }}"}}],
+			"gaps": [{"name": "colour", "kind": "input", "question": "Which colour?", "needed_by": ["a"]}]}
+		messages = [violation["message"] for violation in ElaborationValidate(self.ctx, self.plan, elaboration)]
+		self.assertTrue(any("colour is a gap" in message for message in messages), messages)
 
 	def testRecoverStagedRevision(self):
 		self.store.fail = True

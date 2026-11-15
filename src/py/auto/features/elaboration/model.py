@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from auto.utils.data import AutoError
@@ -43,6 +44,17 @@ class TaskElaboration:
 # -----------------------------------------------------------------------------
 
 
+def contextRef(item):
+	"""Read a bare relative path relied on (eg. `docs/spec.md`) as a project PATH,
+	and prose notes (eg. "goal supplied in the prompt") as no reference at all."""
+	ref = item.get("ref") if isinstance(item, dict) else item
+	if not isinstance(ref, str) or not ref or ref.startswith(("./", "../", "/")) or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:\S*$", ref):
+		return item
+	if re.search(r"\s", ref.strip()):
+		return None
+	return {**item, "ref": "./" + ref} if isinstance(item, dict) else "./" + ref
+
+
 def createElaborationFromDict(value: dict) -> TaskElaboration:
 	"""Create an elaboration from its parsed or serialised fields."""
 	if not value.get("task"):
@@ -50,7 +62,7 @@ def createElaborationFromDict(value: dict) -> TaskElaboration:
 	core = {"task", "summary", "rationale", "methodology", "tasks", "removals", "gaps", "context", "learnings"}
 	return TaskElaboration(task=value["task"], summary=value.get("summary", ""), rationale=value.get("rationale", ""),
 		methodology=value.get("methodology"), tasks=list(value.get("tasks", [])), removals=list(value.get("removals", [])),
-		gaps=list(value.get("gaps", [])), context=list(value.get("context", [])), learnings=list(value.get("learnings", [])),
+		gaps=list(value.get("gaps", [])), context=[ref for ref in map(contextRef, value.get("context") or []) if ref is not None], learnings=list(value.get("learnings", [])),
 		extra={key: item for key, item in value.items() if key not in core})
 
 # EOF

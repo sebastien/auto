@@ -71,6 +71,7 @@ class InterfaceTests(unittest.TestCase):
 			data = json.loads(structured.stdout)
 			self.assertEqual(data["tasks"], {"root": "Blocked", "index": "Ready"})
 			self.assertEqual(data["taskDetails"]["index"]["goal"], "Build the search index")
+			self.assertIsNone(data["taskDetails"]["index"]["from"])
 			self.assertEqual(data["goal"], "Ship the search feature")
 			self.assertEqual(data["path"], str(plan))
 			held = self.cli("plan", "hold", "Pause", "Needs review", "--plan", str(plan), "--format", "json", cwd=root)

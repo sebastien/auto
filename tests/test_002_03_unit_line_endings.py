@@ -13,7 +13,7 @@ class LineEndingTests(unittest.TestCase):
 	setUp = fixtures.ScriptTests.setUp
 
 	def testDocumentReadsEitherDelimiterAndPreservesBodyLineEndings(self):
-		for opening in ("\n", "\r\n"):
+		for opening in ("\n", "\r\n", "  \n", "\t\r\n"):
 			for closing in ("\n", "\r\n"):
 				with self.subTest(opening=opening, closing=closing):
 					body = "First\r\nSecond\nThird\r\n"

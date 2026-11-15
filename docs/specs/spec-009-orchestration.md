@@ -200,7 +200,8 @@ pending (see [Interface](spec-007-interface.md)).
   `RunEnded`, so a human can intervene (eg. hold, refine) before the
   continuation stops.
 - *No retries*: failed runs are not retried automatically; retrying,
-  reworking or refining is a human or interface decision.
+  reworking or refining is a human or interface decision. A task's `repair`
+  attempts (see Task) happen within its run, before it fails.
 
 ## Out of Scope
 

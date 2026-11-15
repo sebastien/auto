@@ -116,6 +116,7 @@ Output evaluation criteria.
 | `pre`, `post` | Command(s) | Shell checks run before those of the `Pre` and `Post` sections |
 | `apply` | Command(s) | Effects applying the output once the postconditions pass |
 | `eval` | Command(s) | Shell evaluations run before those of the `Evaluation` section |
+| `repair` | integer | Corrective attempts after a failed postcondition, within the run (default `0`) |
 | `goal` | string | Intended outcome; defaults to the title and description |
 | `budget.tokens` | number | Token budget per run |
 | `budget.cost` | number | Cost budget per run |
@@ -207,7 +208,10 @@ Events, added to the run journal after the script events:
   2. *Pre*: a failed precondition ends the run as `Skipped`
   3. *Process*: the process is run with `ScriptStart`, its events recorded in
      the journal; `ScriptEnded` gives the status and output
-  4. *Post*: a failed postcondition ends the run as `Failed`
+  4. *Post*: a failed postcondition ends the run as `Failed`, unless the
+     task allows `repair` attempts and has some left: the Process is then
+     run again, given the rejected output and the postcondition's reason,
+     and Post rechecks its new output (`TaskRepairing` event)
   5. *Apply*: a failing `apply` command ends the run as `Failed` (`system`
      failure); applied effects are not run again when a run resumes
   6. *Evaluation*: records a TaskEvaluation, without changing the status

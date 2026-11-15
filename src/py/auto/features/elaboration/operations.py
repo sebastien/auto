@@ -209,7 +209,7 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 	for key, section, commandKey in (("post", "Post", "post"), ("evaluation", "Evaluation", "eval")):
 		if definition.meta.get(commandKey):
 			goal[key] = {"commands": commands(definition.meta[commandKey]), "content": definition.sections.get(section, "")}
-	inputs = {"goal": jsonText(goal), "state": jsonText(state), "budget": jsonText(remaining) if remaining else ""}
+	inputs = {"target": task, "goal": jsonText(goal), "state": jsonText(state), "budget": jsonText(remaining) if remaining else ""}
 	inputs["policy"] = jsonText(PolicyResolve(context, context.plan, task))
 	if not elaborator.meta.get("inputs", {}).get("context"):
 		inputs["context"] = list(planData.get("inputs", {}).values())
@@ -220,6 +220,10 @@ def ElaborationStart(context, plan, task: str, reason: str | None = None) -> dic
 
 def ElaborationParse(context, text: str) -> TaskElaboration:
 	"""Parse the Markdown/YAML interchange format, excluding fenced example headings."""
+	# Models sometimes wrap the whole reply in one code block, as the template is shown.
+	wrapped = re.fullmatch(r"\s*(`{3,})[\w-]*[ \t]*\r?\n(.*?)\r?\n\1[ \t]*\s*", text, re.S)
+	if wrapped:
+		text = wrapped[2]
 	# Models sometimes drop the newline after the opening fence (`---task: root`).
 	text = re.sub(r"\A---(?=[A-Za-z_])", "---\n", text)
 	meta, body = document(text)
@@ -248,12 +252,16 @@ def ElaborationParse(context, text: str) -> TaskElaboration:
 	return elaboration
 
 
-def ElaborationValidate(context, plan, elaboration, *, prepared=None, methodSource=None) -> list:
-	"""Return available violations without writes; apply rechecks resolved metadata."""
+def ElaborationValidate(context, plan, elaboration, task: str | None = None, *, prepared=None, methodSource=None) -> list:
+	"""Return available violations without writes; apply rechecks resolved metadata.
+	`task`, when given, is the task the elaboration must target."""
 	context = context.derive(plan=planPath(context, plan), evidence=[])
 	violations = []
 	try:
 		elaboration = asElaboration(context, elaboration)
+		if task is not None and elaboration.task != task:
+			raise AutoError(f"The elaboration must target {task} (frontmatter `task: {task}`), not {elaboration.task};"
+				f" its children are new tasks")
 		deferred = {}
 		tasks, new, _ = prepared if prepared is not None else proposed(context, elaboration, dry=True, deferred=deferred)
 		gaps, staged = policyGaps(context, elaboration, new)
@@ -280,13 +288,23 @@ def ElaborationValidate(context, plan, elaboration, *, prepared=None, methodSour
 					violations.append({"element": "task:" + task.id, "message": f"Effect {effect} ({rule}) requires a {requirement}"})
 		BudgetAllocation(context, tasks, new, elaboration.task).validate()
 		for ref in elaboration.context:
-			Resolve(context, ref["ref"] if isinstance(ref, dict) else ref)
+			target = ref.get("ref") if isinstance(ref, dict) else ref
+			if not isinstance(target, str):
+				raise AutoError(f"Invalid context entry {jsonText(ref).strip()}: context lists PATH references, eg. ./docs/spec.md")
+			Resolve(context, target)
 		if elaboration.methodology:
 			content = methodSource or Resolve(context.derive(allowShell=False, variables=dict(context.variables)), elaboration.methodology)
 			validateMethodology(context, content, tasks, graph, deferred=deferred,
 				overrides={value["id"]: value for value in elaboration.tasks})
 	except (AutoError, ValueError, KeyError, TypeError, LiquidError) as error:
 		violations.append({"element": "elaboration", "message": str(error)})
+	# Models tend to wire gap answers as plan inputs: say how answers reach tasks.
+	names = {gap.get("name") for gap in getattr(elaboration, "gaps", [])}
+	for violation in violations:
+		match = re.fullmatch(r"Unknown plan input: (.+)", violation["message"])
+		if match and match[1] in names:
+			violation["message"] += (f" ({match[1]} is a gap: its answer is given to the tasks in its needed_by"
+				" when they run, so do not reference it in inputs)")
 	return violations
 
 

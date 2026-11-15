@@ -1,7 +1,8 @@
 """Allocate resolved task budgets and recheck current plan capacity."""
 
+from auto.features.plan.references import latestRun
 from auto.features.task.operations import RunList, effectiveTask
-from auto.runtime.model import budgetValue
+from auto.runtime.model import RunStatus, budgetValue
 from auto.utils.data import AutoError
 
 
@@ -37,10 +38,12 @@ class BudgetAllocation:
 				amount = run["usage"].get(key, 0)
 				total[key] = total.get(key, 0) + amount
 				usage[key] = usage.get(key, 0) + amount
+		# Succeeded tasks are done: their unspent allocations return to the plan.
+		pending = [task for task in self.retained if (latestRun(self.context.plan, task.id) or {}).get("status") != RunStatus.SUCCEEDED]
 		result = {}
 		for key in self.dimensions:
 			available = min(self.plan.get(key, float("inf")) - total.get(key, 0), self.parent.get(key, float("inf")))
-			reserved = sum(max(0, self.budgets[task.id].get(key, 0) - spent.get(task.id, {}).get(key, 0)) for task in self.retained)
+			reserved = sum(max(0, self.budgets[task.id].get(key, 0) - spent.get(task.id, {}).get(key, 0)) for task in pending)
 			result[key] = available - reserved
 		return result
 

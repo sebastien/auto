@@ -1,0 +1,709 @@
+#!/usr/bin/env bash
+# Copied unchanged (below this header) from ../kame/tests/lib-testing.sh.
+# Auto-specific overrides live in lib-auto.sh.
+
+# --
+# Primitives for testing
+
+set -euo pipefail
+
+# We'll be changing path on a regular basis, so we keep track of it
+FILENAME="$(basename "$0")"
+ORIGINAL_PATH="$PWD"
+ORIGINAL_TMPDIR="${TMPDIR:-/tmp}"
+BASE_PATH="$(dirname "$(dirname "$(readlink -f "$0")")")"
+
+# A caller CDPATH makes 'cd' echo the directory and pollutes captures.
+unset CDPATH
+
+# Variable: TEST_NAME
+# Keeps track of the current test
+TEST_NAME=""
+
+# Variable: TEST_STEP_NAME
+# Keeps track of the current test step
+TEST_STEP_NAME=""
+
+# Variable: TEST_PATH
+# Keeps track of the current test path
+TEST_PATH=""
+
+# Variable: TEST_RESULTS
+# Append-only result log inside TEST_PATH. It lets assertions that run in
+# subshells (or background jobs) reach test-end, which cannot see their
+# in-memory arrays.
+TEST_RESULTS=""
+
+# Variable: TEST_ERRORS[]
+# Keeps track of the errors for the current test
+declare -a TEST_ERRORS=()
+
+# Variable: TEST_OKS[]
+# Keeps track of the oks for the current test
+declare -a TEST_OKS=()
+
+# Variable: TEST_LOG[]
+# Keeps track of the steps and their status
+declare -a TEST_LOG=()
+
+# Variable: TEST_CLEAN[]
+# Keeps track of the files to clean
+declare -a TEST_CLEAN=()
+
+TEST_CLEAN+=("")
+
+# Variable: TEST_COUNT
+# Counts the number of tests started
+TEST_COUNT=${TEST_COUNT:-0}
+TEST_STEP_COUNT=${TEST_STEP_COUNT:-0}
+
+# Variable: TEST_CURRENT
+# Current number for the test
+TEST_CURRENT=""
+TEST_CURRENT_STEP=""
+
+# Variable(internal): per-step roll-up state
+# In compact/quiet modes individual passing assertions are folded into one
+# line per step. TEST_STEP_PENDING marks a step whose summary is not yet
+# printed; TEST_STEP_REVEALED marks a step whose header was already printed
+# (e.g. to precede a failure).
+TEST_STEP_PENDING=""
+TEST_STEP_REVEALED=0
+
+# Variable(internal): TEST_EXPECT_FAILURE
+# Set when the test is expected to fail
+TEST_EXPECT_FAILURE=""
+
+# Variable: KAME_TEST_VERBOSITY
+# Human output level, inherited by nested test processes:
+#   quiet/compact  direct suites: per-step tallies plus failures; harness:
+#                  one summary per file and captured logs on failure (default compact)
+#   verbose  one line per assertion (historical behavior)
+KAME_TEST_VERBOSITY="${KAME_TEST_VERBOSITY:-compact}"
+
+# Variable(internal): TEST_VERBOSE
+# 1 when KAME_TEST_VERBOSITY is verbose.
+TEST_VERBOSE=0
+
+# Function: test_set_verbosity LEVEL
+# Validates and applies a human output level, updating TEST_VERBOSE.
+function test_set_verbosity {
+	case "${1:-}" in
+	quiet | compact | verbose) KAME_TEST_VERBOSITY="$1" ;;
+	*) return 1 ;;
+	esac
+	export KAME_TEST_VERBOSITY
+	TEST_VERBOSE=0
+	[ "$KAME_TEST_VERBOSITY" = "verbose" ] && TEST_VERBOSE=1
+	return 0
+}
+test_set_verbosity "$KAME_TEST_VERBOSITY" || test_set_verbosity compact
+
+# Persistent per-test durations used by harness.sh for a rough ETA.
+TEST_RUNTIME_CACHE_DIR="${TEST_RUNTIME_CACHE_DIR:-$BASE_PATH/build/tests/runtime-cache}"
+
+function test_runtime_cache_record {
+	local file
+	[[ "${2:-}" =~ ^[0-9]+$ ]] || return 1
+	mkdir -p "$TEST_RUNTIME_CACHE_DIR" || return 1
+	file="$TEST_RUNTIME_CACHE_DIR/${1##*/}.seconds"
+	printf '%s\n' "$2" >"$file"
+}
+
+function test_runtime_format_seconds {
+	local seconds="$1"
+	if [ "$seconds" -ge 3600 ]; then
+		printf '%dh%02dm' "$((seconds / 3600))" "$(((seconds % 3600) / 60))"
+	elif [ "$seconds" -ge 60 ]; then
+		printf '%dm%02ds' "$((seconds / 60))" "$((seconds % 60))"
+	else
+		printf '%ds' "$seconds"
+	fi
+}
+
+function test_runtime_average {
+	local samples=0 sum=0 sample seconds average=0
+	for sample in "$TEST_RUNTIME_CACHE_DIR"/*.seconds; do
+		[ -f "$sample" ] || continue
+		if IFS= read -r seconds <"$sample" && [[ "$seconds" =~ ^[0-9]+$ ]]; then
+			sum=$((sum + seconds))
+			samples=$((samples + 1))
+		fi
+	done
+	if [ "$samples" -gt 0 ]; then
+		average=$(((sum + samples - 1) / samples))
+		[ "$average" -gt 0 ] || average=1
+	fi
+	printf '%s' "$average"
+}
+
+function test_runtime_eta {
+	local total=$# cached=0 missing=0 estimate=0 sample seconds average file
+	[ "$total" -gt 0 ] || {
+		printf 'done'
+		return
+	}
+	for sample in "$@"; do
+		file="$TEST_RUNTIME_CACHE_DIR/${sample##*/}.seconds"
+		if [ -r "$file" ] && IFS= read -r seconds <"$file" && [[ "$seconds" =~ ^[0-9]+$ ]]; then
+			estimate=$((estimate + (seconds > 0 ? seconds : 1)))
+			cached=$((cached + 1))
+		else
+			missing=$((missing + 1))
+		fi
+	done
+	if [ "$missing" -gt 0 ]; then
+		average=$(test_runtime_average)
+		[ "$average" -gt 0 ] || {
+			printf 'unknown'
+			return
+		}
+		estimate=$((estimate + missing * average))
+	fi
+	printf '~%s (%d/%d cached)' "$(test_runtime_format_seconds "$estimate")" "$cached" "$total"
+}
+
+# --
+# ## Color library
+if [ -z "${NOCOLOR:-}" ] && [ -n "${TERM:-}" ] && tput setaf 1 &>/dev/null; then
+	CYAN="$(tput setaf 33)"
+	BLUE_DK="$(tput setaf 27)"
+	BLUE="$(tput setaf 33)"
+	BLUE_LT="$(tput setaf 117)"
+	GREEN="$(tput setaf 34)"
+	YELLOW="$(tput setaf 220)"
+	GRAY="$(tput setaf 153)"
+	GOLD="$(tput setaf 214)"
+	GOLD_DK="$(tput setaf 208)"
+	PURPLE_DK="$(tput setaf 55)"
+	PURPLE="$(tput setaf 92)"
+	PURPLE_LT="$(tput setaf 163)"
+	RED="$(tput setaf 124)"
+	ORANGE="$(tput setaf 202)"
+	BOLD="$(tput bold)"
+	DIM="$(tput dim)"
+	REVERSE="$(tput rev)"
+	RESET="$(tput sgr0)"
+else
+	CYAN=""
+	BLUE_DK=""
+	BLUE=""
+	BLUE_LT=""
+	GREEN=""
+	YELLOW=""
+	GRAY=""
+	GOLD=""
+	GOLD_DK=""
+	PURPLE_DK=""
+	PURPLE=""
+	PURPLE_LT=""
+	RED=""
+	ORANGE=""
+	BOLD=""
+	DIM=""
+	REVERSE=""
+	RESET=""
+fi
+export CYAN BLUE_DK
+export BLUE
+export BLUE_LT
+export GREEN
+export GRAY
+export YELLOW
+export GOLD
+export GOLD_DK
+export PURPLE_DK
+export PURPLE
+export PURPLE_LT
+export RED
+export ORANGE
+export BOLD
+export REVERSE
+export RESET
+
+# Test data is not public, so we restrict the umask.
+umask 0077
+
+# -----------------------------------------------------------------------------
+#
+# TESTS LIFECYCLE
+#
+# -----------------------------------------------------------------------------
+
+function test-init {
+	test-start "$@"
+	# We ensure the exit is called
+	trap test-end EXIT ERR
+}
+
+# Function(internal): test_step_reveal
+# Compact/quiet modes defer the step header so the pass tally can share its
+# line. A failure or message that must appear under the step reveals it first.
+function test_step_reveal {
+	[ "$TEST_VERBOSE" = 1 ] && return 0
+	[ -n "$TEST_STEP_PENDING" ] || return 0
+	[ "$TEST_STEP_REVEALED" = 1 ] && return 0
+	test_log "${BLUE}--→ ${BOLD}${TEST_STEP_NAME}${RESET}"
+	TEST_STEP_REVEALED=1
+}
+
+# Function(internal): test_step_tally STEP_ID
+# Counts OK/FAIL rows for STEP_ID in the append-only result log and prints
+# "N✓" / "N✓ M×".
+function test_step_tally {
+	local id="$1"
+	local sn=0
+	local en=0
+	if [ -n "${TEST_RESULTS:-}" ] && [ -f "$TEST_RESULTS" ]; then
+		sn=$(awk -F'\t' -v id="$id" '$1 == "OK" && $2 == id' "$TEST_RESULTS" | wc -l)
+		en=$(awk -F'\t' -v id="$id" '$1 == "FAIL" && $2 == id' "$TEST_RESULTS" | wc -l)
+	fi
+	local tally="${GREEN}${sn}✓${RESET}"
+	if [ "$en" -gt 0 ]; then
+		tally="$tally ${RED}${en}×${RESET}"
+	fi
+	printf '%b' "$tally"
+}
+
+# Function(internal): test_step_flush
+# Closes the current step. In verbose mode the header was printed at step
+# start; compact/quiet emit one line per step with a pass tally.
+function test_step_flush {
+	[ -n "$TEST_STEP_PENDING" ] || return 0
+	if [ "$TEST_VERBOSE" = 1 ]; then
+		:
+	elif [ "$TEST_STEP_REVEALED" = 1 ]; then
+		test_log "${DIM}   ↳ $(test_step_tally "$(test_step_id)")${RESET}"
+	else
+		test_log "${BLUE}--→ ${BOLD}${TEST_STEP_NAME}${RESET} ${DIM}…${RESET} $(test_step_tally "$(test_step_id)")"
+	fi
+	TEST_STEP_PENDING=""
+	TEST_STEP_REVEALED=0
+}
+
+# --
+# Starts the test, running the test in a new temporary
+# directory set to `TEST_PATH`
+#
+# ```
+# test-start "My test"
+# ```
+function test-start {
+	if [ -n "$TEST_PATH" ]; then
+		test-end
+	fi
+	((TEST_COUNT += 1))
+	TEST_CURRENT=$TEST_COUNT
+	TEST_CURRENT_STEP=""
+	TEST_STEP_PENDING=""
+	TEST_STEP_REVEALED=0
+	mkdir -p "$ORIGINAL_PATH/build/tests"
+	TEST_PATH="$(realpath "$(mktemp -d -p "$ORIGINAL_PATH/build/tests" -t tmp.testing.XXX)")"
+	TMPDIR="$TEST_PATH"
+	export TMPDIR
+	TEST_NAME="${1:-$TEST_NAME}"
+	TEST_NAME="${TEST_NAME:-$FILENAME}"
+	if [ "$TEST_VERBOSE" = 1 ]; then
+		test_log "${BLUE}>>> ${YELLOW}${BOLD}${TEST_NAME} ${RESET}${BLUE}${DIM}in '${TEST_PATH}'${RESET}"
+	else
+		test_log "${BLUE}>>> ${YELLOW}${BOLD}${TEST_NAME}${RESET}"
+	fi
+	if [ -z "$TEST_PATH" ] || [ ! -d "$TEST_PATH" ]; then
+		test_log_error "Path empty or does not exists: '$TEST_PATH'"
+		test_cleanup
+		return 1
+	fi
+	TEST_RESULTS="$TEST_PATH/.test-results"
+	: >"$TEST_RESULTS"
+	cd "$TEST_PATH"
+	export TEST_COUNT
+}
+
+# Function: test-end
+# Ends the current test (see `TEST_PATH`) and outputs a report
+function test-end {
+	local res=0
+	test_step_flush
+	TEST_CURRENT_STEP=""
+	local sn=0
+	local en=0
+	local tn=0
+	# Prefer the append-only result log so assertions that ran in subshells
+	# or background jobs still reach the report.
+	if [ -n "${TEST_RESULTS:-}" ] && [ -f "$TEST_RESULTS" ]; then
+		sn=$(grep -c '^OK' "$TEST_RESULTS" || true)
+		en=$(grep -c '^FAIL' "$TEST_RESULTS" || true)
+		tn=$((sn + en))
+		if [ "$tn" -gt 0 ]; then
+			TEST_LOG=()
+			while IFS=$'\t' read -r kind _rest; do
+				if [ "$kind" = "OK" ]; then
+					TEST_LOG+=("${GREEN}✓")
+				else
+					TEST_LOG+=("${RED}×")
+				fi
+			done <"$TEST_RESULTS"
+		fi
+	else
+		sn=${#TEST_OKS[@]}
+		en=${#TEST_ERRORS[@]}
+		tn=$((sn + en))
+	fi
+
+	if [ -n "$TEST_CURRENT" ] && [ $tn -gt 0 ]; then
+		COLOR="${BLUE}"
+		if [ "$en" -gt 0 ]; then
+			if [ "$sn" -eq 0 ]; then
+				COLOR="$RED"
+			else
+				COLOR="$ORANGE"
+			fi
+		fi
+		if [ "$TEST_VERBOSE" = 1 ]; then
+			test_log "${COLOR}LOG   (${BOLD}$tn${RESET}${COLOR}=${GREEN}$sn${COLOR}+${RED}$en${COLOR}) ${TEST_LOG[*]}${RESET}"
+		else
+			test_log "${COLOR}LOG   ${BOLD}$tn${RESET}${COLOR} = ${GREEN}$sn✓${COLOR} + ${RED}$en×${RESET}"
+		fi
+		# Detail of errors
+		if [ "$en" != 0 ]; then
+			if [ -n "${TEST_RESULTS:-}" ] && [ -f "$TEST_RESULTS" ]; then
+				while IFS=$'\t' read -r kind id step message; do
+					if [ "$kind" = "FAIL" ]; then
+						test_log "${RED}FAIL  ${BLUE}${BOLD}[$id] ×←- $step $message"
+					fi
+				done <"$TEST_RESULTS"
+			else
+				for err in "${TEST_ERRORS[@]}"; do test_log "${RED}FAIL  ${BLUE}${BOLD}$err"; done
+			fi
+		fi
+		# Test result
+		if [ "$tn" == 0 ]; then
+			# Empty test
+			test_log "${GREEN}${BOLD}EPASS 100% (0/0)${RESET}"
+			res=0
+		elif [ "$en" -eq 0 ]; then
+			# 100% sucesss
+			test_log "${GREEN}${BOLD}EOK${RESET}${GREEN}  $((100 * sn / tn))% ($sn/$tn) succeeded${RESET}"
+			res=0
+		elif [ "$sn" == 0 ]; then
+			# 100% failed
+			test_log "${RED}${BOLD}EFAIL${RESET}${RED} $((100 * en / tn))% ($en/$tn) failed${RESET}"
+			res=2
+		else
+			# Partial fail
+			test_log "${RED}${BOLD}EFAIL${RESET}${RED} $((100 * en / tn))% ($en/$tn) failed${RESET}"
+			res=1
+		fi
+		if [ "$res" == 0 ]; then
+			test_log "${GREEN}<<< ${BOLD}${DIM}${TEST_NAME}"
+		else
+			test_log "${RED}<<< ${BOLD}${DIM}${TEST_NAME}"
+		fi
+	fi
+	# We always do a cleanup
+	test_cleanup
+	# And restore
+	unset 'TEST_ERRORS[@]'
+	unset 'TEST_LOG[@]'
+	TEST_RESULTS=""
+	TEST_CURRENT=""
+	TEST_NAME=""
+	TEST_PATH=""
+	TMPDIR="$ORIGINAL_TMPDIR"
+	export TMPDIR
+	return $res
+}
+
+# Function(internal): test_cleanup
+# Peforms a cleanup
+function test_cleanup {
+	if [ -e "$TEST_PATH" ]; then
+		rm -rf "$TEST_PATH"
+	fi
+	for path in "${TEST_CLEAN[@]}"; do
+		if [ -z "$path" ]; then
+			path=
+		elif [ -d "$path" ]; then
+			rm -rf "$path"
+		elif [ -e "$path" ]; then
+			unlink "$path"
+		fi
+	done
+	# We've cleaned everything
+	unset 'TEST_CLEAN[@]'
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST STRUCTURE
+#
+# -----------------------------------------------------------------------------
+
+function test-step {
+	test_step_flush
+	((TEST_STEP_COUNT += 1))
+	TEST_CURRENT_STEP=$TEST_STEP_COUNT
+	TEST_STEP_NAME="$*"
+	TEST_STEP_PENDING=1
+	TEST_STEP_REVEALED=0
+	if [ "$TEST_VERBOSE" = 1 ]; then
+		test_log "${BLUE}--→ ${BOLD}$*${RESET}"
+	fi
+	# FIXME: Not sure about that
+	# if [ "$TEST_CURRENT" != "$TEST_COUNT" ]; then
+	# 	if [ "$TEST_CURRENT_ERRORS" != "${#TEST_ERRORS[*]}" ]; then
+	# 		local errcount=${#TEST_ERRORS[*]}
+	# 		test_log_error "FAIL $((errcount - TEST_CURRENT_ERRORS)) error(s)"
+	# 	fi
+	# fi
+	# TEST_CURRENT_ERRORS="${#TEST_ERRORS[*]}"
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST ACTIONS
+#
+# -----------------------------------------------------------------------------
+
+# --
+# Function: test-run PREFIX COMMAND…
+# Runs the given command as a test
+function test-run {
+	local exit_code
+	local prefix="$1"
+	shift
+	local display="$*"
+	if [ "$#" -eq 1 ]; then
+		display="$(test-repo-path "$1")"
+	fi
+	TEST_CURRENT_STEP=$TEST_STEP_COUNT
+	TEST_STEP_NAME="$display"
+	((TEST_STEP_COUNT += 1))
+	test_log "${BLUE}=== ${YELLOW}${BOLD}$display ${RESET}${BLUE}${DIM}in '${ORIGINAL_PATH}'${RESET}"
+	env -C "$ORIGINAL_PATH" bash "$@" 2> >(sed "s/^/${RESET}${prefix} . ${GRAY}/" >&2) > >(sed "s/^/${RESET}${prefix} ! ${ORANGE}/")
+	return $?
+}
+
+function test_log_run {
+	local prefix
+	prefix="$(test_prefix)$1"
+	shift
+	"$@" 2> >(sed "s/^/${RED}${prefix} /" >&2) > >(sed "s/^/${BLUE}${prefix} /")
+	return $?
+}
+
+function test-ok {
+	if [ "$TEST_VERBOSE" = 1 ] && [ -n "$*" ]; then
+		test_log_success "$*"
+	fi
+	TEST_LOG+=("${GREEN}✓")
+	TEST_OKS+=("$(test_step_id)")
+	if [ -n "${TEST_RESULTS:-}" ]; then
+		printf 'OK\t%s\t%s\n' "$(test_step_id)" "$(test_fmt_result "$*")" >>"$TEST_RESULTS" 2>/dev/null || true
+	fi
+}
+
+function test-fail {
+	test_step_reveal
+	test_log_error "FAIL $*"
+	TEST_LOG+=("${RED}×")
+	TEST_ERRORS+=("[$(test_step_id)] ×←- ${TEST_STEP_NAME} $*")
+	if [ -n "${TEST_RESULTS:-}" ]; then
+		printf 'FAIL\t%s\t%s\t%s\n' "$(test_step_id)" "$(test_fmt_result "$TEST_STEP_NAME")" "$(test_fmt_result "$*")" >>"$TEST_RESULTS" 2>/dev/null || true
+	fi
+}
+
+# Function(internal): test_fmt_result TEXT
+# Flattens a result message for the tab-separated result log.
+function test_fmt_result {
+	printf '%s' "$*" | tr '\n\t' '  '
+}
+
+# Function: test-fatal
+# Fatal error, aborts everything
+function test-fatal {
+	test-fail "Fatal failure $*"
+	test-end || true
+	exit 1
+}
+
+# Function: test-abort
+# Aborts the entire test, triggering a test end
+function test-abort {
+	test-fail "ABRT $*"
+	test-end || true
+	exit 1
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST PREDICATES
+#
+# -----------------------------------------------------------------------------
+
+function test-expect {
+	if [ "$1" != "$2" ]; then
+		test-fail "Expected output differ" "${3:-}"
+		test-diff "$1" "$2"
+	else
+		test-ok "${3:-}"
+	fi
+}
+
+function test-relpath {
+	realpath --relative-to="$PWD" "$1"
+}
+
+# Function: test-repo-path PATH
+# Renders a path relative to the directory from which the test suite started.
+function test-repo-path {
+	local path="$1"
+	if [[ "$path" != /* ]]; then
+		path="$ORIGINAL_PATH/$path"
+	fi
+	realpath --relative-to="$ORIGINAL_PATH" "$path"
+}
+
+function test-contains { # PATH STRING…
+	local path="$1"
+	shift
+	if [ ! -e "$path" ]; then
+		test-fail "Path $(test-relpath "$path") does not exist"
+		return 1
+	else
+		for expr in "$@"; do
+			if ! grep -q "$expr" "$path"; then
+				test-fail "Path $(test-relpath "$path") does not contain: $expr"
+				return 1
+			fi
+		done
+		return 0
+	fi
+}
+
+function test-empty {
+	local value="$1"
+	local failure="${2:-}"
+	if [ -s "$value" ]; then
+		test-fail "$failure"
+	else
+		test-ok
+	fi
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST OUTPUT
+#
+# -----------------------------------------------------------------------------
+
+function test-diff {
+	if [ "$1" != "$2" ]; then
+		local a
+		a=$(mktemp -p "$TEST_PATH" var.XXX)
+		local b
+		b=$(mktemp -p "$TEST_PATH" var.XXX)
+		echo "$1" >"$a"
+		echo "$2" >"$b"
+		test_log "${ORANGE}>>> Retrieved/Expected"
+		test_log "${ORANGE}A:[${RESET}$1${ORANGE}] $(sha256sum "$a" | cut -d' ' -f1)"
+		test_log "${ORANGE}B:[${RESET}$2${ORANGE}] $(sha256sum "$b" | cut -d' ' -f1)"
+		test_log_run "${ORANGE}>>>" diff -u "$a" "$b"
+		test_log "<<<${RESET}"
+		unlink "$a"
+		unlink "$b"
+	fi
+}
+
+# Function(internal): test_fmt_line STR MAXLEN
+function test_fmt_line {
+	local str="$1"
+	str=$(echo "$str" | tr '\n' '\\n')
+	local max_len="${2:-80}"
+	if [ ${#str} -gt "$max_len" ]; then
+		echo "${str:0:$max_len}…"
+	else
+		echo "$str"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST ATTRIBUTES
+#
+# -----------------------------------------------------------------------------
+
+function test_id {
+	printf "%03d" "$TEST_CURRENT"
+}
+
+function test_step_id {
+	printf "%03d.%03d" "${TEST_CURRENT:-0}" "${TEST_CURRENT_STEP:-0}"
+}
+
+function test_prefix {
+	# Compact/quiet print the test identity once in the banner; per-line
+	# prefixes are verbose-only.
+	if [ "$TEST_VERBOSE" != 1 ]; then
+		return 0
+	fi
+	local prefix
+	if [ -z "${TEST_CURRENT}" ]; then
+		prefix="-"
+	elif [ -z "${TEST_CURRENT_STEP}" ]; then
+		prefix=$(test_id)
+	else
+		prefix=$(test_step_id)
+	fi
+	echo -n "${BLUE}${DIM}[${TEST_NAME:-$FILENAME}:${BOLD}${RESET}${BLUE}$prefix${RESET}${DIM}${BLUE}] ${RESET}"
+
+}
+
+# -----------------------------------------------------------------------------
+#
+# TEST LOGGING
+#
+# -----------------------------------------------------------------------------
+
+function test_log {
+	echo "${RESET}$(test_prefix)$*${RESET}" >&2
+}
+
+function test_log_separator {
+	test_log "${DIM}―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――"
+}
+
+function test_log_message {
+	[ "$TEST_VERBOSE" = 1 ] || return 0
+	test_log "${BLUE}... ${DIM}$*"
+}
+
+function test_log_success {
+	test_log "${GREEN} ✓  ${RESET}${DIM}$*"
+}
+
+function test_log_error {
+	test_log "${RED}!!! $*"
+}
+
+function test_signal_err {
+	local exit_code=$?
+	test_log "${RED}-!- Unmanaged error [$exit_code] $*"
+}
+
+function test_signal_exit {
+	test-end
+}
+
+trap test_signal_err ERR
+function test_signal_cancel {
+	trap - EXIT ERR INT TERM
+	test_cleanup
+	exit "$1"
+}
+
+trap test_signal_exit EXIT
+trap 'test_signal_cancel 130' INT
+trap 'test_signal_cancel 143' TERM
+
+# EOF
