@@ -7,6 +7,7 @@ from pathlib import Path
 from auto.runtime.model import Content
 from auto.runtime.operations import Resolve, Value, isReference
 from auto.utils.data import AutoError, digest
+from auto.utils.layout import taskRef
 
 
 class ScriptSources:
@@ -30,6 +31,8 @@ class ScriptSources:
 		"""Normalize source origins and numeric selectors without reading the filesystem."""
 		ref = ref.strip('"')
 		target, marker, selector = ref.partition("#")
+		# A plan task may be named with or without its prefix.
+		target = taskRef(target)
 		lines = re.fullmatch(r"L(\d+)-(\d+)", selector)
 		if lines:
 			selector = f"L{int(lines[1])}-{int(lines[2])}"

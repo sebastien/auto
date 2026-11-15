@@ -9,6 +9,7 @@ from auto.features.plan.store import journal
 from auto.features.task.operations import TaskExpand, TaskGet, TaskStart, TaskValidate, effectiveTask
 from auto.utils.data import AutoError, digest, documentText
 import test_006_04_integration_materialization as fixtures
+from support import rootFile
 
 
 class DeferredDefaultsTests(unittest.TestCase):
@@ -54,7 +55,7 @@ class DeferredDefaultsTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Cannot resolve"):
 				ElaborationApply(self.ctx, self.plan, value, "needed-output-default")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testIndependentChecksRemainGroundedDespiteUnknownOutputMapping(self):
@@ -126,7 +127,7 @@ class DeferredDefaultsTests(unittest.TestCase):
 				ElaborationApply(self.ctx, self.plan, value, "used-budget-default")
 			self.assertEqual(failure.exception.kind, "output")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testDeferredRuntimeFieldsCanReplaceProfileDefaultsOfADifferentType(self):
@@ -195,7 +196,7 @@ class DeferredDefaultsTests(unittest.TestCase):
 		self.assertIn("Project outline", TaskExpand(self.ctx, "work"))
 
 	def testResolvedWholeBudgetMustFitBesideKnownSiblingAllocations(self):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 20}}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 20}}, "# Demo"))
 		self.profile({"budget": {"tokens": "invalid", "cost": 2}})
 		file = self.template({"title": "Whole allocation", "profile": "./profile.md", "budget": "{{ params.selection | default: params.allocation }}",
 			"params": {"selection": "!printf ''", "allocation": {"tokens": 12}}}, "## Process\nWork\n")
@@ -211,6 +212,6 @@ class DeferredDefaultsTests(unittest.TestCase):
 					else:
 						with self.assertRaisesRegex(AutoError, "budgets exceed remaining budget"):
 							ElaborationApply(self.ctx, self.plan, value, "whole-budget-exceeds")
-						self.assertFalse((self.plan / "tasks/work.md").exists())
+						self.assertFalse((self.plan / "tsk/work.md").exists())
 						self.assertEqual(journal(self.plan), [])
 					self.assertEqual(shell.call_count, 1)

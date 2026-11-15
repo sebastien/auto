@@ -18,7 +18,8 @@ from auto.features.plan.store import journal
 from auto.features.task.operations import TaskStart, RunGet, RunOutput, TaskUpdate, RunAnswer, RunCheck, RunEvaluate
 from auto.runtime.model import Content, Context
 from auto.runtime.operations import Resolve
-from auto.utils.data import AutoError, digest, documentText, jsonText
+from auto.utils.data import AutoError, digest, documentText, jsonText, yamlLoad
+from support import rootFile
 
 
 class MemoryKnowledge:
@@ -64,9 +65,9 @@ class PlanningTests(unittest.TestCase):
 		self.temp = tempfile.TemporaryDirectory()
 		self.addCleanup(self.temp.cleanup)
 		self.root = Path(self.temp.name)
-		self.plan = self.root / ".auto/plans/demo"
+		self.plan = self.root / ".auto/demo"
 		self.plan.mkdir(parents=True)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo"}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo"}, "# Demo"))
 		self.engine = Fake()
 		self.store = MemoryKnowledge()
 		self.ctx = Context(project=self.root, plan=self.plan, engines={"fake": self.engine}, config={"engine": "fake"}, knowledge=self.store)
@@ -83,12 +84,12 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(validateAgents(self.ctx, ["auto:agent/ux"]), ["auto:agent/ux"])
 		PlanRevise(self.ctx, self.plan, [{"op": "agents", "agents": ["auto:agent/ux"]}], "assign agent")
 		self.assertEqual(PlanStatus(self.ctx)["status"], "Draft")
-		self.assertIn("auto:agent/ux", (self.plan / "plan.md").read_text())
+		self.assertIn("auto:agent/ux", rootFile(self.plan).read_text())
 		with self.assertRaises(AutoError):
 			PlanRevise(self.ctx, self.plan, [{"op": "agents", "agents": ["auto:agent/missing"]}], "invalid agent")
 		with self.assertRaisesRegex(AutoError, "agents revision"):
 			PlanRevise(self.ctx, self.plan, [{"op": "update", "fields": {"agents": ["auto:agent/missing"]}}], "bypass")
-		self.assertIn("auto:agent/ux", (self.plan / "plan.md").read_text())
+		self.assertIn("auto:agent/ux", rootFile(self.plan).read_text())
 
 	def testAgentConfigurationRejectsDuplicateArtifactAndBadAllowance(self):
 		self.ctx.defaults = {"memory": {"agents": {"ux": {"agent": "ux/agent:Designer"}, "other": {"agent": "ux/agent:Designer"}}}}
@@ -122,7 +123,7 @@ class PlanningTests(unittest.TestCase):
 	def testDependencyLifecycleAndAggregate(self):
 		self.add("first")
 		self.add("second", inputs={"upstream": "task:first"})
-		self.assertEqual(PlanReady(self.ctx), ["first"])
+		self.assertEqual(PlanReady(self.ctx), ["tsk-first"])
 		self.assertEqual(TaskStart(self.ctx, "second")["status"], "Blocked")
 		first = TaskStart(self.ctx, "first")
 		self.assertEqual(first["status"], "Succeeded", first)
@@ -131,16 +132,16 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(second["status"], "Succeeded", second)
 		root = TaskStart(self.ctx, "root")
 		self.assertEqual(root["status"], "Succeeded", root)
-		self.assertEqual(RunOutput(self.ctx, root), {"first": "done", "second": "second output"})
+		self.assertEqual(RunOutput(self.ctx, root), {"tsk-first": "done", "tsk-second": "second output"})
 		self.assertEqual(PlanStatus(self.ctx)["status"], "Succeeded")
 		with self.assertRaises(AutoError):
 			TaskUpdate(self.ctx, "first", {"title": "changed"})
 
 	def testPlanListSummarisesAndFilters(self):
 		self.add("first")
-		broken = self.root / ".auto/plans/broken"
+		broken = self.root / ".auto/broken"
 		broken.mkdir()
-		(broken / "plan.md").write_text("---\nid: [unclosed\n---\n")
+		rootFile(broken).write_text("---\nid: [unclosed\n---\n")
 		plans = {plan["id"]: plan for plan in PlanList(self.ctx)}
 		self.assertEqual(set(plans), {"demo", "broken"})
 		self.assertEqual({key: plans["demo"][key] for key in ("status", "goal", "tasks", "done", "gaps", "hold")},
@@ -224,11 +225,11 @@ class PlanningTests(unittest.TestCase):
 	def testCanonicalDependenciesBlockUntilUpstreamSucceeded(self):
 		self.add("first")
 		self.add("second", inputs={"upstream": "auto:demo/task/first"})
-		self.assertEqual(PlanReady(self.ctx), ["first"])
+		self.assertEqual(PlanReady(self.ctx), ["tsk-first"])
 		self.assertEqual(TaskStart(self.ctx, "second")["status"], "Blocked")
 		self.assertEqual(self.engine.calls, [])
 		self.assertEqual(TaskStart(self.ctx, "first")["status"], "Succeeded")
-		self.assertEqual(PlanReady(self.ctx), ["second"])
+		self.assertEqual(PlanReady(self.ctx), ["tsk-second"])
 		self.engine.outputs = iter(["second output"])
 		self.assertEqual(TaskStart(self.ctx, "second")["status"], "Succeeded")
 
@@ -237,7 +238,7 @@ class PlanningTests(unittest.TestCase):
 		fragment = self.root / "fragment.md"
 		fragment.write_text("@auto:demo/task/first#Summary\n")
 		self.add("second", process="@" + str(fragment))
-		self.assertEqual(PlanReady(self.ctx), ["first"])
+		self.assertEqual(PlanReady(self.ctx), ["tsk-first"])
 		before = journal(self.plan)
 		with self.assertRaisesRegex(AutoError, "cycle"):
 			PlanRevise(self.ctx, self.plan, [{"op": "edit", "task": {
@@ -336,19 +337,19 @@ Work
 		with self.assertRaises(AutoError):
 			ElaborationApply(self.ctx, self.plan, elaboration, "test-run")
 		self.assertEqual(journal(self.plan), [])
-		self.assertFalse((self.plan / "tasks").exists())
+		self.assertEqual(sorted((self.plan / "tsk").glob("*.md")), [rootFile(self.plan)])
 
 	def testElaborationToleratesFenceWithoutNewline(self):
 		# Seen live: a model wrote the opening fence and first key on one line.
 		elaboration = ElaborationParse(self.ctx, "---task: root\nsummary: S\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n")
-		self.assertEqual((elaboration.task, elaboration.summary, [item["id"] for item in elaboration.tasks]), ("root", "S", ["a"]))
+		self.assertEqual((elaboration.task, elaboration.summary, [item["id"] for item in elaboration.tasks]), ("root", "S", ["tsk-a"]))
 
 	def testElaborationToleratesAReplyWrappedInOneCodeBlock(self):
 		# Seen live: a model fenced its whole reply, as the template is shown.
 		body = "---\ntask: root\n---\n## task: a\n```yaml\ntitle: A\n```\n### Process\nWork\n"
 		for fence in ("````markdown\n", "```\n"):
 			elaboration = ElaborationParse(self.ctx, fence + body + fence.split("markdown")[0].strip() + "\n")
-			self.assertEqual((elaboration.task, [item["id"] for item in elaboration.tasks]), ("root", ["a"]))
+			self.assertEqual((elaboration.task, [item["id"] for item in elaboration.tasks]), ("root", ["tsk-a"]))
 		# Inner YAML blocks alone are not mistaken for a wrapping block.
 		self.assertEqual(ElaborationParse(self.ctx, body).tasks[0]["title"], "A")
 
@@ -373,7 +374,7 @@ Work
 		self.assertEqual(PlanReady(self.ctx), [])
 		gap = GapList(self.ctx)[0]
 		GapDecide(self.ctx, gap["id"], "developers", "Target audience")
-		self.assertEqual(PlanReady(self.ctx), ["a"])
+		self.assertEqual(PlanReady(self.ctx), ["tsk-a"])
 		PlanRepair(self.ctx)
 		self.assertEqual(len(journal(self.plan)), 2)
 
@@ -405,7 +406,7 @@ Work
 		self.add("site", "Build it")
 		elaboration = {"task": "other", "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}]}
 		messages = [item["message"] for item in ElaborationValidate(self.ctx, self.plan, elaboration, "site")]
-		self.assertTrue(any("must target site" in message for message in messages), messages)
+		self.assertTrue(any("must target tsk-site" in message for message in messages), messages)
 		elaboration = {"task": "site", "context": [{"plan": "root"}], "tasks": [{"id": "a", "title": "A", "sections": {"Process": "work"}}]}
 		messages = [item["message"] for item in ElaborationValidate(self.ctx, self.plan, elaboration, "site")]
 		self.assertTrue(any("Invalid context entry" in message for message in messages), messages)
@@ -539,7 +540,7 @@ Work
 		self.assertNotEqual(firstRoot["id"], secondRoot["id"])
 
 	def testBudgetAllocationAndExhaustion(self):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 100}}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 100}}, "# Demo"))
 		elaboration = {"task": "root", "tasks": [{"id": id, "title": id, "sections": {"Process": "work"}} for id in ("a", "b")]}
 		ElaborationApply(self.ctx, self.plan, elaboration, "elaboration")
 		from auto.features.task.operations import TaskGet
@@ -564,10 +565,13 @@ Work
 		run = ElaborationStart(self.ctx, self.plan, "root")
 		self.assertEqual(run["status"], "Succeeded", run)
 		state = json.loads((self.plan / "runs" / run["id"] / "state.json").read_text())
-		goal = json.loads(state["inputs"]["goal"])
+		# The goal text comes first, then its definition of done as YAML.
+		text, _, details = state["inputs"]["goal"].partition("\n\n")
+		self.assertEqual(text, "demo")
+		goal = yamlLoad(details)
 		self.assertEqual(goal["post"]["commands"], ["touch post-marker"])
 		self.assertEqual(goal["evaluation"]["commands"], ["touch eval-marker"])
-		self.assertIn("rules", json.loads(state["inputs"]["policy"]))
+		self.assertIn("rules", yamlLoad(state["inputs"]["policy"]))
 		self.assertIn("touch post-marker", self.engine.calls[0])
 		self.assertFalse((self.root / "post-marker").exists())
 		self.assertFalse((self.root / "eval-marker").exists())
@@ -576,7 +580,7 @@ Work
 		from auto.features.elaboration.operations import ElaborationStart
 		elaborator = self.root / "elaborator.md"
 		elaborator.write_text(documentText({"title": "Elaborator"}, "## Process\n\nWork"))
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 10},
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo", "budget": {"tokens": 10},
 			"elaborator": {"task": str(elaborator), "budget": {"tokens": 100}}}, "# Demo"))
 		run = ElaborationStart(self.ctx, self.plan, "root")
 		self.assertEqual(run["budget"]["tokens"], 10)
@@ -604,7 +608,7 @@ Work
 		gap = GapList(self.ctx)[0]
 		GapDecide(self.ctx, gap["id"], "reject", "Needs a better draft")
 		self.assertEqual(GapList(self.ctx)[0]["status"], "Resolved")
-		self.assertEqual(PlanStatus(self.ctx)["tasks"]["publish"], "Blocked")
+		self.assertEqual(PlanStatus(self.ctx)["tasks"]["tsk-publish"], "Blocked")
 		self.assertNotIn("publish", PlanReady(self.ctx))
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
 		self.assertEqual(receipt.read_bytes(), original)
@@ -613,7 +617,7 @@ Work
 		second = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Approve after discussion?",
 			"needed_by": ["publish"], "subjects": gap["subjects"]})
 		GapDecide(self.ctx, second, True, "Accepted after discussion")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 
 	def testRetryOutputRequiresFreshGateAndCanReplaceRejectedOutput(self):
 		self.add("draft", hints={"gate": "approval"})
@@ -626,7 +630,7 @@ Work
 		self.assertNotIn("publish", PlanReady(self.ctx))
 		newGap = next(gap for gap in GapList(self.ctx) if gap["status"] == "Open")
 		GapDecide(self.ctx, newGap["id"], "approve", "Improved")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 		self.assertEqual(RunGet(self.ctx, first)["status"], "Succeeded")
 
 	def testRootOutputGateAllowsExplicitRetryAfterRejection(self):
@@ -645,10 +649,10 @@ Work
 		self.add("publish", inputs={"draft": "task:draft"})
 		run = TaskStart(self.ctx, "draft")
 		GapDecide(self.ctx, GapList(self.ctx)[0]["id"], True, "Accepted")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 		(self.plan / "runs" / run["id"] / run["outputFile"]).write_text("Changed after review")
 		self.assertNotIn("publish", PlanReady(self.ctx))
-		self.assertEqual(PlanStatus(self.ctx)["tasks"]["publish"], "Blocked")
+		self.assertEqual(PlanStatus(self.ctx)["tasks"]["tsk-publish"], "Blocked")
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
 
 	def testDismissalExplicitlyWaivesRejectedOutputGate(self):
@@ -664,7 +668,7 @@ Work
 		GapDismiss(self.ctx, gap, "Human explicitly waives the review requirement")
 		PlanRepair(self.ctx)
 		self.assertEqual(GapList(self.ctx)[0]["status"], "Dismissed")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 
 	def testNewDependentsAndMissingGateCannotBypassReview(self):
 		self.add("draft", hints={"gate": "approval"})
@@ -674,7 +678,7 @@ Work
 		self.assertNotIn("publish", gap["needed_by"])
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
 		GapDecide(self.ctx, gap["id"], True, "Accepted")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 		self.store.records.pop(gap["identity"])
 		self.assertNotIn("publish", PlanReady(self.ctx))
 
@@ -724,7 +728,7 @@ Work
 		self.assertEqual([op["op"] for op in journal(self.plan)[-1]["operations"]], ["resolve", "grant"])
 		self.assertEqual(journal(self.plan)[-1]["author"], "human")
 		self.assertEqual(journal(self.plan)[-1]["operations"][-1]["source"], decision["identity"])
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Succeeded")
 
 	def testChangedDefinitionInvalidatesCheckpoint(self):
@@ -733,7 +737,7 @@ Work
 		ref = "auto:demo/task/publish/definition"
 		gap = GapRaise(self.ctx, self.plan, {"kind": "approval", "question": "Confirm vcs.push (confirm)?", "needed_by": ["publish"], "effects": ["vcs.push"], "subjects": [{"ref": ref, "digest": Resolve(self.ctx, ref).digest}]})
 		GapDecide(self.ctx, gap, "approve", "Approved")
-		self.assertIn("publish", PlanReady(self.ctx))
+		self.assertIn("tsk-publish", PlanReady(self.ctx))
 		TaskUpdate(self.ctx, "publish", {"title": "Changed"})
 		self.assertNotIn("publish", PlanReady(self.ctx))
 		self.assertEqual(TaskStart(self.ctx, "publish")["status"], "Blocked")
@@ -754,13 +758,13 @@ Work
 		original = receipt.read_bytes()
 		for rule in ("confirm", "deny"):
 			with self.subTest(rule=rule):
-				(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"shell.run": rule}}, "# Demo"))
+				rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "policy": {"shell.run": rule}}, "# Demo"))
 				with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
 					RunCheck(self.ctx, run, {"content": "!?touch must-not-exist"})
 				with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
 					RunEvaluate(self.ctx, run)
 		self.assertFalse((self.root / "must-not-exist").exists())
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo"}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo"}, "# Demo"))
 		self.ctx.defaults["policy"] = {"shell.run": "deny"}
 		with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
 			RunCheck(self.ctx, run, {"content": "!?touch must-not-exist"})
@@ -789,13 +793,13 @@ Work
 		self.ctx.engines["fake"] = engine
 		for rule in ("confirm", "deny"):
 			with self.subTest(rule=rule):
-				(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": rule}}, "# Demo"))
+				rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": rule}}, "# Demo"))
 				with self.assertRaisesRegex(AutoError, "requires authorization for net.write"):
 					RunCheck(self.ctx, run, {"content": "Review the output"})
 				self.assertEqual(engine.policy["rules"]["net.write"]["rule"], rule)
 				self.assertFalse(engine.acted)
 				self.assertTrue(engine.closed)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": "allow"}}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "policy": {"net.write": "allow"}}, "# Demo"))
 		self.assertTrue(RunCheck(self.ctx, run, {"content": "Review the output"})["pass"])
 		self.assertTrue(engine.acted)
 		self.assertTrue(engine.closed)

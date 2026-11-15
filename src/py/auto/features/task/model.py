@@ -9,6 +9,7 @@ from pathlib import Path
 from auto.features.script.model import Script
 from auto.runtime.model import RunStatus, TERMINAL
 from auto.utils.data import AutoError, document, documentText, identifier, sections
+from auto.utils.layout import taskId
 
 # -----------------------------------------------------------------------------
 #
@@ -81,10 +82,18 @@ class Task:
 # -----------------------------------------------------------------------------
 
 
+def defaultGoal(meta: dict, description: str) -> str:
+	"""Return the goal a task has when it states none: its title, then its description."""
+	return "\n".join(part for part in (meta.get("title", ""), description.strip()) if part)
+
+
 def taskText(task: Task) -> str:
-	"""Serialise a task back to its markdown document form."""
-	body = task.description + "\n\n" + "\n\n".join(f"## {name}\n\n{content}" for name, content in task.sections.items()) + "\n"
-	return documentText({**task.meta, "id": task.id}, body)
+	"""Serialise a task back to its markdown document form, without derivable fields."""
+	parts = [task.description, *(f"## {name}\n\n{content}" for name, content in task.sections.items())]
+	body = "\n\n".join(part for part in parts if part) + "\n"
+	meta = {key: value for key, value in task.meta.items() if key != "goal" or value != defaultGoal(task.meta, task.description)}
+	# The root task is named by its plan's directory, not by an `id` field.
+	return documentText(meta if task.id == "root" else {**meta, "id": task.id}, body)
 
 # -----------------------------------------------------------------------------
 #
@@ -101,8 +110,16 @@ def createTaskFromText(text: str, path: Path, root: bool = False) -> Task:
 	if unknown:
 		raise AutoError(f"Unknown task sections: {', '.join(sorted(unknown))}")
 	id = "root" if root else identifier(meta.get("id", path.stem))
-	meta.setdefault("goal", meta.get("title", "") + ("\n" + description.strip() if description.strip() else ""))
+	meta.setdefault("goal", defaultGoal(meta, description))
 	return Task(id, meta, parts, path, description.strip())
+
+
+def canonicalTask(task: Task) -> Task:
+	"""Give a plan task its canonical id and parent (see `taskId`)."""
+	task.id = taskId(task.id)
+	if task.meta.get("parent"):
+		task.meta["parent"] = taskId(task.meta["parent"])
+	return task
 
 
 def createTaskFromDict(value: dict, path: Path) -> Task:

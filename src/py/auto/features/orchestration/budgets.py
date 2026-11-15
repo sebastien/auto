@@ -4,6 +4,7 @@ from auto.features.plan.model import createPlan
 from auto.features.task.operations import RunList, hasCheck
 from auto.runtime.model import RunStatus, budgetValue
 from auto.utils.data import AutoError, readJson
+from auto.utils.layout import runsPath
 
 
 def planRunBudget(context, task, budget, run=None, *, assessment=False):
@@ -13,7 +14,7 @@ def planRunBudget(context, task, budget, run=None, *, assessment=False):
 		return budget
 	usage = (run or {}).get("usage", {})
 	runs = RunList(context)
-	assessments = {value["id"]: readJson(context.plan / "runs" / value["id"] / "assessment.json") for value in runs}
+	assessments = {value["id"]: readJson(runsPath(context.plan) / value["id"] / "assessment.json") for value in runs}
 	requested = budgetValue(task.meta.get("budget")) if task.id != "root" and not assessment else {}
 	emptyAggregate = not task.sections.get("Process") and not any(hasCheck(task, phase) for phase in ("Pre", "Post", "Apply", "Evaluation"))
 	result = dict(budget)

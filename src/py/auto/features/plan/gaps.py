@@ -7,6 +7,7 @@ from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.runtime.model import RunStatus
 from auto.runtime.operations import Knowledge, Resolve
 from auto.utils.data import AutoError, identity, readJson, timestamp
+from auto.utils.layout import KINDS, namespace, storePath, taskId, taskRef
 
 
 # -----------------------------------------------------------------------------
@@ -21,27 +22,34 @@ def planRef(path):
 	return "auto:" + createPlan(path).id
 
 
+def hasRecords(context, path) -> bool:
+	"""Tell whether a plan may have stored gaps or decisions, without loading Memo."""
+	root = storePath(context.project) / namespace(createPlan(path).id)
+	return any((root / kind).is_dir() for kind in KINDS.values())
+
+
 def prepareGap(context, path, gap: dict, revision: str, staged: dict | None = None) -> dict:
 	"""Validate and expand a gap definition with a generated identity."""
-	id = identity()
+	id = identity("gap")
 	kind = gap.get("kind", gap.get("gap_kind", GapKind.INFORMATION))
 	if kind not in GAP_KINDS or not gap.get("question") or not gap.get("needed_by"):
 		raise AutoError("Gap requires a valid kind, question and needed_by tasks")
 	if kind == GapKind.APPROVAL and not gap.get("subjects"):
 		raise AutoError("Approval requires pinned subjects")
+	gap = {**gap, "subjects": [{**subject, "ref": taskRef(subject["ref"])} for subject in gap.get("subjects", [])]}
 	for subject in gap.get("subjects", []):
 		expected = (staged or {}).get(subject["ref"])
 		if (expected if expected is not None else Resolve(context, subject["ref"]).digest) != subject["digest"]:
 			raise AutoError("Approval subject has changed")
 	return Gap(id=id, identity=f"{planRef(path)}/gap/{id}", plan=planRef(path), kind=kind, question=gap["question"],
-		neededBy=list(gap["needed_by"]), revision=revision, raisedBy=gap.get("raised_by", context.author),
+		neededBy=[taskId(task) for task in gap["needed_by"]], revision=revision, raisedBy=gap.get("raised_by", context.author),
 		subjects=list(gap.get("subjects", [])), options=list(gap.get("options", [])),
 		extra={key: value for key, value in gap.items() if key not in {"kind", "question", "needed_by", "subjects", "options", "raised_by"}}).asDict()
 
 
 def repairLocked(context, path) -> None:
 	"""Reconcile journal operations with stored gaps and decisions."""
-	if context.knowledge is None and not (context.project / ".memo").exists():
+	if context.knowledge is None and not hasRecords(context, path):
 		return
 	store = Knowledge(context)
 	rows = journal(path)
@@ -109,7 +117,7 @@ def GapRaise(context, plan, gap: dict) -> str:
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
-		revision = identity()
+		revision = identity("rev")
 		value = prepareGap(context, path, gap, revision)
 		commit(context, path, [{"op": RevisionOp.RAISE, "gap": value["id"]}], records=[{"kind": "gap", "value": value}], revision=revision, reason=value["question"])
 	return value["id"]
@@ -118,12 +126,12 @@ def GapRaise(context, plan, gap: dict) -> str:
 def GapList(context, plan=None, filter: dict | None = None) -> list:
 	"""List the gaps of a plan, filtered by status, kind or task."""
 	path = planPath(context, plan)
-	if context.knowledge is None and not (context.project / ".memo").exists():
+	if context.knowledge is None and not hasRecords(context, path):
 		return []
 	result = [createGapFromDict(gap).asDict() for gap in Knowledge(context).list(planRef(path), "gap")]
 	for gap in result:
 		gap["kind"] = gap.get("gap_kind", gap.get("kind"))
-	return [gap for gap in result if all((value in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
+	return [gap for gap in result if all((taskId(value) in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
 
 
 def GapDecide(context, gap: str, answer, rationale: str) -> dict:
@@ -141,7 +149,10 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 		for pin in value.get("subjects", []):
 			if Resolve(context, pin["ref"]).digest != pin["digest"]:
 				raise AutoError("Pinned subject changed; raise a new approval gap")
-		revision, id = identity(), identity()
+		revision, id = identity("rev"), identity("dec")
+		if isinstance(answer, dict) and set(answer) == {"grant", "scope"}:
+			# A grant may name its task scope without the task prefix.
+			answer = {**answer, "scope": taskRef(answer["scope"])}
 		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=gap, answer=answer,
 			rationale=rationale, author=context.author, date=timestamp(), revision=revision,
 			extra={"concerns": list(value.get("concerns", []))}).asDict()
@@ -178,7 +189,7 @@ def DecisionRecord(context, plan, question: str, answer, rationale: str, concern
 	with locked(path):
 		recover(context, path)
 		repairLocked(context, path)
-		revision, id = identity(), identity()
+		revision, id = identity("rev"), identity("dec")
 		decision = Decision(id=id, identity=f"{planRef(path)}/decision/{id}", plan=planRef(path), gap=None,
 			answer=answer, rationale=rationale, author=context.author, date=timestamp(), revision=revision,
 			extra={"question": question, "concerns": list(concerns or []), **({"source": source} if source is not None else {})}).asDict()
@@ -200,7 +211,7 @@ def GapDismiss(context, gap: str, rationale: str) -> dict:
 			raise AutoError("Gap is not open")
 		if outputGate and (context.author != "human" or not isinstance(rationale, str) or not rationale.strip()):
 			raise AutoError("Waiving an output gate requires a human rationale")
-		revision = identity()
+		revision = identity("rev")
 		updated = {**value, "status": GapState.DISMISSED, "rationale": rationale, "resolved_revision": revision}
 		records = [{"kind": "gap", "value": updated, "expected": value["digest"], "base": value}]
 		return commit(context, path, [{"op": RevisionOp.DISMISS, "gap": gap}], records=records, revision=revision, reason=rationale)

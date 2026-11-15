@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ruamel.yaml import YAML
+from ruamel.yaml.representer import SafeRepresenter
 
 # -----------------------------------------------------------------------------
 #
@@ -69,6 +70,36 @@ def yamlText(value: object) -> str:
 	return stream.getvalue()
 
 
+def promptText(value: object) -> str:
+	"""Serialise a value for a model to read: block YAML, multiline text as literal blocks.
+
+	Unlike `yamlText`, this is a one-way rendering: it favours legibility and
+	fewer tokens over exact round trips of the scalars.
+	"""
+	stream = io.StringIO()
+	writer = YAML(typ="safe", pure=True)
+	writer.Representer = PromptRepresenter
+	writer.default_flow_style = False
+	writer.width = 2**31 - 1
+	writer.dump(value, stream)
+	return stream.getvalue()
+
+
+class PromptRepresenter(SafeRepresenter):
+	"""Represent multiline text as literal blocks, which models read verbatim."""
+
+	def represent_str(self, data):
+		data = str(data)
+		# Trailing blanks cannot be kept in a literal block: quote those strings.
+		style = "|" if "\n" in data and not re.search(r"[ \t]\n|[^\S\n]$", data) else None
+		return self.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+PromptRepresenter.add_representer(str, PromptRepresenter.represent_str)
+# Enumerations such as run states are text.
+PromptRepresenter.add_multi_representer(str, PromptRepresenter.represent_str)
+
+
 def _frontmatter(text: str):
 	"""Locate exact frontmatter boundaries for either Markdown line ending."""
 	if not re.match(r"---[ \t]*\r?\n", text):
@@ -93,8 +124,9 @@ def document(text: str) -> tuple[dict, str]:
 
 
 def documentText(meta: dict, body: str) -> str:
-	"""Join frontmatter and a markdown body into one document."""
-	return "---\n" + yamlText(meta) + "---\n" + body
+	"""Join frontmatter, omitted when empty, and a markdown body into one document."""
+	# A body that opens with a delimiter keeps an explicit empty frontmatter.
+	return body if not meta and not body.startswith("---") else "---\n" + yamlText(meta) + "---\n" + body
 
 
 def merge(*layers: dict) -> dict:
@@ -116,9 +148,9 @@ def timestamp() -> str:
 	return datetime.now(timezone.utc).isoformat()
 
 
-def identity() -> str:
-	"""Return a sortable, unique record identity."""
-	return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:12]
+def identity(prefix: str = "") -> str:
+	"""Return a sortable, unique record identity, led by its kind's three-letter `prefix`."""
+	return (prefix + "-" if prefix else "") + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:8]
 
 
 def identifier(value: str) -> str:

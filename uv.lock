@@ -39,6 +39,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
+    { name = "memo" },
     { name = "python-liquid" },
     { name = "ruamel-yaml" },
 ]
@@ -55,6 +56,7 @@ mcp = [
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.20,<2" },
+    { name = "memo", editable = "../memo" },
     { name = "prompt-toolkit", marker = "extra == 'interactive'", specifier = ">=3.0,<4" },
     { name = "python-liquid", specifier = ">=2.3,<3" },
     { name = "ruamel-yaml", specifier = ">=0.18,<0.19" },
@@ -403,6 +405,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/ba/93/0142dc84a666daf8a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/f4/e58bc33317c92a0203664daaf00bf6f41166cc0149e5d6870a03f7cd004a/mcp-1.30.0-py3-none-any.whl", hash = "sha256:666edb5009503e1047c9d60346a756f94b261f05cc2625f23d41c728ffc484d0", size = 234581, upload-time = "2026-09-07T14:34:14.266Z" },
 ]
+
+[[package]]
+name = "memo"
+version = "0.1.0"
+source = { editable = "../memo" }
+dependencies = [
+    { name = "ruamel-yaml" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "ruamel-yaml", specifier = ">=0.18.6,<0.19" }]
 
 [[package]]
 name = "prompt-toolkit"

@@ -93,7 +93,7 @@ class Checker:
         sys.stdin.readline()
         yield {"type": "ScriptEnded", "status": "Succeeded", "output": {"pass": True, "reason": "Reviewed"}}
 root = Path(sys.argv[1])
-context = Context(project=root, plan=root / ".auto/plans/demo", knowledge=Store(), engines={"fake": Checker()}, config={"engine": "fake"})
+context = Context(project=root, plan=root / ".auto/demo", knowledge=Store(), engines={"fake": Checker()}, config={"engine": "fake"})
 RunCheck(context, sys.argv[2], {"content": "Review"})
 ''')
 		worker = subprocess.Popen([sys.executable, str(file), str(self.root), one["id"]],

@@ -13,6 +13,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from auto.app.operations import EXPOSURES, exitStatus
+from support import rootFile
 
 
 class InterfaceTests(unittest.TestCase):
@@ -46,7 +47,7 @@ class InterfaceTests(unittest.TestCase):
 	def testPolicyCliShowPreservesMcpResolveName(self):
 		with tempfile.TemporaryDirectory() as directory:
 			plan = Path(directory)
-			(plan / "plan.md").write_text("---\nid: example\n---\n# Example\n")
+			rootFile(plan).write_text("---\nid: example\n---\n# Example\n")
 			result = self.cli("policy", "show", "--plan", str(plan), "--format", "json")
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn("rules", json.loads(result.stdout))
@@ -57,21 +58,21 @@ class InterfaceTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
-			(plan / "tasks").mkdir(parents=True)
-			(plan / "plan.md").write_text("---\nid: demo\ngoal: Ship the search feature\n---\n# Search\n")
-			(plan / "tasks/index.md").write_text("---\nid: index\ntitle: Build the search index\n---\n## Process\n\nIndex documents\n")
+			plan = root / ".auto/demo"
+			(plan / "tsk").mkdir(parents=True)
+			rootFile(plan).write_text("---\nid: demo\ngoal: Ship the search feature\n---\n# Search\n")
+			(plan / "tsk/index.md").write_text("---\nid: index\ntitle: Build the search index\n---\n## Process\n\nIndex documents\n")
 			result = self.cli("plan", "status", "--plan", str(plan), cwd=root)
 			self.assertEqual(result.returncode, 0, result.stderr)
 			for text in ("Plan: demo", "Goal: Ship the search feature", "Status: Draft",
-				"Execution: idle", "Tasks: 0/1 completed", "[Blocked] root", "Waiting on: index",
-				"[Ready] index — Build the search index"):
+				"Execution: idle", "Tasks: 0/1 completed", "[Blocked] root", "Waiting on: tsk-index",
+				"[Ready] tsk-index — Build the search index"):
 				self.assertIn(text, result.stdout)
 			structured = self.cli("plan", "status", "--plan", str(plan), "--format", "json", cwd=root)
 			data = json.loads(structured.stdout)
-			self.assertEqual(data["tasks"], {"root": "Blocked", "index": "Ready"})
-			self.assertEqual(data["taskDetails"]["index"]["goal"], "Build the search index")
-			self.assertIsNone(data["taskDetails"]["index"]["from"])
+			self.assertEqual(data["tasks"], {"root": "Blocked", "tsk-index": "Ready"})
+			self.assertEqual(data["taskDetails"]["tsk-index"]["goal"], "Build the search index")
+			self.assertIsNone(data["taskDetails"]["tsk-index"]["from"])
 			self.assertEqual(data["goal"], "Ship the search feature")
 			self.assertEqual(data["path"], str(plan))
 			held = self.cli("plan", "hold", "Pause", "Needs review", "--plan", str(plan), "--format", "json", cwd=root)
@@ -87,10 +88,10 @@ class InterfaceTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			run = plan / "runs/run1"
 			run.mkdir(parents=True)
-			(plan / "plan.md").write_text("---\nid: demo\n---\n# A plan without an explicit goal\n")
+			rootFile(plan).write_text("---\nid: demo\n---\n# A plan without an explicit goal\n")
 			for state, status, execution in (("Running", "Active", "in flight: root"),
 				("Failed", "Failed", "idle"), ("Succeeded", "Succeeded", "idle")):
 				with self.subTest(state=state):
@@ -116,10 +117,10 @@ class InterfaceTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory(prefix="auto hints ") as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			run = plan / "runs/failed1"
 			run.mkdir(parents=True)
-			(plan / "plan.md").write_text("---\nid: demo\n---\n# Demo\n")
+			rootFile(plan).write_text("---\nid: demo\n---\n# Demo\n")
 			receipt = {"id": "failed1", "task": "root", "status": "Failed", "started": "2026-01-01",
 				"failure": {"kind": "engine", "reason": "Engine unavailable"}, "children": {}}
 			(run / "receipt.json").write_text(json.dumps(receipt))
@@ -159,10 +160,10 @@ class InterfaceTests(unittest.TestCase):
 			root = Path(directory)
 			(root / ".git").mkdir()
 			for name in ("first", "second"):
-				plan = root / ".auto/plans" / name
+				plan = root / ".auto" / name
 				plan.mkdir(parents=True)
-				(plan / "plan.md").write_text(f"---\nid: {name}\n---\n# {name}\n")
-			run = root / ".auto/plans/first/runs/run1"
+				rootFile(plan).write_text(f"---\nid: {name}\n---\n# {name}\n")
+			run = root / ".auto/first/runs/run1"
 			run.mkdir(parents=True)
 			receipt = {"id": "run1", "task": "root", "status": "Succeeded", "started": "2026-01-01"}
 			(run / "receipt.json").write_text(json.dumps(receipt))
@@ -173,12 +174,12 @@ class InterfaceTests(unittest.TestCase):
 				self.assertEqual(result.returncode, 0, result.stderr)
 				self.assertIn(expected, result.stdout)
 			# Active runs are discoverable too, before a receipt exists.
-			active = root / ".auto/plans/second/runs/live1"
+			active = root / ".auto/second/runs/live1"
 			active.mkdir(parents=True)
 			(active / "active.json").write_text(json.dumps({**receipt, "id": "live1", "status": "Running"}))
 			result = self.cli("run", "get", "live1", "--format", "json", cwd=root)
 			self.assertEqual(json.loads(result.stdout)["status"], "Running")
-			duplicate = root / ".auto/plans/second/runs/run1"
+			duplicate = root / ".auto/second/runs/run1"
 			duplicate.mkdir()
 			(duplicate / "receipt.json").write_text(json.dumps(receipt))
 			ambiguous = self.cli("run", "get", "run1", "--format", "json", cwd=root)
@@ -198,9 +199,9 @@ class InterfaceTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			plan.mkdir(parents=True)
-			(plan / "plan.md").write_text("---\nid: demo\n---\n# Demo\n")
+			rootFile(plan).write_text("---\nid: demo\n---\n# Demo\n")
 			continued = self.cli("plan", "continue", "--plan", str(plan), "--format", "json", cwd=root)
 			self.assertEqual(continued.returncode, 0, continued.stderr)
 			events = [json.loads(line) for line in continued.stdout.splitlines()]
@@ -247,9 +248,9 @@ class InterfaceTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			plan.mkdir(parents=True)
-			(plan / "plan.md").write_text("---\nid: demo\n---\n# Demo\n")
+			rootFile(plan).write_text("---\nid: demo\n---\n# Demo\n")
 			missing = self.cli("plan", "status", "--plan", "absent", "--format", "json", cwd=root)
 			self.assertEqual(missing.returncode, 2, missing.stderr)
 			self.assertIn("Available plans: demo", json.loads(missing.stdout)["failure"]["recovery"])
@@ -336,7 +337,7 @@ class InterfaceTests(unittest.TestCase):
 					self.assertIn("Unknown Auto agent", str(unknown.content))
 		with tempfile.TemporaryDirectory() as directory:
 			plan = Path(directory)
-			(plan / "plan.md").write_text("---\nid: demo\n---\n# Demo\n")
+			rootFile(plan).write_text("---\nid: demo\n---\n# Demo\n")
 			asyncio.run(exercise(plan))
 
 	def testMcpPlanEventsEmptyAndProgressResults(self):
@@ -348,7 +349,7 @@ class InterfaceTests(unittest.TestCase):
 		from auto.runtime.model import Context
 		with tempfile.TemporaryDirectory() as directory:
 			plan = Path(directory)
-			(plan / "plan.md").write_text("---\nid: example\n---\n# Example\n")
+			rootFile(plan).write_text("---\nid: example\n---\n# Example\n")
 			context = Context(project=plan, plan=plan)
 			server = createServer(context)
 			async def inline(operation, *args):

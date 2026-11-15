@@ -14,6 +14,7 @@ from unittest.mock import patch
 from auto.features.memory.consolidation import AgentRunScope, ConsolidationStart, ConsolidationStatus, agentConfig, runPending
 from auto.integration.memo.consolidation import MemoConsolidation
 from auto.utils.data import readJson
+from auto.utils.layout import planPaths
 import test_010_03_integration_consolidation as fixtures
 
 
@@ -164,8 +165,8 @@ with patch.object(operations, "atomicWrite", side_effect=atomicWrite), patch.obj
 
 	def testIndependentMemoMaintenanceLockSerializesPublication(self):
 		holder = subprocess.Popen([sys.executable, "-c", '''import sys
-from memo.backend.local import LocalBackend
-from memo.plugins.agent.storage import RECORD_SCOPE
+from memo.integrations.filesystem.backend import LocalBackend
+from memo.features.agent.consolidation.records import RECORD_SCOPE
 with LocalBackend(sys.argv[1]).lock(RECORD_SCOPE, "urn:test:ux"):
     print("ready", flush=True)
     sys.stdin.readline()
@@ -221,7 +222,7 @@ with LocalBackend(sys.argv[1]).lock(RECORD_SCOPE, "urn:test:ux"):
 				self.assertEqual(selected[-1], [phase])
 				self.assertEqual(answers[-5:], [("repo.read", True), ("net.read", False),
 					("repo.write", False), ("shell.run", False), ("memory.evolve", False)])
-		self.assertFalse((self.root / ".auto/plans").exists())
+		self.assertEqual(planPaths(self.root), [])
 
 
 # EOF

@@ -9,17 +9,14 @@ live in [`docs/specs`](docs/specs); implementation notes are in
 Requires Python 3.14+ and a configured Pi, OpenCode V2, fx or LLM CLI.
 
 ```sh
+# Installs the sibling sebastien/memo checkout (../memo), which stores plans:
 uv sync --extra mcp
-# Install the sibling sebastien/memo checkout for gaps and decisions:
-uv pip install -e ../memo
 bin/auto help
 bin/auto catalogue list
 ```
 
 Memo is a separate project, not the unrelated packages sharing its name on
-package indexes. Install it into Auto's environment. A subsequent exact
-`uv sync` can remove it; reinstall it afterwards. Use `.venv/bin/python`
-to run the complete integration suite with this installation.
+package indexes: `uv sync` installs it from the sibling `../memo` checkout.
 
 The OpenCode engine also requires Node.js 22+ and its V2 client bridge dependencies:
 
@@ -188,10 +185,12 @@ bin/auto decision record 'Which document format?' 'markdown' 'Easy to review' --
 bin/auto plan refine 'Address the review findings' --plan 000
 ```
 
-Plans live under `.auto/plans/NNN-slug/`, eg. `000-document-project-architecture`,
+Plans live under `.auto/pln-NNN-slug/`, eg. `pln-000-document-project-architecture`,
 where `NNN` is an incremental hex number; `--plan` takes the full id or just
-the number. Gaps and decisions are Memo records under
-`.memo/`. `AUTO_PLAN` selects a plan for subsequent commands. Plan creation
+the number. `.auto/` is a Memo store: each plan is a namespace whose task
+definitions (`tsk/`), gaps (`gap/`) and decisions (`dec/`) are Memo documents,
+readable with `memo -m .auto`, beside its runs and journals. `AUTO_PLAN`
+selects a plan for subsequent commands. Plan creation
 and refinement execute the built-in Elaborator and its checks. A Waiting
 result requires a decision before execution can resume. `plan continue` runs
 ready tasks and aggregates (including `root`) sequentially until the plan ends,

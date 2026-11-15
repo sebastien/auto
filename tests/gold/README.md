@@ -11,7 +11,7 @@ GOLD_MODEL=gpt-6-luna GOLD_PROVIDER=openai tests/gold/run.sh
 ```
 
 Requirements: `jq`, `python3`, `git`, Memo installed in Auto's environment
-(`uv pip install -e ../memo`; an exact `uv sync` removes it), and the selected
+(`uv sync` installs the sibling `../memo` checkout), and the selected
 engine set up as for normal use (eg. `opencode` and the bridge dependencies,
 see the main README).
 
@@ -47,7 +47,7 @@ behaviour too variable to require are reported as `WARN` without failing.
 ## Reading a failure
 
 A failed scenario keeps its sandbox and prints its path. It holds `project/`,
-the plan's project (with `.auto/` and `.memo/`), and `log/`, with one
+the plan's project (with its plans in `.auto/`), and `log/`, with one
 `NN-step.{cmd,out,err,status}` set per command, in order.
 
 ## Writing a scenario

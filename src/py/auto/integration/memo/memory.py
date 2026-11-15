@@ -14,9 +14,9 @@ class MemoMemorySnapshot:
 
 	def __init__(self, project):
 		from memo import Memo
-		from memo.backend.local import LocalBackend
-		from memo.clock import FixedClock
-		from memo.model import MemoError
+		from memo.integrations.filesystem.backend import LocalBackend
+		from memo.utils.clock import FixedClock
+		from memo.error import MemoError
 		try:
 			self.memo = Memo(LocalBackend(str(project / ".memo")), FixedClock(time.time() * 1000), cwd=str(project))
 			self.entries = deepcopy(self.memo.backend.listEntries())
@@ -29,11 +29,11 @@ class MemoMemorySnapshot:
 		return text if text and re.search(r"[^\W_]", text) else None
 
 	def wake(self, agent, profile, query, budgets=None):
-		from memo.model import MemoError
-		from memo.plugins.agent.wake import agentWakeLayers
+		from memo.error import MemoError
+		from memo.features.agent.wake import agentWakeLayers
 		try:
 			return agentWakeLayers(self.memo, agent, profile=profile, budgets=budgets,
-				query=self.queryText(query), _entries=self.entries)
+				query=self.queryText(query), entries=self.entries)
 		except MemoError as error:
 			raise AutoError(f"Memo wake failed for {agent}: {error}") from error
 
@@ -61,8 +61,8 @@ class MemoMemorySnapshot:
 		return result
 
 	def model(self, agent, query):
-		from memo.model import MemoError
-		from memo.plugins.agent.integration import agentModel
+		from memo.error import MemoError
+		from memo.features.agent.model import agentModel
 		try:
 			return agentModel(self.memo, agent, query=self.queryText(query), others=True, entries=self.entries)
 		except MemoError as error:

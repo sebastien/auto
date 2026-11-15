@@ -11,6 +11,7 @@ from auto.features.task.model import Task
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.operations import Engine, Knowledge, Resolve
 from auto.utils.data import AutoError, digest
+from auto.utils.layout import planFile, taskId, taskRef
 
 # -----------------------------------------------------------------------------
 #
@@ -66,7 +67,7 @@ def policyLayers(context, meta):
 def journalGrants(path):
 	"""Read human grants; a goal grant expires if its definition changes."""
 	root = "auto:" + createPlan(path).id + "/task/root/definition"
-	current = digest((path / "plan.md").read_bytes())
+	current = digest(planFile(path).read_bytes())
 	result = []
 	for row in journal(path):
 		if row.get("author") != "human":
@@ -80,13 +81,15 @@ def journalGrants(path):
 def PolicyResolve(context, plan=None, task=None):
 	"""Return rules, applicable grants and effects not enforced by an integration."""
 	path = planPath(context, plan)
-	meta = createPlan(path).meta
+	plan = createPlan(path)
+	meta = plan.meta
 	layers = policyLayers(context, meta)
 	from auto.features.plan.operations import tasksAt
 	tasks = tasksAt(path)
 	if isinstance(task, Task):
 		definition, task = task, task.id
 		tasks[task] = definition
+	task = None if task is None else taskId(task)
 	if task is not None and task not in tasks:
 		raise AutoError(f"Unknown task: {task}")
 	effects = set(BUILTINS)
@@ -96,7 +99,7 @@ def PolicyResolve(context, plan=None, task=None):
 		if not isinstance(declared, list) or any(not isinstance(e, str) or not EFFECT.fullmatch(e) for e in declared):
 			raise AutoError(f"Invalid effects for task: {definition.id}")
 		effects.update(declared)
-	base = "auto:" + meta["id"]
+	base = "auto:" + plan.id
 	grants = [{**op, "author": row["author"], "revision": row["id"]} for row, op in journalGrants(path)
 		if task is None or op.get("scope") in {base, base + "/task/" + task}]
 	# An integration must explicitly claim each effect; no claim means no coverage.
@@ -116,12 +119,13 @@ def PolicyResolve(context, plan=None, task=None):
 def taskRestrictions(context, task):
 	"""Return ungranted effects and their effective rules for a task definition."""
 	path = planPath(context)
-	meta = createPlan(path).meta
+	plan = createPlan(path)
+	meta = plan.meta
 	layers = policyLayers(context, meta)
 	effects = task.meta.get("effects", [])
 	if not isinstance(effects, list) or any(not isinstance(e, str) or not EFFECT.fullmatch(e) for e in effects):
 		raise AutoError(f"Invalid effects for task: {task.id}")
-	base = "auto:" + meta["id"]
+	base = "auto:" + plan.id
 	granted = {op.get("effect") for _, op in journalGrants(path) if op.get("scope") in {base, base + "/task/" + task.id}}
 	return {effect: ruleFor(effect, layers)["rule"] for effect in effects if effect not in granted and ruleFor(effect, layers)["rule"] != "allow"}
 
@@ -152,10 +156,10 @@ def taskPolicyBlocked(context, task):
 def shellPermitted(context, task):
 	"""Map shell.run to Auto's shell boundary; engines may still use their own tools."""
 	path = planPath(context)
-	meta = createPlan(path).meta
-	if ruleFor("shell.run", policyLayers(context, meta))["rule"] == "allow":
+	plan = createPlan(path)
+	if ruleFor("shell.run", policyLayers(context, plan.meta))["rule"] == "allow":
 		return True
-	base = "auto:" + meta["id"]
+	base = "auto:" + plan.id
 	if any(op.get("effect") == "shell.run" and op.get("scope") in {base, base + "/task/" + task.id} for _, op in journalGrants(path)):
 		return True
 	return definitionPath(path, task.id).is_file() and "shell.run" in task.meta.get("effects", []) and "shell.run" not in taskPolicyBlocked(context, task)
@@ -166,12 +170,17 @@ def runtimeRule(context, task, effect):
 	if not isinstance(effect, str) or not EFFECT.fullmatch(effect):
 		raise AutoError("Invalid runtime policy effect")
 	path = planPath(context)
-	meta = createPlan(path).meta
-	rule = ruleFor(effect, policyLayers(context, meta))["rule"]
-	base = "auto:" + meta["id"]
+	plan = createPlan(path)
+	rule = ruleFor(effect, policyLayers(context, plan.meta))["rule"]
+	base = "auto:" + plan.id
 	granted = any(op.get("effect") == effect and op.get("scope") in {base, base + "/task/" + task.id} for _, op in journalGrants(path))
 	covered = rule == "allow" or granted or effect in task.meta.get("effects", []) and effect not in taskPolicyBlocked(context, task)
 	return rule, covered
+
+
+def grantAnswer(answer):
+	"""Read a grant decision's answer with its scope canonical (see `taskRef`)."""
+	return {**answer, "scope": taskRef(answer["scope"])} if isinstance(answer, dict) and isinstance(answer.get("scope"), str) else answer
 
 
 def PolicyGrant(context, plan, effect, scope, decision):
@@ -180,6 +189,7 @@ def PolicyGrant(context, plan, effect, scope, decision):
 	if not isinstance(effect, str) or not EFFECT.fullmatch(effect):
 		raise AutoError("Invalid effect")
 	base = "auto:" + createPlan(path).id
+	scope = taskRef(scope)
 	from auto.features.plan.operations import tasksAt
 	validScopes = {base} | {base + "/task/" + id for id in tasksAt(path)}
 	if scope not in validScopes:
@@ -192,7 +202,7 @@ def PolicyGrant(context, plan, effect, scope, decision):
 			return any(op.get("op") == RevisionOp.RESOLVE and op.get("decision") == value.get("id") for op in row["operations"])
 		committed = any(row["id"] == value.get("revision") and row.get("author") == "human" and resolved(row) for row in journal(path))
 		if not committed or value.get("identity") != ref or value.get("plan") != base \
-			or value.get("author") != "human" or value.get("answer") != {"grant": effect, "scope": scope}:
+			or value.get("author") != "human" or grantAnswer(value.get("answer")) != {"grant": effect, "scope": scope}:
 			raise AutoError("Grant requires a human-authored decision in this plan")
 		return commit(context.derive(author=value["author"]), path,
 			[{"op": RevisionOp.GRANT, "effect": effect, "scope": scope, "source": ref}], reason="Policy grant")

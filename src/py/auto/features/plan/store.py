@@ -11,6 +11,7 @@ from pathlib import Path
 from auto.features.plan.model import Revision
 from auto.runtime.operations import Knowledge
 from auto.utils.data import AutoError, atomicWrite, identifier, identity, jsonText, readJson, timestamp
+from auto.utils.layout import isPlan, planPaths, runsPath, storePath, taskName
 
 # -----------------------------------------------------------------------------
 #
@@ -33,8 +34,8 @@ def runPlanPath(context, run) -> Path:
 	if context.plan is not None:
 		return planPath(context)
 	id = identifier(run["id"] if isinstance(run, dict) else run)
-	matches = [file.parent for file in sorted((context.project / ".auto/plans").glob("*/plan.md"))
-		if any((file.parent / "runs" / id / name).is_file() for name in ("receipt.json", "active.json"))]
+	matches = [path for path in planPaths(context.project)
+		if any((runsPath(path) / id / name).is_file() for name in ("receipt.json", "active.json"))]
 	if len(matches) == 1:
 		return matches[0].resolve()
 	if matches:
@@ -53,9 +54,9 @@ def planPath(context, plan=None) -> Path:
 	path = Path(path)
 	if not path.is_absolute() and len(path.parts) == 1:
 		from auto.runtime.config import planDirectory
-		path = planDirectory(context.project / ".auto/plans", path.name)
-	if not (path / "plan.md").exists():
-		raise AutoError(f"Plan not found: {path}", recovery='Point --plan at a directory containing plan.md, '
+		path = planDirectory(storePath(context.project), path.name)
+	if not isPlan(path):
+		raise AutoError(f"Plan not found: {path}", recovery=f'Point --plan at a plan directory, containing {taskName("root")}, '
 			'or create a plan with auto plan create "<goal>". Check AUTO_PLAN if you did not pass --plan.')
 	return path.resolve()
 
@@ -178,7 +179,7 @@ def commit(context, path: Path, operations: list, writes: dict | None = None, re
 	recordPlanStatus(context, path)
 	if "provenance" in metadata:
 		metadata["context"] = metadata.pop("provenance")
-	row = Revision(id=revision or identity(), author=context.author, date=timestamp(), reason=reason, operations=operations, metadata=metadata).asDict()
+	row = Revision(id=revision or identity("rev"), author=context.author, date=timestamp(), reason=reason, operations=operations, metadata=metadata).asDict()
 	atomicWrite(path / ".pending.json", jsonText({"revision": row, "writes": writes or {}, "records": records or []}))
 	recover(context, path)
 	return journal(path)[-1]

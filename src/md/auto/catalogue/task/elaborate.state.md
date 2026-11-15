@@ -14,4 +14,5 @@ state below and the reason for the refinement:
 - Tasks without runs may be removed (`## remove: {id}`) or reworked freely.
 - Do not raise gaps that are already open; reference them in `needed_by`
   reasoning instead.
-- Use the outputs of succeeded tasks: they are facts, not proposals.
+- Use the outputs of succeeded tasks (`task:{id}`): they are facts, not
+  proposals.

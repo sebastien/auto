@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from auto.utils.data import document, identifier, sections as splitSections
+from auto.utils.layout import planFile
 
 # -----------------------------------------------------------------------------
 #
@@ -148,7 +149,7 @@ class Plan:
 
 	@property
 	def goal(self) -> str:
-		return self.meta.get("goal", "")
+		return self.meta.get("goal") or self.description
 
 	@property
 	def budget(self) -> dict:
@@ -238,11 +239,10 @@ class Decision:
 
 
 def createPlan(path: Path) -> Plan:
-	"""Create a plan from its directory or `plan.md` file."""
+	"""Create a plan from its directory, named by its id, or its root task file."""
 	path = Path(path)
-	file = path / "plan.md" if path.is_dir() else path
-	directory = file.parent
-	meta, body = document(file.read_text())
+	directory = path if path.is_dir() else path.parent.parent
+	meta, body = document(planFile(directory).read_text())
 	description, parts = splitSections(body)
 	return Plan(identifier(meta.get("id", directory.name)), meta, directory, description.strip(), parts)
 

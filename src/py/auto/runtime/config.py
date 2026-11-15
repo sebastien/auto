@@ -10,6 +10,7 @@ from pathlib import Path
 from auto.runtime.model import Context
 from auto.utils.config import loadConfig
 from auto.utils.data import AutoError, identifier
+from auto.utils.layout import PLAN_PREFIX, STORE, isPlan, planNumber, planPaths, storePath
 
 # -----------------------------------------------------------------------------
 #
@@ -57,14 +58,15 @@ def validateConfig(value: dict) -> None:
 
 
 def planDirectory(plans: Path, name: str) -> Path:
-	"""Return the plan directory named `name`, or the only one numbered `name` (eg. `00a`)."""
+	"""Return the plan directory named `name`, or the only one numbered `name` (eg. `00a` or `pln-00a`)."""
 	path = plans / name
 	if path.exists() or not plans.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
 		return path
-	matches = sorted(plans.glob(name + "-*/plan.md"))
+	number = name.removeprefix(PLAN_PREFIX)
+	matches = [match for match in planPaths(plans.parent) if planNumber(match.name) == number]
 	if len(matches) > 1:
-		raise AutoError(f"Ambiguous plan: {name}", recovery="Use one of: " + ", ".join(match.parent.name for match in matches) + ".")
-	return matches[0].parent if matches else path
+		raise AutoError(f"Ambiguous plan: {name}", recovery="Use one of: " + ", ".join(match.name for match in matches) + ".")
+	return matches[0] if matches else path
 
 
 def contextFor(directory: Path | None = None, plan: str | None = None, sources: dict | None = None, **overrides) -> Context:
@@ -81,9 +83,9 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	selected = plan or os.environ.get("AUTO_PLAN")
 	planPath = None
 	if selected:
-		planPath = Path(selected).resolve() if "/" in selected or Path(selected).is_dir() else planDirectory(project / ".auto/plans", identifier(selected))
+		planPath = Path(selected).resolve() if "/" in selected or Path(selected).is_dir() else planDirectory(storePath(project), identifier(selected))
 	else:
-		planPath = next((p for p in (cwd, *cwd.parents) if (p / "plan.md").is_file() and p.parent.name == "plans"), None)
+		planPath = next((p for p in (cwd, *cwd.parents) if isPlan(p) and p.parent.name == STORE), None)
 	explicit = {}
 	for key in CONTEXT_KEYS[1:]:
 		value = overrides.get(key) if overrides.get(key) is not None else os.environ.get("AUTO_" + key.upper())

@@ -45,7 +45,7 @@ class Engine:
         context.limits.usage["tokens"] = 4
         yield {"type": "ScriptMeta", "name": "usage", "value": {"tokens": 4}}
         yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Produced"}
-context = Context(project=root, plan=root / ".auto/plans/demo", knowledge=MemoKnowledge(root),
+context = Context(project=root, plan=root / ".auto/demo", knowledge=MemoKnowledge(root),
     engines={"fake": Engine()}, config={"engine": "fake"})
 def pause():
     print("ready", flush=True)

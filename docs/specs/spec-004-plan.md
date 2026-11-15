@@ -33,7 +33,7 @@ Plan: the scope and state of a set of tasks working towards a goal.
 - `id`: identifier
 - `goal`: text describing the intended outcome, the goal of the root task
 - `inputs`: data and assets given to the plan, available to its tasks
-- `root`: the root task, defined by `plan.md`, whose success is the plan
+- `root`: the root task, defined by `tsk/root.md`, whose success is the plan
   success
 - `tasks`: tasks, with their plan facet, all descending from the root task
 - `gaps`: Gaps raised within the plan
@@ -53,7 +53,7 @@ Task (plan facet): attributes added to a task within a plan.
   for the root task
 - `children`: derived: ids of the tasks whose `parent` is this task
 
-Root task: the task defined by `plan.md`, with the reserved id `root`.
+Root task: the task defined by `tsk/root.md`, with the reserved id `root`.
 - Its goal is the plan goal, and its inputs are the plan inputs
 - Its children are the tasks elaborated from the plan goal
 - Its Post and Evaluation, if any, are the definition of done of the plan
@@ -164,21 +164,26 @@ identity mapping and consistency rules are defined by the
 ## Format
 
 A plan is a directory, acting as the scope of its tasks, stored in the
-project as `.auto/plans/{plan}/`, next to the project catalogue (see
-[Elaboration](spec-006-elaboration.md)):
+project as `.auto/{plan}/`, next to the project catalogue (see
+[Elaboration](spec-006-elaboration.md)). The project's `.auto/` is a Memo store
+(see [Memo integration](spec-005-memo.md)) in which each plan is a namespace:
+its definitions and knowledge records are Memo documents grouped by
+three-letter kinds, while its runs and logs are plain files beside them, which
+Memo does not scan.
 
 ```
-.auto/plans/{plan}/
-  plan.md             # Root task: goal, inputs and budget (frontmatter), description
-  tasks/{task}.md     # Task definitions (see Task)
+.auto/{plan}/
+  tsk/root.md         # Root task: the goal (description), inputs and budget (frontmatter)
+  tsk/{task}.md       # Task definitions (see Task)
+  gap/{id}.md         # Gaps, then decisions, as Memo documents (see Memo integration)
+  dec/{id}.md
   runs/{run}/         # Output, journal and receipt (see Task)
   journal.jsonl       # PlanRevisions, one per line
+  events.jsonl        # PlanEvents, one per line (see Orchestration)
 ```
 
 ```markdown
 ---
-id: release-notes
-goal: Publish release notes for version 2.0
 budget: {tokens: 500000, cost: 5.00, time: 2h}
 elaborator:
   task: auto:catalogue/task/elaborate
@@ -186,25 +191,37 @@ elaborator:
 inputs:
   changelog: ./CHANGELOG.md
 ---
-# Release notes
-
-Optional plan description.
+Publish release notes for version 2.0
 
 ## Post
 
 Optional definition of done of the plan.
 ```
 
-- `plan.md` uses the task format (see Task). `id` is the plan id, while the
-  root task id is always `root`; `budget` is the plan budget, which the root
-  task runs draw from like any other run.
-- `PlanCreate` names a plan `NNN-slug`: `NNN` is an incremental number of at
-  least three hex digits, kept in `.auto/plans/.counter` and skipping numbers
+- `tsk/root.md` uses the task format (see Task), whose description is the plan
+  goal, stated once. The directory name is the plan id, while the root task
+  id is always `root`; `budget` is the plan budget, which the root task runs
+  draw from like any other run. Fields that are empty or derivable (an empty
+  `inputs`, a `goal` equal to the description) are not written.
+- Task ids start with `tsk-` (eg. `tsk-build-site`), except the root task's
+  reserved `root`. Auto adds the prefix to a task created without it, and
+  accepts either form wherever a task is named (eg. `task:build-site` and
+  `task:tsk-build-site` are the same reference), so Elaborators and humans may
+  omit it. A definition file is named after its id without the prefix, which
+  its `tsk/` folder states (eg. `tsk/build-site.md`); its `id` field keeps the
+  full id.
+- Generated ids also start with a three-letter code naming their kind: `pln-`
+  for plans, `run-` for runs (named after their task without its prefix, eg.
+  `run-build-site-20261105T1012-01`), `rev-` for revisions, `gap-` and `dec-` for gaps and
+  decisions, `cnt-` for continuations and `asm-` for budget assessments (eg.
+  `rev-20261105T101230Z-3f9a1c2e`).
+- `PlanCreate` names a plan `pln-NNN-slug`: `NNN` is an incremental number of
+  at least three hex digits, kept in `.auto/.counter` and skipping numbers
   already used; `slug` is up to four significant words of the goal's first
   sentence (articles, conjunctions, pronouns and generic verbs such as
   "create" are dropped), at most 32 characters, never cut mid-word.
-- A plan may be selected by its id or by its number alone (eg. `--plan 00a`),
-  when exactly one plan has that number.
+- A plan may be selected by its id or by its number alone (eg. `--plan 00a`
+  or `--plan pln-00a`), when exactly one plan has that number.
 - Task ids are unique within the plan, and `root` is reserved.
 - Tasks may reference scripts and assets outside the plan by `PATH`.
 
@@ -251,7 +268,7 @@ does not require a succeeded run of the referenced task.
 
 A digest is `sha256:{hex}`, supplied by the owner of the referenced content:
 - Plan elements: computed by Auto over the exact bytes of the file (task
-  definition, `plan.md`, run output, receipt or journal). For a plan revision,
+  definition, run output, receipt or journal). For a plan revision,
   over the bytes of its JSONL line, without the newline.
 - Local files and assets: computed by Auto over the exact bytes of the file.
 - Storage entries (eg. Gaps, Decisions, `memo:` references): the revision
@@ -267,7 +284,7 @@ Plan:
 - `PlanList(context,filter?)`: lists plan summaries (id, status, goal, task
   and gap counts, hold, usage, `created` and `updated`), filtered by field.
   Dates are derived, not stored: the earliest and latest of the revision
-  dates, run start and end times, and the `plan.md` modification time.
+  dates, run start and end times, and the root task's modification time.
   Unreadable plans are
   listed as `Unreadable` with their error rather than failing the list.
 - `PlanRefine(context,plan,reason,task?)`: elaborates the task (by default

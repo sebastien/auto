@@ -148,7 +148,7 @@ class CompositionTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Cannot resolve"):
 				ElaborationApply(self.ctx, self.plan, self.elaboration(file), "shell-selected-new-section")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testSiblingExecutionDefaultsConfigureLaterParameterValues(self):
 		file = self.template({"title": "Siblings"}, "## Process\n@./first.md\n@./second.md\n")
@@ -256,7 +256,7 @@ class CompositionTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Cannot resolve"):
 				ElaborationApply(self.ctx, self.plan, value, "required-child-contract")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testExplicitTaskContractMasksNestedTemplateDefaults(self):
 		file = self.template({"title": "Compose"}, "## Process\n@./child.md\n")

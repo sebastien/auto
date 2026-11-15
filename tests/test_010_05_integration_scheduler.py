@@ -14,6 +14,7 @@ from auto.features.plan.gaps import DecisionRecord
 from auto.features.task.operations import TaskStart
 from auto.utils.data import AutoError, atomicWrite, documentText, readJson
 import test_010_03_integration_consolidation as fixtures
+from support import rootFile
 
 
 @unittest.skipUnless(importlib.util.find_spec("memo"), "Memo checkout is not installed")
@@ -21,9 +22,9 @@ class SchedulerTests(unittest.TestCase):
 	setUp = fixtures.ConsolidationTests.setUp
 
 	def plan(self, triggers, concerns=None):
-		path = self.root / ".auto/plans/demo"
+		path = self.root / ".auto/demo"
 		path.mkdir(parents=True)
-		(path / "plan.md").write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
+		rootFile(path).write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
 		self.context.defaults["memory"]["agents"]["ux"]["triggers"] = triggers
 		if concerns is not None:
 			self.context.defaults["memory"]["agents"]["ux"]["concerns"] = concerns
@@ -97,7 +98,7 @@ class SchedulerTests(unittest.TestCase):
 		self.assertEqual(readJson(file), before)
 
 	def testAgentWithoutExplicitMemoIdentityIsNotQueuedAsRunnable(self):
-		from memo.operator.resolve import entryForId
+		from memo.features.repository.layout import entryForId
 		from pathlib import Path
 		self.memo.createLog("agent-new/log:Observations", identity="urn:test:new-log")
 		self.memo.backend.put(entryForId("agent-new/agent:New").clone(meta={"observations": "agent-new/log:Observations"}, body="A new agent"))
@@ -106,7 +107,7 @@ class SchedulerTests(unittest.TestCase):
 		self.memo.backend.invalidate()
 		path = self.plan([])
 		self.context.defaults["memory"]["agents"]["new"] = {"triggers": ["decision"]}
-		(path / "plan.md").write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/new"]}, "Design"))
+		rootFile(path).write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/new"]}, "Design"))
 		DecisionRecord(self.context, path, "A choice?", True, "Trigger")
 		root = self.root / ".auto/agents/new"
 		self.assertFalse((root / "pending.json").exists())
@@ -114,7 +115,7 @@ class SchedulerTests(unittest.TestCase):
 		self.assertEqual(self.calls, [])
 
 	def testBacklogThresholdIsCheckedAfterRunEnded(self):
-		from memo.plugins.agent.observations import observe
+		from memo.features.agent.observations import observe
 		path = self.plan(["backlog:2"])
 		TaskStart(self.context.derive(plan=path), "root")
 		pending = self.root / ".auto/agents/ux/pending.json"

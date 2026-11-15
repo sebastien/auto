@@ -50,7 +50,7 @@ class ArtifactStructureTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Cannot resolve"):
 				ElaborationApply(self.ctx, self.plan, self.elaboration(file), "artifact-bad-structure")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testParameterizedArtifactHeadingSelectsTheCheck(self):
 		file = self.template({"title": "Artifact structure", "artifact": "./artifact.md", "params": {"section": "Post"}}, "## Process\nProduce\n")

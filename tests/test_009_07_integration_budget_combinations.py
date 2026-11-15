@@ -147,14 +147,14 @@ class BudgetCombinationTests(unittest.TestCase):
 		self.assertEqual(list(PlanContinue(self.context, self.plan))[-1]["data"]["stop"], "ended")
 		runs = {run["task"]: run for run in RunList(self.context)}
 		self.assertEqual(PlanStatus(self.context)["usage"]["tokens"], 6)
-		path = self.plan / "runs" / runs["parent"]["id"] / "receipt.json"
+		path = self.plan / "runs" / runs["tsk-parent"]["id"] / "receipt.json"
 		original = path.read_bytes()
-		self.assertTrue(RunCheck(self.context, runs["parent"], "post")["pass"])
+		self.assertTrue(RunCheck(self.context, runs["tsk-parent"], "post")["pass"])
 		self.assertEqual(PlanStatus(self.context)["usage"]["tokens"], 8)
 		self.assertEqual(PlanStatus(self.context)["usage"]["cost"], 1)
 		self.assertEqual(path.read_bytes(), original)
 		with self.assertRaises(AutoError) as exhausted:
-			RunCheck(self.context, runs["parent"], "post")
+			RunCheck(self.context, runs["tsk-parent"], "post")
 		self.assertEqual(exhausted.exception.kind, "budget")
 		self.assertEqual(len(calls), 4)
 

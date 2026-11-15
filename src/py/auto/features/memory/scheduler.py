@@ -10,6 +10,7 @@ from auto.features.plan.store import locked
 from auto.runtime.operations import Knowledge
 from auto.runtime.model import RunStatus
 from auto.utils.data import atomicWrite, jsonText, merge, readJson, timestamp
+from auto.utils.layout import planPaths
 
 
 def diagnostic(root, error):
@@ -116,11 +117,11 @@ def HousekeepingCheck(context, exclude=()):
 	configured, results = agentsFor(context), []
 	if not configured:
 		return results
-	for file in sorted((context.project / ".auto/plans").glob("*/plan.md")):
+	for path in planPaths(context.project):
 		try:
-			with locked(file.parent):
-				repairEvents(context.derive(plan=file.parent, runScope=None), file.parent)
-				queuePlan(context, file.parent)
+			with locked(path):
+				repairEvents(context.derive(plan=path, runScope=None), path)
+				queuePlan(context, path)
 		except Exception as error:
 			results.append(diagnostic(context.project / ".auto/housekeeping", error))
 	for name, config in configured.items():

@@ -20,8 +20,8 @@ PATH_PATTERN = re.compile(r"^(?:\./|\.\./|/|[a-zA-Z][a-zA-Z0-9+.-]*:)")
 
 
 def isReference(value: object) -> bool:
-	"""Tell whether `value` uses a PATH or scheme reference form."""
-	return isinstance(value, str) and bool(PATH_PATTERN.match(value))
+	"""Tell whether `value` uses a PATH or scheme reference form, which is one line."""
+	return isinstance(value, str) and "\n" not in value and bool(PATH_PATTERN.match(value))
 
 
 # -----------------------------------------------------------------------------

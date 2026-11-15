@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from auto.utils.data import AutoError
+from auto.utils.layout import taskId
 
 # -----------------------------------------------------------------------------
 #
@@ -60,6 +61,14 @@ def createElaborationFromDict(value: dict) -> TaskElaboration:
 	if not value.get("task"):
 		raise AutoError("Elaboration requires its target task")
 	core = {"task", "summary", "rationale", "methodology", "tasks", "removals", "gaps", "context", "learnings"}
+	# Plan task ids are canonical (`tsk-…`), however an Elaborator writes them.
+	def task(item):
+		item = {**item, "id": taskId(item["id"])} if isinstance(item, dict) and isinstance(item.get("id"), str) else item
+		return {**item, "replaces": taskId(item["replaces"])} if isinstance(item, dict) and isinstance(item.get("replaces"), str) else item
+	def gap(item):
+		return {**item, "needed_by": [taskId(id) for id in item["needed_by"]]} if isinstance(item, dict) and isinstance(item.get("needed_by"), list) else item
+	value = {**value, "task": taskId(value["task"]), "tasks": [task(item) for item in value.get("tasks", [])],
+		"removals": [task(item) for item in value.get("removals", [])], "gaps": [gap(item) for item in value.get("gaps", [])]}
 	return TaskElaboration(task=value["task"], summary=value.get("summary", ""), rationale=value.get("rationale", ""),
 		methodology=value.get("methodology"), tasks=list(value.get("tasks", [])), removals=list(value.get("removals", [])),
 		gaps=list(value.get("gaps", [])), context=[ref for ref in map(contextRef, value.get("context") or []) if ref is not None], learnings=list(value.get("learnings", [])),

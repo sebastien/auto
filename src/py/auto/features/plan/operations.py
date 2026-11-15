@@ -11,10 +11,12 @@ from auto.features.memory.config import validateAgents
 from auto.features.plan.model import GapState, PlanState, RevisionOp, createPlan
 from auto.features.plan.references import latestRun, planContent
 from auto.features.plan.store import commit, journal, locked, planPath, recover
-from auto.features.task.model import Task, createTaskFromDict, createTaskFromText, taskText
+from auto.features.task.model import Task, canonicalTask, createTaskFromDict, createTaskFromText, taskText
 from auto.runtime.model import Content, IN_FLIGHT, RunStatus
 from auto.runtime.operations import Resolve, Select
-from auto.utils.data import AutoError, digest, document, documentText, identifier, jsonText, readJson
+from auto.utils.data import AutoError, digest, identifier, jsonText, readJson
+from auto.utils.layout import historyFile, planFile, planPaths, taskFile, taskFiles, taskName
+from auto.utils.layout import taskId
 
 
 # -----------------------------------------------------------------------------
@@ -34,10 +36,10 @@ def tasksAt(path: Path) -> dict[str, Task]:
 
 def _tasksAt(path: Path) -> dict[str, Task]:
 	"""Read plan tasks without acquiring the plan lock."""
-	root = createTaskFromText((path / "plan.md").read_text(), path / "plan.md", True)
+	root = createTaskFromText(planFile(path).read_text(), planFile(path), True)
 	result = {"root": root}
-	for file in sorted((path / "tasks").glob("*.md")):
-		task = createTaskFromText(file.read_text(), file)
+	for file in taskFiles(path):
+		task = canonicalTask(createTaskFromText(file.read_text(), file))
 		if task.id in result:
 			raise AutoError(f"Duplicate task id: {task.id}")
 		result[task.id] = task
@@ -55,7 +57,7 @@ def dependencyGraph(context, tasks: dict, *, taskInputs: dict | None = None) -> 
 		prefix = f"auto:{plan}/task/" if ref.startswith(f"auto:{plan}/task/") else "task:"
 		if not ref.startswith(prefix) or not ref.endswith("/definition"):
 			return None
-		id = ref[len(prefix):-len("/definition")]
+		id = taskId(ref[len(prefix):-len("/definition")])
 		if id not in tasks or next(resolve for start, resolve in owners if ref.startswith(start)) is not planContent:
 			return None
 		if id in definitions:
@@ -68,9 +70,6 @@ def dependencyGraph(context, tasks: dict, *, taskInputs: dict | None = None) -> 
 				# Unchanged definitions retain their exact bytes and registered owner.
 				definitions[id] = None
 				return None
-		if id == "root":
-			meta, body = document(text)
-			text = documentText({**meta, "id": plan}, body)
 		data = text.encode()
 		content = Content(f"auto:{plan}/task/{id}/definition", data, digest(data), task.path)
 		definitions[id] = content
@@ -141,28 +140,27 @@ def PlanGet(context, id=None) -> dict:
 def PlanList(context, filter: dict | None = None) -> list:
 	"""List plan summaries, filtered by status or field; unreadable plans are listed, not fatal."""
 	result = []
-	for path in sorted((context.project / ".auto/plans").glob("*/plan.md")):
-		path = path.parent
+	for path in planPaths(context.project):
 		try:
 			plan = createPlan(path)
 			status = PlanStatus(context, path)
 		except (AutoError, OSError, ValueError) as error:
 			result.append({"id": path.name, "status": "Unreadable", "error": str(error), "path": str(path)})
 			continue
-		result.append({"id": status["id"], "status": status["status"], "goal": str(plan.meta.get("goal") or plan.description or "").strip().partition("\n")[0],
+		result.append({"id": status["id"], "status": status["status"], "goal": plan.goal.strip().partition("\n")[0],
 			"tasks": len(status["tasks"]), "done": sum(state == RunStatus.SUCCEEDED for state in status["tasks"].values()), "gaps": len(status["gaps"]),
 			"hold": (status["hold"] or {}).get("mode"), "usage": status["usage"], **planDates(context, path), "path": str(path)})
 	return [plan for plan in result if all(plan.get(key) == value for key, value in (filter or {}).items())]
 
 
 def planDates(context, path: Path) -> dict:
-	"""Derive when a plan was created and last changed from its revisions and runs, else from plan.md."""
+	"""Derive when a plan was created and last changed from its revisions and runs, else from its root task."""
 	from datetime import datetime, timezone
 	from auto.features.task.operations import RunList
 	dates = [row["date"] for row in journal(path) if row.get("date")]
 	for run in RunList(context.derive(plan=path)):
 		dates += [date for date in (run.get("started"), run.get("ended")) if date]
-	dates.append(datetime.fromtimestamp((path / "plan.md").stat().st_mtime, timezone.utc).isoformat())
+	dates.append(datetime.fromtimestamp(planFile(path).stat().st_mtime, timezone.utc).isoformat())
 	dates.sort(key=lambda date: datetime.fromisoformat(date))
 	return {"created": dates[0], "updated": dates[-1]}
 
@@ -185,8 +183,8 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 				if child != "root" and tasks[child].meta.get("parent", "root") == id:
 					remove(child)
 			task = tasks.pop(id)
-			writes[f".history/{id}.md"] = task.path.read_text() if task.path.exists() else taskText(task)
-			writes[f"tasks/{id}.md"] = None
+			writes[str(historyFile(path, id).relative_to(path))] = task.path.read_text() if task.path.exists() else taskText(task)
+			writes[taskName(id)] = None
 			operations.append({"op": RevisionOp.REMOVE, "task": id})
 		for change in changes:
 			op = change["op"]
@@ -202,34 +200,33 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 				agents = validateAgents(context, change["agents"])
 				root = tasks["root"]
 				root.meta["agents"] = agents
-				meta, body = document(taskText(root))
-				meta["id"] = createPlan(path).id
-				writes["plan.md"] = documentText(meta, body)
+				writes[taskName("root")] = taskText(root)
 				operations.append({"op": "agents", "agents": agents})
 			elif op == "remove":
-				remove(change["task"])
+				remove(taskId(change["task"]))
 			elif op in {"add", "edit", "replace"}:
 				value = change["task"]
-				id = identifier(value["id"])
+				id = identifier(taskId(value["id"]))
+				value = {**value, "id": id, **({"parent": taskId(value["parent"])} if value.get("parent") else {})}
 				if id == "root":
 					raise AutoError("Use update for the root task")
 				if op == "edit":
 					if id not in tasks or latestRun(path, id):
 						raise AutoError("Only tasks without runs can be edited")
-				elif id in tasks or (path / ".history" / (id + ".md")).exists() or latestRun(path, id):
+				elif id in tasks or taskFile(path, id).exists() or historyFile(path, id).exists() or latestRun(path, id):
 					raise AutoError(f"Task identity already used: {id}")
 				if op == "replace":
-					old = change["old"]
+					old = taskId(change["old"])
 					parent = tasks[old].meta.get("parent", "root") if old in tasks else "root"
 					remove(old)
 					value = {**value, "replaces": old, "parent": value.get("parent", parent)}
-				task = createTaskFromDict(value, path / "tasks" / (id + ".md"))
+				task = createTaskFromDict(value, taskFile(path, id))
 				tasks[id] = task
 				text = taskText(task)
-				writes[f"tasks/{id}.md"] = text
+				writes[taskName(id)] = text
 				operation = {"op": op, "task": id, "digest": digest(text.encode()), "parent": task.meta.get("parent", "root")}
 				if op == "replace":
-					operation["old"] = change["old"]
+					operation["old"] = old
 				operations.append(operation)
 			elif op == "update":
 				if latestRun(path, "root"):
@@ -238,10 +235,7 @@ def PlanRevise(context, plan, changes: list, reason: str, **metadata) -> dict:
 					raise AutoError("Use the agents revision operation to change plan agents")
 				root = tasks["root"]
 				root.meta.update(change["fields"])
-				rootText = taskText(root)
-				meta, body = document(rootText)
-				meta["id"] = createPlan(path).id
-				writes["plan.md"] = documentText(meta, body)
+				writes[taskName("root")] = taskText(root)
 				operations.append({"op": RevisionOp.UPDATE, "field": list(change["fields"])})
 			else:
 				raise AutoError(f"Unsupported revision operation: {op}")
@@ -346,7 +340,7 @@ def PlanStatus(context, plan=None) -> dict:
 		status = PlanState.DRAFT
 	policy = PolicyResolve(context, path)
 	policy["tasks"] = policyTasks
-	return {"id": meta["id"], "goal": meta.get("goal") or definition.description or "", "path": str(path),
+	return {"id": definition.id, "goal": definition.goal, "path": str(path),
 		"status": status, "tasks": states, "taskDetails": details, "gaps": gaps, "policy": policy, "budget": meta.get("budget", {}), "usage": usage, "hold": planHold(path),
 		"continuation": readJson(path / "continuation.json"),
 		"failures": [run["id"] for run in runs if run.get("failure")], "stale": stale, "staleRuns": staleRuns, "revision": (journal(path) or [{}])[-1].get("id")}

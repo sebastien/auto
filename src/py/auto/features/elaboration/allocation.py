@@ -1,5 +1,7 @@
 """Allocate resolved task budgets and recheck current plan capacity."""
 
+import math
+
 from auto.features.plan.references import latestRun
 from auto.features.task.operations import RunList, effectiveTask
 from auto.runtime.model import RunStatus, budgetValue
@@ -59,7 +61,8 @@ class BudgetAllocation:
 			missing = [task for task in self.new if key not in self.budgets[task.id]]
 			for task in missing:
 				share = max(0, available - fixed) / len(missing)
-				self.budgets[task.id][key] = int(share) if key == "tokens" else share
+				# Round shares down: whole tokens and seconds, cost to a hundredth of a cent.
+				self.budgets[task.id][key] = int(share) if key in {"tokens", "time"} else math.floor(share * 10000) / 10000
 		self.validate()
 		for task in self.new:
 			if self.budgets[task.id] or "budget" in task.meta:

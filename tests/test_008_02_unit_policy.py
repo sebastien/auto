@@ -11,6 +11,7 @@ from auto.features.plan.policy import PolicyGrant, PolicyResolve, ruleFor
 from auto.features.plan.store import commit, locked
 from auto.runtime.model import Context
 from auto.utils.data import AutoError
+from support import rootFile
 
 
 class Store:
@@ -26,11 +27,10 @@ class Store:
 
 class PolicyTest(unittest.TestCase):
 	def makePlan(self, root: Path) -> tuple[Path, Context]:
-		path = root / ".auto/plans/example"
+		path = root / ".auto/example"
 		path.mkdir(parents=True)
-		(path / "plan.md").write_text("---\nid: example\npolicy:\n  deploy.production: allow\n---\n# Example\n")
-		(path / "tasks").mkdir()
-		(path / "tasks/ship.md").write_text("---\nid: ship\neffects: [deploy.production]\n---\n# Ship\n")
+		rootFile(path).write_text("---\nid: example\npolicy:\n  deploy.production: allow\n---\n# Example\n")
+		(path / "tsk/ship.md").write_text("---\nid: ship\neffects: [deploy.production]\n---\n# Ship\n")
 		layers = [("user", {"deploy": "deny", "repo": "allow"}), ("project", {"deploy.production": "confirm"})]
 		return path, Context(project=root, plan=path, policyLayers=layers)
 
@@ -61,8 +61,8 @@ class PolicyTest(unittest.TestCase):
 				with self.assertRaises(AutoError):
 					PlanCreate(context.derive(author="agent"), "Commit", effects=["vcs.commit"])
 			resolved = PolicyResolve(context, path)
-			self.assertEqual(resolved["grants"][0]["source"], "auto:000-write-notes-commit/task/root/definition")
-			(path / "plan.md").write_text((path / "plan.md").read_text() + "\nChanged goal\n")
+			self.assertEqual(resolved["grants"][0]["source"], "auto:pln-000-write-notes-commit/task/root/definition")
+			rootFile(path).write_text(rootFile(path).read_text() + "\nChanged goal\n")
 			self.assertEqual(PolicyResolve(context, path)["grants"], [])
 
 # EOF

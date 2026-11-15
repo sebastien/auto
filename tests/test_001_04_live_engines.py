@@ -16,6 +16,7 @@ from auto.features.script.model import Script
 from auto.features.script.operations import ScriptStart
 from auto.runtime.model import Context, Limits
 from auto.integration.opencode.engine import OpenCode
+from support import rootFile
 
 
 @unittest.skipUnless(os.environ.get("AUTO_LIVE_ENGINES") == "1", "Set AUTO_LIVE_ENGINES=1 to call real providers")
@@ -108,9 +109,9 @@ class LiveEngineTests(unittest.TestCase):
 		for action in actions:
 			with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
 				root = Path(directory)
-				plan = root / ".auto/plans/live"
+				plan = root / ".auto/live"
 				plan.mkdir(parents=True)
-				(plan / "plan.md").write_text("---\nid: live\n---\n# Live control check\n")
+				rootFile(plan).write_text("---\nid: live\n---\n# Live control check\n")
 				config = {"engine": "opencode"}
 				if os.environ.get("AUTO_LIVE_OPENCODE_MODEL"):
 					config["model"] = os.environ["AUTO_LIVE_OPENCODE_MODEL"]
@@ -149,7 +150,7 @@ from auto.features.task.operations import RunAnswer, RunCancel, RunGet
 from auto.integration.memo.store import MemoKnowledge
 from auto.runtime.model import Context
 root = Path(sys.argv[1])
-context = Context(project=root, plan=root / ".auto/plans/live", config={"engine": "opencode"}, knowledge=MemoKnowledge(root),
+context = Context(project=root, plan=root / ".auto/live", config={"engine": "opencode"}, knowledge=MemoKnowledge(root),
     defaults={"policy": {"repo.read": "confirm"}})
 if sys.argv[3] != "cancel":
     RunAnswer(context, sys.argv[2], json.loads(sys.argv[4]), "Live fixture answer")

@@ -13,6 +13,7 @@ from pathlib import Path
 from auto.runtime.model import Event, RunStatus, budgetValue
 from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, document, jsonText, yamlLoad
+from auto.utils.layout import planPaths
 
 # -----------------------------------------------------------------------------
 #
@@ -40,12 +41,12 @@ def firstLine(text) -> str:
 def planCandidates(context, arguments):
 	from auto.features.plan.model import createPlan
 	result = []
-	for path in sorted((context.project / ".auto/plans").glob("*/plan.md")):
+	for path in planPaths(context.project):
 		try:
 			plan = createPlan(path)
 		except (AutoError, OSError, ValueError):
 			continue
-		result.append((plan.id, firstLine(plan.meta.get("goal") or plan.description)))
+		result.append((plan.id, firstLine(plan.goal)))
 	return result
 
 

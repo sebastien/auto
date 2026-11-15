@@ -53,7 +53,7 @@ class Engine:
             yield {"type": "ScriptMeta", "name": "usage", "value": dict(context.limits.usage)}
             pause()
             yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Done"}
-context = Context(project=root, plan=root / ".auto/plans/demo", knowledge=MemoKnowledge(root),
+context = Context(project=root, plan=root / ".auto/demo", knowledge=MemoKnowledge(root),
     engines={"fake": Engine()}, config={"engine": "fake"})
 original = operations.saveRun
 def save(context, path, run, state=None):

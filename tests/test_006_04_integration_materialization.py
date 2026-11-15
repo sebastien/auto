@@ -21,6 +21,7 @@ from auto.runtime.operations import Resolve, Value
 from auto.runtime.model import Content
 from auto.utils.data import AutoError, documentText, digest
 import test_004_01_integration_planning as fixtures
+from support import rootFile
 
 
 class MaterializationTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class MaterializationTests(unittest.TestCase):
 		self.assertEqual(task.meta["budget"]["tokens"], 100)
 		self.assertIn("Friendly: {{ data }}", task.sections["Process"])
 		self.assertNotIn("params.detail", task.sections["Process"])
-		self.assertEqual(PlanStatus(self.ctx, self.plan)["taskDetails"]["work"]["from"], str(file))
+		self.assertEqual(PlanStatus(self.ctx, self.plan)["taskDetails"]["tsk-work"]["from"], str(file))
 		file.write_text("---\ntitle: Changed\n---\n## Process\nChanged template\n")
 		self.assertEqual(TaskStart(self.ctx, "producer")["status"], "Succeeded")
 		self.assertIn("Friendly: done", TaskExpand(self.ctx, "work"))
@@ -127,7 +128,7 @@ class MaterializationTests(unittest.TestCase):
 		value = self.elaboration(file)
 		value.tasks[0:0] = [{"id": name, "title": name, "sections": {"Process": "Produce " + name}} for name in ("a", "b")]
 		ElaborationApply(self.ctx, self.plan, value, "scoped-inputs")
-		self.assertEqual(TaskDependencies(self.ctx, TaskGet(self.ctx, "work")), ["a", "b"])
+		self.assertEqual(TaskDependencies(self.ctx, TaskGet(self.ctx, "tsk-work")), ["tsk-a", "tsk-b"])
 		self.engine.outputs = iter(["Output A", "Output B"])
 		TaskStart(self.ctx, "a")
 		TaskStart(self.ctx, "b")
@@ -149,7 +150,7 @@ class MaterializationTests(unittest.TestCase):
 		(file.parent / "child.md").write_text("{{ params.name }}")
 		ElaborationApply(self.ctx, self.plan, self.elaboration(file), "owned-source")
 		task = TaskGet(self.ctx, "work")
-		ref = next(ref for ref in task.meta["_template_sources"] if "/task/work/source/" in ref)
+		ref = next(ref for ref in task.meta["_template_sources"] if "/task/tsk-work/source/" in ref)
 		(file.parent / "child.md").unlink()
 		self.assertIn("Stored", Resolve(self.ctx, ref).text)
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": "work"}], "Remove unused task")
@@ -325,7 +326,7 @@ class MaterializationTests(unittest.TestCase):
 					with self.assertRaisesRegex(AutoError, message):
 						ElaborationApply(self.ctx, self.plan, value, "resolved-section-error")
 					self.assertEqual(shell.call_count, 1)
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 				self.assertEqual(journal(self.plan), [])
 
 	def testCompanionShellBranchesDelayTheirFileSelectionUntilApplication(self):
@@ -433,7 +434,7 @@ class MaterializationTests(unittest.TestCase):
 		(file.parent / "child.md").write_text("@./child.md\n")
 		violations = ElaborationValidate(self.ctx, self.plan, self.elaboration(file))
 		self.assertIn("Recursive template source", str(violations))
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		(file.parent / "child.md").write_text("x" * 150)
 		(file.parent / "other.md").write_text("y" * 150)
 		file = self.template({"title": "Size"}, "## Process\n@./child.md\n@./other.md\n")
@@ -611,7 +612,7 @@ class MaterializationTests(unittest.TestCase):
 			with self.subTest(key=key):
 				value = self.elaboration(file, **{key: {}})
 				self.assertIn("cannot supply generated template metadata", str(ElaborationValidate(self.ctx, self.plan, value)))
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testOrdinaryTaskArtifactParametersKeepRuntimeOverridePrecedence(self):
 		artifact = self.root / "artifact.md"
@@ -646,13 +647,13 @@ class MaterializationTests(unittest.TestCase):
 		with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
 			ElaborationApply(context, self.plan, value, "elaboration-denied")
 		self.assertFalse(marker.exists())
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testShellDerivedBudgetIsCheckedAfterResolutionAndFrozen(self):
 		counter = self.root / "budget-count.txt"
 		file = self.template({"title": "Measured allocation", "params": {"tokens": "!printf x >> " + str(counter) + "; printf 12"},
 			"budget": {"tokens": "{{ params.tokens | plus: 0 }}"}}, "## Process\nWork\n")
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "budget": {"tokens": 20}}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "budget": {"tokens": 20}}, "# Demo"))
 		value = self.elaboration(file)
 		self.assertEqual(ElaborationValidate(self.ctx, self.plan, value), [])
 		self.assertFalse(counter.exists())
@@ -691,7 +692,7 @@ class MaterializationTests(unittest.TestCase):
 					with self.assertRaises(AutoError):
 						ElaborationApply(self.ctx, self.plan, self.elaboration(file), "invalid-static")
 					self.assertEqual(shell.call_count, 0)
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testResolvedInvalidMetadataCannotBeCommitted(self):
 		for meta, result in (({"budget": {"tokens": "{{ params.value | plus: 0 }}"}}, "-1"),
@@ -706,7 +707,7 @@ class MaterializationTests(unittest.TestCase):
 					with self.assertRaises(AutoError):
 						ElaborationApply(self.ctx, self.plan, value, "invalid-dynamic")
 					self.assertEqual(shell.call_count, 1)
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 				self.assertEqual(journal(self.plan), [])
 
 	def testShellDerivedOutputFormatsArePlainStringsWhileContractValuesStayLiteral(self):
@@ -732,14 +733,14 @@ class MaterializationTests(unittest.TestCase):
 					self.assertEqual(shell.call_count, 1)
 
 	def testResolvedBudgetMustFitThePlanBeforeCommit(self):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "budget": {"tokens": 20}}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "budget": {"tokens": 20}}, "# Demo"))
 		file = self.template({"title": "Excess allocation", "params": {"tokens": "!printf 21"},
 			"budget": {"tokens": "{{ params.tokens | plus: 0 }}"}}, "## Process\nWork\n")
 		value = self.elaboration(file)
 		self.assertEqual(ElaborationValidate(self.ctx, self.plan, value), [])
 		with self.assertRaisesRegex(AutoError, "budgets exceed remaining budget"):
 			ElaborationApply(self.ctx, self.plan, value, "excess-resolved-budget")
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testNativeContractAndInputMappingsKeepNestedStringsAsData(self):
@@ -775,7 +776,7 @@ class MaterializationTests(unittest.TestCase):
 		(file.parent / "selected.md").write_text(documentText({"model": "Selected"}, "Profile"))
 		default = file.parent / "default.md"
 		default.write_text(documentText({"model": "Default"}, "Profile"))
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "profile": str(default)}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "profile": str(default)}, "# Demo"))
 		value = self.elaboration(file)
 		self.assertEqual(ElaborationValidate(self.ctx, self.plan, value), [])
 		dry = materialize(self.ctx, value.tasks[0], "root", dry=True)
@@ -843,7 +844,7 @@ class MaterializationTests(unittest.TestCase):
 		with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
 			ElaborationApply(context, self.plan, value, "nested-denied")
 		self.assertFalse(marker.exists())
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		with patch("auto.integration.process.capture", return_value=("Should not execute", "", 0)) as shell:
 			child.write_text(documentText({"params": {"label": "git:status"}}, "{{ params.label }}"))
 			with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):
@@ -915,7 +916,7 @@ class MaterializationTests(unittest.TestCase):
 		value.tasks[0]["from"] = {"ref": str(file), "digest": "sha256:outdated"}
 		violations = ElaborationValidate(self.ctx, self.plan, value)
 		self.assertIn("pinned revision", str(violations))
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testInvalidParameterMetadataReturnsValidationViolations(self):
 		for expression in ("{{ params.missing }}", "{{ params.label | missing_filter }}", "{{ params.label"):
@@ -923,7 +924,7 @@ class MaterializationTests(unittest.TestCase):
 				file = self.template({"title": expression, "params": {"label": "Known"}}, "## Process\nWork\n")
 				violations = ElaborationValidate(self.ctx, self.plan, self.elaboration(file))
 				self.assertIn("Template parameter expansion failed", str(violations))
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testWhitespaceControlsApplyOnceAcrossBothStages(self):
 		params = {"word": " x ", "flag": True, "names": ["a ", " b"]}
@@ -955,8 +956,8 @@ class MaterializationTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Plan changed"):
 				ElaborationApply(self.ctx, self.plan, value, "elaboration-concurrent")
 		self.assertEqual(len(calls), 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
-		self.assertTrue((self.plan / "tasks/concurrent.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
+		self.assertTrue((self.plan / "tsk/concurrent.md").exists())
 
 	def testConcurrentApplicationOfSameRunDoesNotRepeatParameterEffects(self):
 		counter = self.root / "once.txt"

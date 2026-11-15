@@ -17,6 +17,7 @@ from auto.runtime.operations import Resolve, Value, isReference
 from auto.utils.data import AutoError, document, documentText, merge
 from auto.utils.references import relocate, relocateMeta
 from auto.utils.config import RUNTIME_KEYS
+from auto.utils.layout import taskFile
 
 # -----------------------------------------------------------------------------
 #
@@ -112,6 +113,11 @@ def materialize(context, value: dict, parent: str, *, dry: bool = False, deferre
 		if profile:
 			merged["profile"] = relocateMeta({"profile": profile}, context.plan)["profile"]
 	merged["id"], merged["parent"] = definition["id"], parent
+	# A template's catalogue metadata is its own: `from` identifies it.
+	for key in ("kind", "identity") if definition.get("from") else ():
+		merged.pop(key, None)
+	if not merged.get("params"):
+		merged.pop("params", None)
 	sources = TemplateSources(context, merged.get("_template_sources"), task=definition["id"],
 		parameterContext=parameterContext if definition.get("from") else None, inherited=merged, dry=dry)
 	if definition.get("from"):
@@ -120,12 +126,12 @@ def materialize(context, value: dict, parent: str, *, dry: bool = False, deferre
 		params = {name: item[1:] if isinstance(item, str) and item.startswith("\\") else
 			Unknown() if isinstance(item, str) and (item.startswith("!") or isReference(item)) else item
 			for name, item in merged.get("params", {}).items()}
-	sources.framework(merged, context.plan / "tasks", params, compileChecks=bool(definition.get("from")),
+	sources.framework(merged, taskFile(context.plan, definition["id"]).parent, params, compileChecks=bool(definition.get("from")),
 		outputProjection=outputProjection if dry else None)
 	if sources.records:
 		merged["_template_sources"] = sources.records
 	task = Task(definition["id"], merged, {**parts, **{name: relocate(body, context.project) for name, body in definition.get("sections", {}).items()}},
-		context.plan / "tasks" / (definition["id"] + ".md"), definition.get("description", description))
+		taskFile(context.plan, definition["id"]), definition.get("description", description))
 	if len(taskText(task).encode("utf-8")) > context.maxBytes:
 		raise AutoError("Materialised task exceeds byte limit")
 	if dry:

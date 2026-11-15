@@ -72,7 +72,7 @@ confirmation.
 ## Format
 
 Policy is declared under `[policy]` in configuration files (see Sources), and
-under `policy` in `plan.md`:
+under `policy` in the root task (`tsk/root.md`):
 
 ```toml
 [policy]
@@ -103,7 +103,7 @@ effects: [repo.write, vcs.commit]
 
 | Key | Type | Purpose |
 |---|---|---|
-| `policy` | `{effect: rule}` | Plan rules, in `plan.md` only |
+| `policy` | `{effect: rule}` | Plan rules, in the root task only |
 | `effects` | list of effects | Expected effects of the task, in task definitions |
 
 Grants are recorded in the plan journal as a revision operation,
@@ -119,7 +119,7 @@ The effective policy of a plan is resolved from, by increasing precedence:
 2. The user configuration (`~/.auto/config.toml`,
    `$XDG_CONFIG_HOME/auto/config.toml`)
 3. The project configuration (`.auto/config.toml`)
-4. The plan (`plan.md`)
+4. The plan (its root task)
 5. The grants of the plan
 
 Sources 2 to 4 may tighten any rule (`allow` → `confirm` → `deny`). They may

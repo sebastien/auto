@@ -12,6 +12,7 @@ from auto.features.task.operations import RunAnswer, RunGet, TaskStart
 from auto.runtime.model import Context
 from auto.utils.data import AutoError, documentText, readJson
 from test_004_01_integration_planning import Fake, MemoryKnowledge
+from support import rootFile
 
 
 class Snapshot:
@@ -48,7 +49,7 @@ class WakeTests(unittest.TestCase):
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
 		self.root = Path(temp.name)
-		self.plan = self.root / ".auto/plans/demo"
+		self.plan = self.root / ".auto/demo"
 		self.plan.mkdir(parents=True)
 		self.store = Store()
 		self.context = Context(project=self.root, plan=self.plan, knowledge=self.store,
@@ -56,10 +57,10 @@ class WakeTests(unittest.TestCase):
 		self.select(["auto:agent/ux", "auto:agent/dev"])
 
 	def select(self, agents):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "agents": agents}, "Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "agents": agents}, "Demo"))
 
 	def state(self):
-		return {"task": {"path": str(self.plan / "tasks/work.md"), "goal": "Design a page"}, "inputs": {}}
+		return {"task": {"path": str(self.plan / "tsk/work.md"), "goal": "Design a page"}, "inputs": {}}
 
 	def testSharedBudgetsAndStableOrderKeepLearningTextLiteral(self):
 		run, state = {"id": "r1", "task": "work"}, self.state()
@@ -104,7 +105,7 @@ class WakeTests(unittest.TestCase):
 		text = RunMemoryRequest(self.context.derive(policyDefaults=defaults), run, state, {"prompt": "Work"})["prompt"]
 		self.assertIn("Agent auto:agent/ux; memory.observe = deny", text)
 		self.assertIn("Agent auto:agent/dev; memory.observe = allow", text)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "agents": ["auto:agent/ux", "auto:agent/dev"],
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "agents": ["auto:agent/ux", "auto:agent/dev"],
 			"policy": {"memory.observe": "deny"}}, "Demo"))
 		text = RunMemoryRequest(self.context, run, state, {"prompt": "Work"})["prompt"]
 		self.assertIn("Agent auto:agent/dev; memory.observe = deny", text)
@@ -153,7 +154,7 @@ class WakeTests(unittest.TestCase):
 
 	@unittest.skipUnless(importlib.util.find_spec("memo"), "Memo checkout is not installed")
 	def testRealMemoSnapshotAndLayerMinimums(self):
-		from memo.operator.resolve import entryForId
+		from memo.features.repository.layout import entryForId
 		from auto.integration.memo.store import MemoKnowledge
 		store = MemoKnowledge(self.root)
 		owner = entryForId("agent-ux/agent:Ux")

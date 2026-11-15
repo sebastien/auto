@@ -18,6 +18,7 @@ from auto.features.task.operations import RunAnswer, RunGet, TaskStart
 from auto.runtime.model import Context
 from auto.utils.data import AutoError, atomicWrite, documentText
 from test_004_01_integration_planning import Fake, MemoryKnowledge
+from support import rootFile
 
 
 class EventTests(unittest.TestCase):
@@ -25,9 +26,9 @@ class EventTests(unittest.TestCase):
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
 		self.root = Path(temp.name)
-		self.plan = self.root / ".auto/plans/demo"
+		self.plan = self.root / ".auto/demo"
 		self.plan.mkdir(parents=True)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
 		self.context = Context(project=self.root, plan=self.plan, engines={"fake": Fake()}, config={"engine": "fake"}, knowledge=MemoryKnowledge())
 
 	def add(self, id):
@@ -107,7 +108,7 @@ class EventTests(unittest.TestCase):
 			with self.assertRaises(OSError):
 				self.add("work")
 		self.assertEqual(len(journal(self.plan)), 1)
-		self.assertTrue((self.plan / "tasks/work.md").is_file())
+		self.assertTrue((self.plan / "tsk/work.md").is_file())
 		PlanRepair(self.context)
 		original = self.events()
 		PlanRepair(self.context)
@@ -128,7 +129,7 @@ class EventTests(unittest.TestCase):
 		self.assertEqual(self.events(), repaired)
 
 	def testRepairRetainsHistoricalPlanEndsAcrossExplicitRetries(self):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "## Process\nWork"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo"}, "## Process\nWork"))
 		class Engine:
 			attempts = 0
 			def start(inner, context, request):

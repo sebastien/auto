@@ -22,6 +22,7 @@ from auto.features.task.operations import RunGet, RunList, TaskStart, reconcileR
 from auto.runtime.model import Context
 from auto.utils.data import AutoError, documentText, readJson, timestamp
 from test_004_01_integration_planning import Fake, MemoryKnowledge
+from support import rootFile
 
 
 class ContinuationTests(unittest.TestCase):
@@ -29,9 +30,9 @@ class ContinuationTests(unittest.TestCase):
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
 		self.root = Path(temp.name)
-		self.plan = self.root / ".auto/plans/demo"
+		self.plan = self.root / ".auto/demo"
 		self.plan.mkdir(parents=True)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
 		self.context = Context(project=self.root, plan=self.plan, engines={"fake": Fake()}, config={"engine": "fake"}, knowledge=MemoryKnowledge())
 
 	def add(self, id, **fields):
@@ -59,7 +60,7 @@ class Engine:
         sys.stdin.readline()
         yield {"type": "ScriptEnded", "status": "Succeeded", "output": "done"}
 root = Path(sys.argv[1])
-context = Context(project=root, plan=root / ".auto/plans/demo", knowledge=Store(), engines={"fake": Engine()}, config={"engine": "fake"})
+context = Context(project=root, plan=root / ".auto/demo", knowledge=Store(), engines={"fake": Engine()}, config={"engine": "fake"})
 if len(sys.argv) > 2 and sys.argv[2] == "repair":
     PlanRepair(context)
 elif len(sys.argv) > 2 and sys.argv[2] == "continue":
@@ -134,7 +135,7 @@ else:
 		self.assertEqual(old["runs"], [RunList(self.context)[0]["id"]])
 		self.assertEqual(sum(event["kind"] == "RunEnded" for event in events), 1)
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
-		self.assertCountEqual([run["task"] for run in RunList(self.context)], ["work", "independent"])
+		self.assertCountEqual([run["task"] for run in RunList(self.context)], ["tsk-work", "tsk-independent"])
 
 	def testWorkerLockIsHeldBeforeRunningStateIsPublished(self):
 		self.add("work")
@@ -174,7 +175,7 @@ else:
 			{"op": "add", "task": {"id": "c", "sections": {"Process": "c"}}}], "Ordered work")
 		self.context.engines["fake"] = Fake(["b output", "c output", "a output"])
 		events = self.runPlan()
-		self.assertEqual([row["data"]["task"] for row in events if row["kind"] == "RunStarted"], ["b", "c", "a", "root"])
+		self.assertEqual([row["data"]["task"] for row in events if row["kind"] == "RunStarted"], ["tsk-b", "tsk-c", "tsk-a", "root"])
 		self.assertEqual(events[0]["kind"], "ContinuationStarted")
 		self.assertEqual(events[-1]["kind"], "ContinuationStopped")
 		self.assertEqual(events[-1]["data"]["stop"], "ended")
@@ -196,7 +197,7 @@ else:
 		self.add("dependent", inputs={"bad": "task:bad"})
 		self.add("independent")
 		events = self.runPlan()
-		self.assertEqual([row["data"]["task"] for row in events if row["kind"] == "RunStarted"], ["bad", "independent"])
+		self.assertEqual([row["data"]["task"] for row in events if row["kind"] == "RunStarted"], ["tsk-bad", "tsk-independent"])
 		self.assertEqual(events[-1]["data"]["stop"], "failed")
 		count = len(RunList(self.context))
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
@@ -210,7 +211,7 @@ else:
 		self.add("first")
 		self.add("second")
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
-		self.assertEqual([run["task"] for run in RunList(self.context)], ["first"])
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["tsk-first"])
 
 	def testConsecutiveTimeoutThresholdStopsProgression(self):
 		class Engine:
@@ -220,7 +221,7 @@ else:
 		for id in ("one", "two", "three"):
 			self.add(id)
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
-		self.assertEqual([run["task"] for run in RunList(self.context)], ["one", "two"])
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["tsk-one", "tsk-two"])
 
 	def testBudgetStopsBeforeUnaffordableRunAndCapsUnallocatedWork(self):
 		PlanRevise(self.context, self.plan, [{"op": "update", "fields": {"budget": {"tokens": 5}}}], "Small budget")
@@ -254,8 +255,8 @@ else:
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "ended")
 		self.assertEqual(PlanStatus(self.context)["status"], "Succeeded")
 		runs = {run["task"]: run for run in RunList(self.context)}
-		self.assertEqual(runs["work"]["usage"]["tokens"], 5)
-		self.assertEqual(runs["work"]["usage"]["cost"], .5)
+		self.assertEqual(runs["tsk-work"]["usage"]["tokens"], 5)
+		self.assertEqual(runs["tsk-work"]["usage"]["cost"], .5)
 		self.assertEqual(runs["root"]["budget"]["tokens"], 0)
 		self.assertEqual(runs["root"]["usage"]["tokens"], 0)
 
@@ -279,7 +280,7 @@ else:
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "ended")
 		self.assertEqual(len(calls), 1)
 		self.assertEqual(PlanStatus(self.context)["usage"]["tokens"], 5)
-		self.assertEqual({run["task"]: run["budget"]["tokens"] for run in RunList(self.context)}, {"parent": 0, "child": 5, "root": 0})
+		self.assertEqual({run["task"]: run["budget"]["tokens"] for run in RunList(self.context)}, {"tsk-parent": 0, "tsk-child": 5, "root": 0})
 
 	def testZeroBudgetStopsBeforeStartingModelWork(self):
 		PlanRevise(self.context, self.plan, [{"op": "update", "fields": {"budget": {"tokens": 0}}}], "No inference")
@@ -353,7 +354,7 @@ else:
 			return TaskStart(context, task)
 		with patch("auto.features.orchestration.operations.TaskStart", side_effect=start):
 			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "budget")
-		self.assertEqual([run["task"] for run in RunList(self.context)], ["manual"])
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["tsk-manual"])
 		self.assertEqual(PlanStatus(self.context)["usage"]["tokens"], 5)
 
 	def testUnboundedWorkerReservesCapacityWhenAPlanLimitIsAdded(self):
@@ -384,7 +385,7 @@ else:
 					yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Done"}
 		self.context.engines["fake"] = Engine()
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "waiting")
-		run = next(run for run in RunList(self.context) if run["task"] == "question")
+		run = next(run for run in RunList(self.context) if run["task"] == "tsk-question")
 		self.assertEqual(run["usage"]["tokens"], 1)
 		GapDecide(self.context, run["gap"], "yes", "Chosen")
 		return run, allocations
@@ -406,7 +407,7 @@ else:
 		self.assertEqual(RunGet(self.context, run)["budget"]["tokens"], 2)
 		self.assertEqual(RunGet(self.context, run)["usage"]["tokens"], 2)
 		self.assertEqual(PlanStatus(self.context)["usage"]["tokens"], 5)
-		self.assertEqual(sum(item["task"] == "question" for item in RunList(self.context)), 1)
+		self.assertEqual(sum(item["task"] == "tsk-question" for item in RunList(self.context)), 1)
 
 	def testWaitingRunResumesOnlyAtNextContinuationAfterDecision(self):
 		class Engine:
@@ -419,12 +420,12 @@ else:
 		self.add("question")
 		self.add("independent")
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "waiting")
-		run = next(run for run in RunList(self.context) if run["task"] == "question")
+		run = next(run for run in RunList(self.context) if run["task"] == "tsk-question")
 		GapDecide(self.context, run["gap"], "yes", "Chosen")
 		self.assertEqual(RunGet(self.context, run)["status"], "Waiting")
 		self.assertEqual(self.runPlan()[-1]["data"]["stop"], "ended")
 		self.assertEqual(RunGet(self.context, run)["status"], "Succeeded")
-		self.assertEqual(sum(run["task"] == "question" for run in RunList(self.context)), 1)
+		self.assertEqual(sum(run["task"] == "tsk-question" for run in RunList(self.context)), 1)
 
 	def testResolutionDuringContinuationResumesInTheSameProgression(self):
 		class Engine:
@@ -485,7 +486,7 @@ else:
 		self.add("writer", effects=["repo.write"])
 		other = self.plan.with_name("other")
 		other.mkdir()
-		(other / "plan.md").write_text(documentText({"id": "other", "goal": "Other", "effects": ["repo.write"]}, "# Other"))
+		rootFile(other).write_text(documentText({"id": "other", "goal": "Other", "effects": ["repo.write"]}, "# Other"))
 		first = PlanContinue(self.context, self.plan)
 		next(first)
 		try:
@@ -498,13 +499,13 @@ else:
 	def testDeferredElaborationAndAfterHintsAreActedOn(self):
 		self.add("deferred", hints={"elaborate": "later"}, sections={})
 		def refine(context, plan, reason, task="root"):
-			if task == "deferred":
+			if task == "tsk-deferred":
 				PlanRevise(context, plan, [{"op": "add", "task": {"id": "child", "parent": "deferred", "hints": {"refine": "after"}, "sections": {"Process": "Child work"}}}], reason)
 			return {"run": {"status": "Succeeded"}}
 		with patch("auto.features.orchestration.operations.PlanRefine", side_effect=refine) as refineOperation:
 			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "ended")
-		self.assertEqual([call.kwargs["task"] for call in refineOperation.call_args_list], ["deferred", "root"])
-		self.assertEqual([run["task"] for run in RunList(self.context)], ["child", "deferred", "root"])
+		self.assertEqual([call.kwargs["task"] for call in refineOperation.call_args_list], ["tsk-deferred", "root"])
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["tsk-child", "tsk-deferred", "root"])
 
 	def testAfterSuccessRefinementRunsAfterAQuestionResumes(self):
 		class Engine:
@@ -550,7 +551,7 @@ else:
 		with patch("auto.features.orchestration.operations.PlanRefine", return_value=failed) as refine:
 			self.assertEqual(self.runPlan()[-1]["data"]["stop"], "failed")
 			refine.assert_called_once()
-		self.assertEqual([run["task"] for run in RunList(self.context)], ["work"])
+		self.assertEqual([run["task"] for run in RunList(self.context)], ["tsk-work"])
 
 	def testFailureHasPrecedenceOverOpenGaps(self):
 		self.add("bad")

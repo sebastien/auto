@@ -38,7 +38,7 @@ class RunInputTests(unittest.TestCase):
 		self.assertEqual(run["status"], "Succeeded", run)
 		self.assertIn("Read Produced", self.engine.calls[-1])
 		self.assertTrue(marker.exists())
-		self.assertTrue(any(pin["ref"] == "auto:demo/task/producer" for pin in run["inputs"]))
+		self.assertTrue(any(pin["ref"] == "auto:demo/task/tsk-producer" for pin in run["inputs"]))
 
 	def testContextInputsApplyOnlyToTheSelectedTaskAndDirectInputsWin(self):
 		self.add("producer")
@@ -54,7 +54,7 @@ class RunInputTests(unittest.TestCase):
 		run = TaskStart(context, "reader")
 		self.assertEqual(run["status"], "Succeeded", run)
 		self.assertIn("Read Produced", self.engine.calls[-1])
-		self.assertEqual(dependencyGraph(context, tasksAt(self.plan))["reader"], set())
+		self.assertEqual(dependencyGraph(context, tasksAt(self.plan))["tsk-reader"], set())
 		self.assertEqual(PlanStatus(context)["tasks"], PlanStatus(self.ctx)["tasks"])
 
 	def testRunInputDependencyCyclesFailBeforeExecution(self):

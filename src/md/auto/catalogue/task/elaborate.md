@@ -42,7 +42,8 @@ after validation.
 
 The elaborated task is `{{ target }}`: set `task: {{ target }}` in the
 frontmatter. Its children are new tasks, with ids not used in the plan (never
-`{{ target }}` itself).
+`{{ target }}` itself). Task ids carry a `tsk-` prefix, which Auto adds when
+you omit it: `build-site` and `tsk-build-site` name the same task.
 
 ### Goal
 
@@ -105,9 +106,10 @@ of the task it affects.
 
 {{ policy }}
 
-Declare each task's expected effects. An effect listed in `grants` (for the
-plan, or for that task) is already authorised: raise no gap for it, whatever
-its rule. Otherwise, do not plan around denied effects; request a human
+Declare each task's expected effects. An effect without a rule in `rules`
+follows the `default` rule. An effect listed in `grants` (for the `plan`, or
+for that `task:ID`) is already authorised: raise no gap for it, whatever its
+rule. Otherwise, do not plan around denied effects; request a human
 decision for a grant. Effects requiring confirmation need an approval
 checkpoint pinned to the task definition. Each policy gap must list
 its effects in `effects`, name the affected task in `needed_by`, and mention

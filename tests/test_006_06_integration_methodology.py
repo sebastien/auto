@@ -115,7 +115,7 @@ class MethodologyTests(unittest.TestCase):
 						ElaborationApply(self.ctx, self.plan, value, "resolved-method-error")
 					self.assertIn(message, str(failure.exception))
 					self.assertEqual(shell.call_count, 1)
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 				self.assertEqual(journal(self.plan), [])
 
 	def testExplicitMetadataOverridesResolveDeferredTemplateFields(self):
@@ -171,7 +171,7 @@ class MethodologyTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "hints must be a mapping"):
 				ElaborationApply(self.ctx, self.plan, value, "resolved-invalid-hints")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testKnownExplicitOverrideCannotHideBehindADeferredAncestor(self):
@@ -357,7 +357,7 @@ class MethodologyTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "input changed while applying"):
 				ElaborationApply(self.ctx, self.plan, value, "changed-methodology")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testApplicationUsesPinnedMethodologyCriteriaAfterParameterEffects(self):
@@ -372,4 +372,4 @@ class MethodologyTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Missing phase approval gate"):
 				ElaborationApply(self.ctx, self.plan, value, "pinned-methodology")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())

@@ -14,6 +14,7 @@ from auto.features.script.operations import ScriptExpand
 from auto.runtime.model import Content
 from auto.utils.data import AutoError, digest, documentText
 import test_004_01_integration_planning as fixtures
+from support import rootFile
 
 
 class HistoryTests(unittest.TestCase):
@@ -22,15 +23,15 @@ class HistoryTests(unittest.TestCase):
 
 	def testRemovedDefinitionResolvesThroughBothReferenceForms(self):
 		self.add("work")
-		original = (self.plan / "tasks/work.md").read_bytes()
+		original = (self.plan / "tsk/work.md").read_bytes()
 		TaskStart(self.ctx, "work")
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": "work"}], "Remove completed work")
 		for ref in ("task:work/definition", "auto:demo/task/work/definition"):
 			content = Resolve(self.ctx, ref)
-			self.assertEqual(content.ref, "auto:demo/task/work/definition")
+			self.assertEqual(content.ref, "auto:demo/task/tsk-work/definition")
 			self.assertEqual(content.data, original)
 			self.assertEqual(content.digest, digest(original))
-			self.assertEqual(content.path, self.plan / "tasks/work.md")
+			self.assertEqual(content.path, self.plan / "tsk/work.md")
 		with self.assertRaisesRegex(AutoError, "Task not found"):
 			TaskGet(self.ctx, "work")
 		with self.assertRaises(AutoError):
@@ -97,7 +98,7 @@ class HistoryTests(unittest.TestCase):
 		value = createElaborationFromDict({"task": "root", "tasks": [{"id": "work", "from": str(file)}]})
 		ElaborationApply(self.ctx, self.plan, value, "capture-historical-task")
 		task = TaskGet(self.ctx, "work")
-		source = next(ref for ref in task.meta["_template_sources"] if ref.startswith("auto:demo/task/work/source/"))
+		source = next(ref for ref in task.meta["_template_sources"] if ref.startswith("auto:demo/task/tsk-work/source/"))
 		original = Resolve(self.ctx, source)
 		run = TaskStart(self.ctx, "work")
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": "work"}], "Archive captured task")
@@ -110,7 +111,7 @@ class HistoryTests(unittest.TestCase):
 	def testNewRunDefinitionPinsRemainResolvableAfterRemoval(self):
 		self.add("work")
 		run = TaskStart(self.ctx, "work")
-		ref = "auto:demo/task/work/definition"
+		ref = "auto:demo/task/tsk-work/definition"
 		pin = next(pin for pin in run["inputs"] if pin["ref"] == ref)
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": "work"}], "Archive pinned definition")
 		self.assertEqual(Resolve(self.ctx, pin["ref"]).digest, pin["digest"])
@@ -129,14 +130,14 @@ class HistoryTests(unittest.TestCase):
 		text = "Root source"
 		sources = TemplateSources(self.ctx, task="root")
 		ref = sources.compiledSource(Content("./fragment.md", text.encode(), digest(text.encode()), self.root / "fragment.md"), text)
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "demo", "_template_sources": sources.records}, "Root"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "demo", "_template_sources": sources.records}, "Root"))
 		self.assertEqual(Resolve(self.ctx, ref).text, text)
 		with self.assertRaisesRegex(AutoError, "Cannot resolve"):
 			Resolve(self.ctx, "task:missing/source/" + "0" * 64)
 
 	def testArchivedDefinitionKeepsItsOriginalRelativeReferenceOrigin(self):
-		(self.plan / "tasks").mkdir()
-		(self.plan / "tasks/data.txt").write_text("Definition data")
+		(self.plan / "tsk").mkdir(exist_ok=True)
+		(self.plan / "tsk/data.txt").write_text("Definition data")
 		self.add("work", process="Data={{ data }}", inputs={"data": "./data.txt"})
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": "work"}], "Archive relative definition")
 		self.assertIn("Data=Definition data", ScriptExpand(self.ctx, "task:work/definition"))
@@ -168,7 +169,7 @@ class HistoryTests(unittest.TestCase):
 		self.add("work")
 		def resolve(context, ref):
 			data = Shell(context, "printf definition")[0].encode()
-			return Content(ref, data, digest(data), self.plan / "tasks/work.md")
+			return Content(ref, data, digest(data), self.plan / "tsk/work.md")
 		context = self.ctx.derive(resolvers={"task:": resolve})
 		with patch("auto.integration.process.capture") as shell:
 			with self.assertRaisesRegex(AutoError, "Shell execution is disabled"):

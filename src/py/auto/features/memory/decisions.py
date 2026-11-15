@@ -5,6 +5,7 @@ from auto.features.plan.model import PlanEventKind, createPlan
 from auto.features.plan.store import locked
 from auto.runtime.operations import Knowledge
 from auto.utils.data import atomicWrite, jsonText, readJson
+from auto.utils.layout import planPaths
 
 
 def decisionInputs(context, name, config):
@@ -12,14 +13,14 @@ def decisionInputs(context, name, config):
 	previous = readJson(root / "cursors.json", {})
 	cursors, decisions, seen = dict(previous), [], set()
 	concerns = config.get("concerns")
-	for file in sorted((context.project / ".auto/plans").glob("*/plan.md")):
-		with locked(file.parent):
-			plan = createPlan(file.parent)
+	for path in planPaths(context.project):
+		with locked(path):
+			plan = createPlan(path)
 			if "auto:agent/" + name not in plan.meta.get("agents", []):
 				continue
-			repairEvents(context.derive(plan=file.parent, runScope=None), file.parent)
+			repairEvents(context.derive(plan=path, runScope=None), path)
 			base = "auto:" + plan.id
-			rows = eventRows(file.parent)
+			rows = eventRows(path)
 			cursors[base] = max(previous.get(base, 0), rows[-1]["seq"] if rows else 0)
 			for event in rows:
 				if event["seq"] <= previous.get(base, 0) or event["kind"] not in {PlanEventKind.GAP_RESOLVED, PlanEventKind.DECISION_RECORDED}:

@@ -10,6 +10,7 @@ from auto.features.elaboration.materialize import materialize
 from auto.features.task.operations import TaskValidate, effectiveTask
 from auto.runtime.model import Context
 from auto.utils.data import documentText
+from support import rootFile
 
 
 class AllocationTests(unittest.TestCase):
@@ -17,12 +18,12 @@ class AllocationTests(unittest.TestCase):
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
 		self.root = Path(temp.name)
-		self.plan = self.root / ".auto/plans/demo"
+		self.plan = self.root / ".auto/demo"
 		self.plan.mkdir(parents=True)
 		profile = self.plan / "profiles/default.md"
 		profile.parent.mkdir()
 		profile.write_text(documentText({"model": "plan-model", "memory": "minimal", "budget": {"tokens": 25}}, "# Default"))
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "profile": "./profiles/default.md"}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "profile": "./profiles/default.md"}, "# Demo"))
 		self.context = Context(project=self.root, plan=self.plan)
 
 	def testPlanProfileIsDefaultWithItsOwnOrigin(self):

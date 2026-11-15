@@ -45,7 +45,7 @@ Produce the result.
 			self.assertEqual(len(fake.calls), 2)
 			self.assertIn("coarse", fake.calls[0].lower())
 			self.assertIn("set `task: root`", fake.calls[0])
-			self.assertEqual(PlanStatus(ctx, result["plan"])["tasks"]["work"], "Ready")
+			self.assertEqual(PlanStatus(ctx, result["plan"])["tasks"]["tsk-work"], "Ready")
 
 	def testProjectLayerAndCompanions(self):
 		with tempfile.TemporaryDirectory() as directory:

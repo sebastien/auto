@@ -11,6 +11,7 @@ from auto.features.plan.store import planPath
 from auto.runtime.model import Content, RunStatus
 from auto.runtime.operations import Knowledge, Value
 from auto.utils.data import AutoError, digest, document, identifier, jsonText, readJson
+from auto.utils.layout import historyFile, planFile, runsPath, storePath, taskFile, taskFiles, taskId
 
 # -----------------------------------------------------------------------------
 #
@@ -21,7 +22,7 @@ from auto.utils.data import AutoError, digest, document, identifier, jsonText, r
 
 def runDirectories(path: Path) -> list[Path]:
 	"""Return the run directories of a plan, oldest first."""
-	root = path / "runs"
+	root = runsPath(path)
 	if not root.exists():
 		return []
 	return sorted(directory for directory in root.iterdir() if (directory / "active.json").exists() or (directory / "receipt.json").exists())
@@ -40,10 +41,10 @@ def latestRun(path: Path, task: str, succeeded: bool = False, seen: tuple = ()):
 		if task in seen:
 			raise AutoError("Aggregate dependency cycle")
 		children = []
-		for file in (path / "tasks").glob("*.md"):
+		for file in taskFiles(path):
 			meta, _ = document(file.read_text())
-			if meta.get("parent", "root") == task:
-				children.append(meta.get("id", file.stem))
+			if taskId(meta.get("parent", "root")) == task:
+				children.append(taskId(meta.get("id", file.stem)))
 		expected = {child: (latestRun(path, child, True, (*seen, task)) or {}).get("id") for child in children}
 		runs = [run for run in runs if run.get("children", {}) == expected and all(expected.values())]
 	return max(runs, key=lambda run: run["started"]) if runs else None
@@ -51,8 +52,8 @@ def latestRun(path: Path, task: str, succeeded: bool = False, seen: tuple = ()):
 
 def definitionPath(path: Path, task: str) -> Path:
 	"""Locate an active definition or the retained definition of a removed task."""
-	file = path / "plan.md" if task == "root" else path / "tasks" / (task + ".md")
-	archived = path / ".history" / (task + ".md")
+	file = taskFile(path, task)
+	archived = historyFile(path, task)
 	return archived if task != "root" and not file.exists() and archived.exists() else file
 
 
@@ -70,12 +71,12 @@ def planContent(context, ref: str) -> Content:
 			return Content(ref, content.data, content.digest, content.path)
 		parts = rest.split("/")
 		plan = identifier(parts.pop(0))
-		path = context.project / ".auto/plans" / plan
+		path = storePath(context.project) / plan
 		try:
 			if context.plan and createPlan(context.plan).id == plan:
 				path = context.plan
 			if not parts:
-				file = path / "plan.md"
+				file = planFile(path)
 				data = file.read_bytes()
 				return Content(ref, data, digest(data), file)
 		except OSError as error:
@@ -92,6 +93,10 @@ def planContent(context, ref: str) -> Content:
 		raise AutoError(f"Cannot resolve {ref}: {error}") from error
 	name, _, part = rest.partition("/")
 	identifier(name)
+	if scheme == "task":
+		# Tasks may be named without their prefix, eg. `task:build-site`.
+		name = taskId(name)
+		rest = "/".join((name, *([part] if part else [])))
 	canonical = f"auto:{planId}/{'input' if scheme == 'plan' else scheme}/{rest}"
 	if scheme == "task":
 		if re.fullmatch(r"source/[a-f0-9]{64}", part):
@@ -111,11 +116,11 @@ def planContent(context, ref: str) -> Content:
 			run = latestRun(path, name, True)
 			if run is None:
 				raise AutoError(f"Task has no succeeded run: {name}")
-			file = path / "runs" / run["id"] / run["outputFile"]
+			file = runsPath(path) / run["id"] / run["outputFile"]
 		else:
 			raise AutoError(f"Unknown task reference part: {part}")
 	elif scheme == "run":
-		root = path / "runs" / name
+		root = runsPath(path) / name
 		if part not in {"", "receipt", "journal"}:
 			raise AutoError(f"Unknown run reference part: {part}")
 		if part:
@@ -134,7 +139,7 @@ def planContent(context, ref: str) -> Content:
 			raise AutoError(f"Unknown plan input: {name}")
 		value = Value(context, meta["inputs"][name], path)
 		data = (value if isinstance(value, str) else jsonText(value)).encode()
-		return Content(canonical, data, digest(data), path / "plan.md")
+		return Content(canonical, data, digest(data), planFile(path))
 	elif scheme in {"gap", "decision"}:
 		return Knowledge(context).readReference(canonical)
 	else:
@@ -143,7 +148,7 @@ def planContent(context, ref: str) -> Content:
 		data = file.read_bytes()
 	except OSError as error:
 		raise AutoError(f"Cannot resolve {ref}: {error}") from error
-	origin = path / "tasks" / (name + ".md") if scheme == "task" and part == "definition" and name != "root" else file
+	origin = taskFile(path, name) if scheme == "task" and part == "definition" and name != "root" else file
 	return Content(canonical, data, digest(data), origin)
 
 # EOF

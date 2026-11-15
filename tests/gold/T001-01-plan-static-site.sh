@@ -34,7 +34,7 @@ auto-assert "jq is available" command -v jq
 auto-assert "$GOLD_ENGINE is available" command -v "$GOLD_ENGINE"
 # Gaps and decisions are Memo records: without it, plans fail after a paid elaboration
 auto-assert "Memo is installed in Auto's environment" "$AUTO_ROOT/.venv/bin/python" -c "import memo" ||
-	test-abort "install Memo first: uv pip install -e ../memo (see README)"
+	test-abort "install Memo first: uv sync, with sebastien/memo checked out in ../memo (see README)"
 auto-sandbox
 cp -R "$FIXTURE/tools" "$SANDBOX/"
 mkdir -p "$SANDBOX/.auto/catalogue"

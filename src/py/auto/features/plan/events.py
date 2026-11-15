@@ -58,8 +58,9 @@ def recordEvent(context, path, kind, ref, data, *, date=None, author=None):
 def revisionEvents(context, path, row):
 	"""Project a committed revision and its knowledge changes to events."""
 	base = "auto:" + createPlan(path).id
+	# The revision itself, with its operations, is `revision:{id}` in the plan journal.
 	result = [(PlanEventKind.REVISED, f"{base}/revision/{row['id']}",
-		{"revision": row["id"], "operations": row["operations"]})]
+		{"revision": row["id"], "ops": sorted({op["op"] for op in row["operations"]})})]
 	for op in row["operations"]:
 		data = {"revision": row["id"]}
 		if op["op"] in {RevisionOp.RAISE, RevisionOp.RESOLVE, RevisionOp.DISMISS}:

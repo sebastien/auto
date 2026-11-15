@@ -77,7 +77,7 @@ class SelectorSourceTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "Recursive"):
 				ElaborationApply(self.ctx, self.plan, self.elaboration(file), "selector-cycle")
 			self.assertEqual(shell.call_count, 0)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testUnusedLifecycleDefaultsDoNotExpandMissingParameters(self):
 		file = self.template({"title": "Ignored commands"}, "## Process\n@./part.md\n")

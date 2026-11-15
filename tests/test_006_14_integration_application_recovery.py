@@ -11,6 +11,7 @@ from auto.features.plan.store import journal
 from auto.features.task.operations import RunList, TaskExpand
 from auto.utils.data import documentText, readJson
 import test_004_01_integration_planning as fixtures
+from support import rootFile
 
 
 class ApplicationRecoveryTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class ApplicationRecoveryTests(unittest.TestCase):
 	def interruptApplication(self, point, *, viaContinuation=False):
 		elaborator = self.root / "elaborator.md"
 		elaborator.write_text(documentText({"title": "Elaborate"}, "## Process\nProduce an elaboration\n"))
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo",
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo",
 			"elaborator": {"task": str(elaborator)}}, "# Demo"))
 		counter = self.root / "parameter-effects"
 		template = self.root / "template.md"
@@ -45,7 +46,7 @@ class Engine:
         context.limits.usage["tokens"] = 7
         yield {"type": "ScriptMeta", "name": "usage", "value": {"tokens": 7}}
         yield {"type": "ScriptEnded", "status": "Succeeded", "output": output}
-context = Context(project=root, plan=root / ".auto/plans/demo", knowledge=Knowledge(),
+context = Context(project=root, plan=root / ".auto/demo", knowledge=Knowledge(),
     engines={"fake": Engine()}, config={"engine": "fake"})
 def pause():
     print("ready", flush=True)
@@ -94,7 +95,7 @@ with patch(target, side_effect=replacement):
 		self.assertEqual((self.root / "model-calls").read_text(), "x")
 		if point == "before-application":
 			self.assertFalse(counter.exists())
-			self.assertFalse((self.plan / "tasks/work.md").exists())
+			self.assertFalse((self.plan / "tsk/work.md").exists())
 		else:
 			self.assertEqual(counter.read_text(), "x")
 			if point == "before-staging":
@@ -109,7 +110,7 @@ with patch(target, side_effect=replacement):
 			self.assertEqual(events[-1]["data"]["stop"], "ended")
 			published = [event for event in events if event["kind"] == "PlanRevised"]
 			self.assertEqual(len(published), 1)
-			started = next(event for event in events if event["kind"] == "RunStarted" and event["data"]["task"] == "work")
+			started = next(event for event in events if event["kind"] == "RunStarted" and event["data"]["task"] == "tsk-work")
 			self.assertLess(published[0]["seq"], started["seq"])
 		else:
 			PlanRepair(self.ctx)

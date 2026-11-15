@@ -88,17 +88,17 @@ the log like those of a continuation.
 Plan directory additions (see [Plan](spec-004-plan.md)):
 
 ```
-.auto/plans/{plan}/
+.auto/{plan}/
   events.jsonl        # PlanEvents, one per line
   continue.lock       # Held by the running continuation, if any
 ```
 
 ```json
-{"seq": 42, "date": "2026-11-07T10:12:30Z", "kind": "RunEnded", "ref": "auto:release-notes/run/summarize-changes-20261107T1010-01", "data": {"status": "Succeeded", "usage": {"tokens": 18200, "cost": 0.18, "time": "2m40s"}}}
+{"seq": 42, "date": "2026-11-07T10:12:30Z", "kind": "RunEnded", "ref": "auto:pln-00a-release-notes/run/run-summarize-changes-20261107T1010-01", "data": {"status": "Succeeded", "usage": {"tokens": 18200, "cost": 0.18, "time": "2m40s"}}}
 ```
 
 Orchestration settings are configured under `[orchestration]` (see
-Configuration in the README), and may be overridden in `plan.md`:
+Configuration in the README), and may be overridden in the root task (`tsk/root.md`):
 
 | Key | Default | Purpose |
 |---|---|---|

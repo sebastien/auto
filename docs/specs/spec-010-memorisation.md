@@ -138,7 +138,7 @@ labels say what they affect.
   `cursors.json`, and advances the
   cursor only when the consolidation is applied.
 - *Citation*: learnings and model entries cite decisions directly as sources
-  (eg. `memo:auto/decision:checkout_guest+20261110T…`); decisions are record,
+  (eg. `auto:pln-004-checkout-guest/decision/dec-20261110T…`); decisions are record,
   never copied into the agent's log. An agent notes an observation about a
   decision only when something about it is notable from its perspective (eg.
   it contradicts a learning).

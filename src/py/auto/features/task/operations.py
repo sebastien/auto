@@ -27,13 +27,14 @@ from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, conform, executePrepared, prepare
 from auto.features.script.templates import Renderer
 from auto.features.script.sources import ScriptSources
-from auto.features.task.model import Run, Task, createRunFromDict, createTaskFromDict, createTaskFromText
+from auto.features.task.model import Run, Task, canonicalTask, createRunFromDict, createTaskFromDict, createTaskFromText
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
 from auto.runtime.operations import Engine, Knowledge, Resolve, Shell, Value
 from auto.utils.data import AutoError, atomicWrite, document, identifier, identity, jsonText, merge, readJson, timestamp
 from auto.utils.references import relocate
+from auto.utils.layout import runsPath, taskFile, taskId, taskStem
 
 # -----------------------------------------------------------------------------
 #
@@ -117,11 +118,16 @@ def effectiveTask(context, task: Task) -> Task:
 	return replace(task, meta=meta, sections=parts)
 
 
+def resolvedInputs(state: dict) -> dict:
+	"""Return a run's resolved inputs, stored as their changes to its inputs."""
+	return {**state.get("inputs", {}), **state.get("resolvedInputs", {})} if "resolvedInputs" in state else {}
+
+
 def runDirectory(context, run) -> Path:
 	"""Return a run's directory, discovering its plan when none is selected."""
 	if context.runScope is not None:
 		return context.runScope.directory(context, run)
-	return runPlanPath(context, run) / "runs" / identifier(run["id"] if isinstance(run, dict) else run)
+	return runsPath(runPlanPath(context, run)) / identifier(run["id"] if isinstance(run, dict) else run)
 
 
 def emit(path: Path, event: dict) -> None:
@@ -238,11 +244,16 @@ def _drive(context, path, run, state, request, answer=None):
 	saveRun(context, path, run, state)
 	kind = "memory" if context.runScope is not None else "elaboration" if run["task"] == "elaborator" else "task"
 	stream = executePrepared(context, request, {"kind": kind, "run": run["id"], "task": taskId})
+	journaled = {}
 	try:
 		while True:
 			event = stream.send(answer)
 			answer = None
-			if event["type"] != Event.POLICY_REQUEST:
+			# Engines repeat metadata (eg. usage after each step): journal only changes.
+			repeated = event["type"] == Event.SCRIPT_META and journaled.get(event.get("name"), journaled) == event.get("value")
+			if event["type"] == Event.SCRIPT_META:
+				journaled[event.get("name")] = event.get("value")
+			if event["type"] != Event.POLICY_REQUEST and not repeated:
 				emit(path, event)
 			if context.observe:
 				observed = {**event, "value": dict(context.limits.usage)} if event.get("type") == Event.SCRIPT_META and event.get("name") == "usage" else event
@@ -345,8 +356,10 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 		if answer is not UNSET:
 			state["request"]["answer"] = Value(context, answer, context.plan)
 		if "resolvedInputs" not in state:
-			state["resolvedInputs"] = Renderer(context, task.script()).bindings()["inputs"]
-		context.resolvedInputs = state["resolvedInputs"]
+			# Keep only what resolution changed: the inputs are already in the state.
+			resolved = Renderer(context, task.script()).bindings()["inputs"]
+			state["resolvedInputs"] = {key: value for key, value in resolved.items() if key not in state["inputs"] or state["inputs"][key] != value}
+		context.resolvedInputs = resolvedInputs(state)
 		phases = ("Pre", "Process", "Post", "Apply", "Evaluation")
 		index = 0
 		while index < len(phases):
@@ -567,14 +580,14 @@ def _assess(context, run, check, instructions=None):
 			"result": RunOutput(context, run) if check != "Pre" else None}
 		ctx = context.derive(config=state["config"], policyDefaults=context.policyDefaults if context.policyDefaults is not None else context.defaults,
 			defaults=state.get("defaults", {}), inputs=state["inputs"],
-			resolvedInputs=state.get("resolvedInputs", {}), limits=limits, variables=variables)
+			resolvedInputs=resolvedInputs(state), limits=limits, variables=variables)
 		# Rendering keeps the saved defaults; authorization uses current configuration.
 		policyContext = ctx.derive(defaults=context.defaults)
 		definition, policy = executionPolicy(policyContext, receipt, state)
 		ctx = ctx.derive(allowShell=ctx.allowShell and shellPermitted(policyContext, definition))
 		with locked(context.plan):
 			limits.budget = context.runtime.planRunBudget(task, receipt["budget"], receipt, assessment=True)
-			assessment = {"id": identity(), "budget": limits.budget, "base_usage": dict(receipt["usage"]), "usage": dict(receipt["usage"])}
+			assessment = {"id": identity("asm"), "budget": limits.budget, "base_usage": dict(receipt["usage"]), "usage": dict(receipt["usage"])}
 			atomicWrite(path / "assessment.json", jsonText(assessment))
 		stream = None
 		try:
@@ -643,11 +656,12 @@ def TaskCreate(context, task: dict) -> str:
 def TaskGet(context, id: str) -> Task:
 	"""Read a task of the current plan by identifier."""
 	path = planPath(context)
-	identifier(id)
-	file = path / "plan.md" if id == "root" else path / "tasks" / (id + ".md")
+	id = taskId(identifier(id))
+	file = taskFile(path, id)
 	if not file.exists():
 		raise AutoError(f"Task not found: {id}")
-	return createTaskFromText(file.read_text(), file, id == "root")
+	task = createTaskFromText(file.read_text(), file, id == "root")
+	return task if id == "root" else canonicalTask(task)
 
 
 def TaskUpdate(context, id: str, changes: dict) -> Task:
@@ -708,7 +722,7 @@ def TaskReferences(context, task, *, definitions=None, expandDefinitions=True) -
 	if context.plan:
 		prefix = "auto:" + createPlan(planPath(context)).id + "/task/"
 		refs = {"task:" + ref[len(prefix):] if ref.startswith(prefix) else ref for ref in refs}
-	return {"dependencies": sorted({ref[5:].split("#", 1)[0] for ref in refs if re.fullmatch(r"task:[^/#]+(?:#.*)?", ref)}),
+	return {"dependencies": sorted({taskId(ref[5:].split("#", 1)[0]) for ref in refs if re.fullmatch(r"task:[^/#]+(?:#.*)?", ref)}),
 		"definitions": sorted(ref for ref in refs if re.fullmatch(r"(?:task:|auto:[^/#]+/task/)[^/#]+/definition(?:#.*)?", ref))}
 
 
@@ -808,11 +822,11 @@ def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: b
 			previous = latestRun(plan, task.id)
 			if previous and previous["status"] in {RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING}:
 				raise AutoError("Task already has an active run")
-			stem = task.id + "-" + time.strftime("%Y%m%dT%H%M", time.gmtime())
+			stem = "run-" + taskStem(task.id) + "-" + time.strftime("%Y%m%dT%H%M", time.gmtime())
 			counter = 1
-			while (plan / "runs" / f"{stem}-{counter:02}").exists():
+			while (runsPath(plan) / f"{stem}-{counter:02}").exists():
 				counter += 1
-			path = plan / "runs" / f"{stem}-{counter:02}"
+			path = runsPath(plan) / f"{stem}-{counter:02}"
 			path.mkdir(parents=True)
 			execution.enter_context(locked(path))
 			budget = budgetValue(task.meta.get("budget"))
@@ -893,6 +907,7 @@ def RunGet(context, run) -> dict:
 def RunList(context, filter: dict | None = None) -> list:
 	"""List runs of the current plan, filtered by field or date."""
 	result = [RunGet(context, directory.name) for directory in runDirectories(planPath(context))]
+	filter = {key: taskId(value) if key == "task" and value != "elaborator" else value for key, value in (filter or {}).items()}
 	return [run for run in result if all((run["started"].startswith(value) if key == "date" else run.get(key) == value) for key, value in (filter or {}).items())]
 
 

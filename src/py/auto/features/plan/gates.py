@@ -7,6 +7,7 @@ from auto.features.plan.references import latestRun, readReceipt
 from auto.features.plan.store import planPath
 from auto.runtime.operations import Knowledge, Resolve
 from auto.utils.data import AutoError
+from auto.utils.layout import runsPath
 
 
 def outputRun(context, gap):
@@ -31,7 +32,7 @@ def taskGapState(context, id, tasks, dependencies, gaps, *, starting=False):
 	producers = {task for task in dependencies if tasks[task].meta.get("hints", {}).get("gate") == "approval"}
 	for gap in gaps:
 		if id in gap["needed_by"] and outputs[gap["id"]]:
-			run = readReceipt(path / "runs" / outputs[gap["id"]])
+			run = readReceipt(runsPath(path) / outputs[gap["id"]])
 			if run is None:
 				return "Blocked"
 			if not starting or run["task"] != id:

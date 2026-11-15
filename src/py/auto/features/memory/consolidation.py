@@ -224,7 +224,7 @@ def runPending(context, name, config, overrideAllowance=False):
 			if pending is None:
 				return {"agent": "auto:agent/" + name, "status": "Idle"}
 			if readReceipt(root / "runs" / pending["id"]):
-				pending["id"] = identity()
+				pending["id"] = identity("run")
 				atomicWrite(root / "pending.json", jsonText(pending))
 			path = root / "runs" / pending["id"]
 			path.mkdir(parents=True, exist_ok=True)
@@ -242,7 +242,7 @@ def requestLock(root):
 
 def queueRequest(root, name, phases, reasons, seen=None):
 	with requestLock(root):
-		pending = readJson(root / "pending.json") or {"id": identity(), "agent": "auto:agent/" + name, "phases": [], "reasons": []}
+		pending = readJson(root / "pending.json") or {"id": identity("run"), "agent": "auto:agent/" + name, "phases": [], "reasons": []}
 		pending["phases"] = [phase for phase in PHASES if phase in pending["phases"] or phase in phases]
 		pending["reasons"] = list(dict.fromkeys([*pending["reasons"], *reasons]))
 		for plan, seq in (seen or {}).items():

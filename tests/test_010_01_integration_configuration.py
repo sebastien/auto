@@ -21,6 +21,7 @@ from auto.runtime.config import contextFor
 from auto.runtime.model import Content, Context, Limits
 from auto.runtime.operations import Resolve
 from auto.utils.data import AutoError, ReferenceUnavailable, document
+from support import rootFile
 
 
 class MemoryConfigurationTests(unittest.TestCase):
@@ -39,9 +40,10 @@ class MemoryConfigurationTests(unittest.TestCase):
 			path = PlanCreate(self.context, "Selected defaults")
 			explicit = PlanCreate(self.context, "Explicit selection", agents=["auto:agent/architect"])
 			disabled = PlanCreate(self.context, "No agent memory", agents=[])
-		self.assertEqual(document((path / "plan.md").read_text())[0]["agents"], ["auto:agent/ui-designer"])
-		self.assertEqual(document((explicit / "plan.md").read_text())[0]["agents"], ["auto:agent/architect"])
-		self.assertEqual(document((disabled / "plan.md").read_text())[0]["agents"], [])
+		self.assertEqual(document(rootFile(path).read_text())[0]["agents"], ["auto:agent/ui-designer"])
+		self.assertEqual(document(rootFile(explicit).read_text())[0]["agents"], ["auto:agent/architect"])
+		# No agents is the absence of the field.
+		self.assertNotIn("agents", document(rootFile(disabled).read_text())[0])
 		self.assertEqual(self.context.defaults, original)
 
 	def testDefaultSelectionAndDuplicateMemoReferencesAreValidated(self):
@@ -72,19 +74,19 @@ class MemoryConfigurationTests(unittest.TestCase):
 		self.assertEqual(memoryPolicy(context, "ux")["memory.evolve"], "deny")
 
 	def testPlanIdsAreNumberedAndResolvableByNumber(self):
-		plans = self.root / ".auto/plans"
+		plans = self.root / ".auto"
 		(plans / "add-tests").mkdir(parents=True)
-		(plans / "001-taken").mkdir()
+		(plans / "pln-001-taken").mkdir()
 		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: plan):
 			names = [PlanCreate(self.context, goal).name for goal in ("agent", "catalogue", "Fix the login bug")]
-		# Numbering keeps the reserved words agent and catalogue out of ids; used numbers are skipped, hex-like slugs are not.
-		self.assertEqual(names, ["000-agent", "002-catalogue", "003-fix-login-bug"])
+		# The prefix keeps the reserved words agent and catalogue out of ids; used numbers are skipped, hex-like slugs are not.
+		self.assertEqual(names, ["pln-000-agent", "pln-002-catalogue", "pln-003-fix-login-bug"])
 		self.assertEqual((plans / ".counter").read_text(), "004\n")
-		self.assertEqual(planPath(self.context, "003"), (plans / "003-fix-login-bug").resolve())
+		self.assertEqual(planPath(self.context, "003"), (plans / "pln-003-fix-login-bug").resolve())
+		self.assertEqual(planPath(self.context, "pln-003"), (plans / "pln-003-fix-login-bug").resolve())
 		with patch.dict("os.environ", {"HOME": str(self.root / "home"), "XDG_CONFIG_HOME": str(self.root / "xdg")}, clear=True):
-			self.assertEqual(contextFor(self.root, plan="002").plan, plans / "002-catalogue")
-		(plans / "002-other").mkdir()
-		(plans / "002-other/plan.md").write_text("---\nid: 002-other\n---\n")
+			self.assertEqual(contextFor(self.root, plan="002").plan, plans / "pln-002-catalogue")
+		rootFile(plans / "pln-002-other").write_text("Other\n")
 		with self.assertRaisesRegex(AutoError, "Ambiguous plan"):
 			planPath(self.context, "002")
 

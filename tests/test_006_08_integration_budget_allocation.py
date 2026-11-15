@@ -10,8 +10,9 @@ from auto.features.elaboration.operations import ElaborationApply, ElaborationSt
 from auto.features.plan.operations import PlanRevise
 from auto.features.plan.store import journal
 from auto.features.task.operations import TaskGet, TaskStart, effectiveTask
-from auto.utils.data import AutoError, documentText
+from auto.utils.data import AutoError, documentText, yamlLoad
 import test_006_04_integration_materialization as fixtures
+from support import rootFile
 
 
 class BudgetAllocationTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class BudgetAllocationTests(unittest.TestCase):
 	elaboration = fixtures.MaterializationTests.elaboration
 
 	def planBudget(self, budget, **meta):
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo", "budget": budget, **meta}, "# Demo"))
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo", "budget": budget, **meta}, "# Demo"))
 
 	def profile(self, name, budget):
 		path = self.root / "profiles" / (name + ".md")
@@ -186,7 +187,7 @@ class BudgetAllocationTests(unittest.TestCase):
 		run = ElaborationStart(self.ctx, self.plan, "parent")
 		self.assertEqual(run["budget"], {"tokens": 8, "time": 6})
 		state = json.loads((self.plan / "runs" / run["id"] / "state.json").read_text())
-		self.assertEqual(json.loads(state["inputs"]["budget"]), {"tokens": 8, "time": 6})
+		self.assertEqual(yamlLoad(state["inputs"]["budget"]), {"tokens": 8, "time": 6})
 
 	def testPreparedValidationRechecksNewlyMeasuredUsage(self):
 		self.planBudget({"tokens": 10})
@@ -195,7 +196,7 @@ class BudgetAllocationTests(unittest.TestCase):
 		prepared = proposed(self.ctx, value)
 		self.completedUsage(6)
 		self.assertIn("budgets exceed remaining budget", str(ElaborationValidate(self.ctx, self.plan, value, prepared=prepared)))
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testCommitRechecksUsageAfterAcquiringTheWriterLock(self):
 		self.planBudget({"tokens": 10})
@@ -214,7 +215,7 @@ class BudgetAllocationTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "budgets exceed remaining budget"):
 				ElaborationApply(self.ctx, self.plan, value, "commit-budget-race")
 		self.assertEqual(len(acquisitions), 2)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testNullDimensionRemainsAnInvalidNumericBudget(self):

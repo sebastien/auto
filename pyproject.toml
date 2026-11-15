@@ -7,7 +7,11 @@ name = "auto-orchestrator"
 version = "0.1.0"
 description = "Composable agent scripts, tasks and plans"
 requires-python = ">=3.14"
-dependencies = ["ruamel.yaml>=0.18,<0.19", "python-liquid>=2.3,<3", "jsonschema>=4.23,<5"]
+dependencies = ["ruamel.yaml>=0.18,<0.19", "python-liquid>=2.3,<3", "jsonschema>=4.23,<5", "memo"]
+
+[tool.uv.sources]
+# Plans are stored in a Memo store; both projects are developed together.
+memo = { path = "../memo", editable = true }
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.20,<2"]

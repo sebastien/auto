@@ -15,6 +15,7 @@ from auto.features.plan.store import journal
 from auto.integration.memo.store import MemoKnowledge
 from auto.runtime.model import Context
 from auto.utils.data import documentText
+from support import rootFile
 
 
 @unittest.skipUnless(importlib.util.find_spec("memo"), "Install sebastien/memo to exercise the real integration")
@@ -22,9 +23,9 @@ class MemoTests(unittest.TestCase):
 	def testOptimisticWritesAndRepair(self):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			plan.mkdir(parents=True)
-			(plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
+			rootFile(plan).write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
 			ctx = Context(project=root, plan=plan)
 			gap = GapRaise(ctx, plan, {"kind": "decision", "question": "Which?", "needed_by": ["root"]})
 			decision = GapDecide(ctx, gap, "first", "Chosen")
@@ -34,14 +35,40 @@ class MemoTests(unittest.TestCase):
 			store = MemoKnowledge(root)
 			value = store.get(f"auto:demo/gap/{gap}")
 			store.write("gap", value)
+			# Records are Memo documents of the plan's namespace, in its directory.
+			self.assertTrue(gap.startswith("gap-") and decision["id"].startswith("dec-"))
+			self.assertEqual(sorted(path.relative_to(plan).as_posix() for path in plan.glob("*/*.md")),
+				sorted(["tsk/root.md", f"gap/{gap.lower()}.md", f"dec/{decision['id'].lower()}.md"]))
+			self.assertFalse((root / ".memo").exists())
+			from memo.integrations.filesystem.backend import LocalBackend
+			self.assertEqual({entry.id for entry in LocalBackend(str(root / ".auto")).listEntries("demo", "gap")},
+				{f"demo/gap:{gap.lower()}"})
+
+	def testRecordTextIsTheBodyAndRoundTrips(self):
+		from auto.integration.memo.store import bodyText, textBody
+		for value, decision in (({"question": "Which?\n\n- a\n- b"}, False), ({"question": "Which?", "rationale": "Because\n\nreasons"}, False),
+			({"rationale": ""}, True), ({"rationale": "## Rationale\n\nquoted"}, True), ({"question": "Q", "rationale": ""}, True)):
+			with self.subTest(value=value):
+				self.assertEqual(bodyText(textBody(value), decision), value)
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			plan = root / ".auto/demo"
+			rootFile(plan).write_text("Demo\n")
+			ctx = Context(project=root, plan=plan)
+			gap = GapRaise(ctx, plan, {"kind": "decision", "question": "Which one?\nPick carefully.", "needed_by": ["root"]})
+			GapDecide(ctx, gap, "first", "")
+			text = next(plan.glob("gap/*.md")).read_text()
+			self.assertEqual(text.count("Which one?"), 1)
+			self.assertNotIn("question:", text)
+			self.assertEqual(GapList(ctx)[0]["question"], "Which one?\nPick carefully.")
 
 	def testStandaloneDecisionAndCliRoundTrip(self):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			plan = root / ".auto/plans/demo"
+			plan = root / ".auto/demo"
 			plan.mkdir(parents=True)
-			(plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
+			rootFile(plan).write_text(documentText({"id": "demo", "goal": "Demo"}, "# Demo"))
 			ctx = Context(project=root, plan=plan)
 			first = DecisionRecord(ctx, plan, "Which database?", "sqlite", "Simple deployment", source="chat:1")
 			store = MemoKnowledge(root)

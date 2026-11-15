@@ -15,16 +15,18 @@ from auto.runtime.model import Context, Limits
 from auto.utils.data import documentText, readJson
 from auto.features.plan.gaps import DecisionRecord
 from auto.runtime.operations import Resolve
+from auto.utils.layout import planPaths
+from support import rootFile
 
 
 @unittest.skipUnless(importlib.util.find_spec("memo"), "Memo checkout is not installed")
 class ConsolidationTests(unittest.TestCase):
 	def setUp(self):
 		from memo import Memo
-		from memo.backend.local import LocalBackend
-		from memo.clock import SystemClock
-		from memo.operator.resolve import entryForId
-		from memo.plugins.agent.observations import observe
+		from memo.integrations.filesystem.backend import LocalBackend
+		from memo.utils.clock import SystemClock
+		from memo.features.repository.layout import entryForId
+		from memo.features.agent.observations import observe
 		from auto.integration.memo.store import MemoKnowledge
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
@@ -55,7 +57,7 @@ class ConsolidationTests(unittest.TestCase):
 		state = readJson(path / "state.json")
 		self.assertEqual(state["inputs"]["record"], ["archive:conversation/1"])
 		self.assertIn("authorization", state["inputs"])
-		self.assertFalse((self.root / ".auto/plans").exists())
+		self.assertEqual(planPaths(self.root), [])
 		self.assertTrue((path / "staged.json").exists())
 		ref = "auto:agent/ux/run/" + run["id"]
 		self.assertEqual(json.loads(Resolve(self.context, ref).text)["id"], run["id"])
@@ -84,8 +86,8 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(run["validation"]["effects"], ["memory.consolidate"])
 
 	def testRetiringSelectedCoreLearningRequiresPromotionAuthorization(self):
-		from memo.operator.resolve import entryForId
-		from memo.model.memory_tree import MemoryNode, MemoryTree
+		from memo.features.repository.layout import entryForId
+		from memo.features.memory.model import MemoryNode, MemoryTree
 		entry = entryForId("agent-ux/learning:Rule").clone(meta={"identity": "urn:test:rule", "agent_nodes": {
 			"root": {"role": "guidance", "core": True, "status": "active"}}},
 			memory=MemoryTree(nodes={"root": MemoryNode(text="A core rule", sources=("agent-ux/log:Observations item=" + self.item,))}))
@@ -135,7 +137,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertIn("denied memory effect", deniedProposal["failure"]["reason"])
 
 	def testAcceptedProposalAuthorizesOnePassAndDismissedDoesNot(self):
-		from memo.plugins.agent.observations import observe
+		from memo.features.agent.observations import observe
 		base = self.build
 		change = {"entry": self.owner.id, "expected": None, "properties": {"focus": "Inclusive design"},
 			"history": {"text": "Focus on inclusion", "sources": ["agent-ux/log:Observations item=" + self.item]}}
@@ -230,7 +232,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(run["request"]["reasons"], ["First", "Second", "Third"])
 
 	def testPartialApplicationIsReconciledBeforeAnotherModelRun(self):
-		from memo.backend.local import LocalBackend
+		from memo.integrations.filesystem.backend import LocalBackend
 		original = LocalBackend.appendLog
 		failed = False
 		def append(backend, ref, item):
@@ -285,9 +287,9 @@ class ConsolidationTests(unittest.TestCase):
 
 	def testDecisionReferencesAreFilteredAndCursorsAdvanceOnlyAfterApplication(self):
 		from auto.features.task.operations import TaskStart
-		plan = self.root / ".auto/plans/demo"
+		plan = self.root / ".auto/demo"
 		plan.mkdir(parents=True)
-		(plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
+		rootFile(plan).write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
 		context = self.context.derive(defaults={"memory": {"agents": {"ux": {"concerns": ["design"]}}}})
 		root = TaskStart(context.derive(plan=plan), "root")
 		self.assertEqual(root["status"], "Succeeded", root.get("failure"))
@@ -313,9 +315,9 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(nextState["inputs"]["decisions"], [])
 
 	def testDecisionCreatedDuringModelRunRemainsForNextConsolidation(self):
-		plan = self.root / ".auto/plans/demo"
+		plan = self.root / ".auto/demo"
 		plan.mkdir(parents=True)
-		(plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
+		rootFile(plan).write_text(documentText({"id": "demo", "goal": "Design", "agents": ["auto:agent/ux"]}, "Design"))
 		late, outer = [], self
 		class Deciding:
 			def start(inner, context, request):
@@ -360,7 +362,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(run["status"], "Failed", run)
 		self.assertEqual(run["failure"]["kind"], "output")
 		self.assertIn("report", run["failure"]["reason"])
-		self.assertFalse((self.root / ".auto/plans").exists())
+		self.assertEqual(planPaths(self.root), [])
 
 	def testCustomMemoriserKeepsOrdinaryChecksWithMandatoryDryPost(self):
 		from auto.integration.memo.consolidation import MemoConsolidation

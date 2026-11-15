@@ -39,10 +39,10 @@ a shell command.
 
 | Input | Purpose | Supplied by |
 |---|---|---|
-| `goal` | TaskGoal of the task to elaborate | Auto |
-| `state` | Plan state: task states, outputs, gaps, failures, and the reason | Auto |
+| `goal` | TaskGoal of the task to elaborate: its goal, then its definition of done | Auto |
+| `state` | Plan state: task definitions and states, run failures, open gaps, usage and the reason; empty for a plan's first elaboration | Auto |
 | `budget` | Budget available to the elaborated tasks | Auto |
-| `policy` | Effective policy and grants (see [Plan Policy](spec-008-plan-policy.md)) | Auto |
+| `policy` | Rules differing from the default, and grants by scope (see [Plan Policy](spec-008-plan-policy.md)) | Auto |
 | `context` | Specs, sources, notes | The Elaborator, or plan inputs |
 | `methodology` | Methodology to follow, if any | The Elaborator |
 | `catalogue` | Task templates, artifact types, profiles and checks to use | The Elaborator |
@@ -50,6 +50,13 @@ a shell command.
 
 Inputs other than those supplied by Auto are optional, and an Elaborator may
 declare any other inputs and parameters.
+
+Auto renders its inputs as text for a model to read: block YAML, with
+multiline text as literal blocks, stating each fact once. The target's goal is
+only in `goal`, the policy only in `policy`, and the `state` leaves out what a
+reader can derive: paths, empty fields, goals equal to their task's title and
+description, children (from `parent`), and outputs (a succeeded task's output
+is `task:{id}`).
 
 TaskElaboration: the output of an Elaborator run.
 - `task`: id of the elaborated task

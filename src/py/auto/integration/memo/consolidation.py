@@ -9,12 +9,13 @@ from auto.utils.data import AutoError
 class MemoConsolidation:
 	def __init__(self, project, agent):
 		from memo import Memo
-		from memo.backend.local import LocalBackend
-		from memo.clock import SystemClock
+		from memo.integrations.filesystem.backend import LocalBackend
+		from memo.utils.clock import SystemClock
 		try:
-			for module, names in (("due", ("agentDue",)), ("consolidation", ("agentConsolidate", "prepareConsolidation")),
-				("consolidation_records", ("_consolidateRetained",))):
-				loaded = importlib.import_module("memo.plugins.agent." + module)
+			for module, names in (("due", ("agentDue",)),
+				("consolidation.operations", ("agentConsolidate", "consolidateRetained")),
+				("consolidation.plan", ("prepareConsolidation",))):
+				loaded = importlib.import_module("memo.features.agent." + module)
 				if any(not callable(getattr(loaded, name, None)) for name in names):
 					raise ImportError("Missing Memo consolidation operation")
 			if any(not callable(getattr(LocalBackend, name, None)) for name in ("lock", "readRecord", "retainRecord", "compactLog")):
@@ -25,9 +26,9 @@ class MemoConsolidation:
 		self.agent = agent
 
 	def compact(self):
-		from memo.model import MemoError
-		from memo.model.entry import entryReference
-		from memo.plugins.agent.observations import observationStore
+		from memo.error import MemoError
+		from memo.features.repository.model import entryReference
+		from memo.features.agent.observations import observationStore
 		try:
 			_, log, _, _ = observationStore(self.memo, self.agent, self.memo.backend.listEnvelopes())
 			return self.memo.compactLog(entryReference(log))
@@ -35,11 +36,11 @@ class MemoConsolidation:
 			raise AutoError(f"Memo observation compaction failed: {error}", "system") from error
 
 	def due(self):
-		from memo.model import MemoError
-		from memo.model.entry import effectiveIdentity
-		from memo.model.meta import canonicalMeta
-		from memo.plugins.agent.due import agentDue
-		from memo.plugins.agent.observations import observationSnapshot
+		from memo.error import MemoError
+		from memo.features.repository.model import effectiveIdentity
+		from memo.features.repository.meta.model import canonicalMeta
+		from memo.features.agent.due import agentDue
+		from memo.features.agent.observations import observationSnapshot
 		try:
 			first = agentDue(self.memo, self.agent)
 			pages = [first]
@@ -69,8 +70,8 @@ class MemoConsolidation:
 		`passes` are the run ids of this agent's consolidations, the writers of
 		the proposals themselves; their resolutions are withdrawals, not acceptances.
 		"""
-		from memo.model import MemoError
-		from memo.plugins.agent.observations import observationSnapshot
+		from memo.error import MemoError
+		from memo.features.agent.observations import observationSnapshot
 		try:
 			items = list(observationSnapshot(self.memo, self.agent)["log"].log.items)
 		except (MemoError, OSError) as error:
@@ -91,11 +92,12 @@ class MemoConsolidation:
 			for key, item in resolutions.items() if key not in dismissed]
 
 	def validate(self, value):
-		from memo.model import MemoError
-		from memo.plugins.agent.consolidation import agentConsolidate, prepareConsolidation
-		from memo.plugins.agent.prompt import PERSPECTIVE_FIELDS, _coreCandidates
-		from memo.plugins.agent.layout import validateConfig
-		from memo.query.select import select
+		from memo.error import MemoError
+		from memo.features.agent.consolidation.operations import agentConsolidate
+		from memo.features.agent.consolidation.plan import prepareConsolidation
+		from memo.features.agent.prompt import PERSPECTIVE_FIELDS, learningCandidates
+		from memo.features.agent.config import validateConfig
+		from memo.features.query.select import select
 		try:
 			preview = agentConsolidate(self.memo, self.agent, value, dry=True)
 			plan = prepareConsolidation(self.memo, self.agent, value)
@@ -111,7 +113,7 @@ class MemoConsolidation:
 						original[unit["before"].id] = unit["before"]
 			def startup(entries, owner):
 				config = validateConfig(owner.meta, owner.id)
-				return {(candidate["key"], candidate["role"]) for candidate in _coreCandidates(self.memo, owner, config, entries, captured=True)}
+				return {(candidate["key"], candidate["role"]) for candidate in learningCandidates(self.memo, owner, config, entries, captured=True)}
 			if startup(list(original.values()), plan.agent) != startup(plan.entries, prospective[plan.agent.id]):
 				effects.add("memory.promote")
 			for unit in plan.units:
@@ -148,8 +150,8 @@ class MemoConsolidation:
 			raise AutoError(f"Invalid Memo consolidation: {error}", "output") from error
 
 	def apply(self, value):
-		from memo.model import MemoError, StaleState
-		from memo.plugins.agent.consolidation import agentConsolidate
+		from memo.error import MemoError, StaleState
+		from memo.features.agent.consolidation.operations import agentConsolidate
 		try:
 			return agentConsolidate(self.memo, self.agent, value)
 		except MemoError as error:

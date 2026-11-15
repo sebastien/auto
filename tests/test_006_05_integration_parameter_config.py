@@ -100,7 +100,7 @@ class ParameterConfigurationTests(unittest.TestCase):
 					with self.assertRaisesRegex(AutoError, "Circular parameter configuration"):
 						ElaborationApply(self.ctx, self.plan, value, "configuration-cycle")
 					self.assertEqual(shell.call_count, 0)
-				self.assertFalse((self.plan / "tasks/work.md").exists())
+				self.assertFalse((self.plan / "tsk/work.md").exists())
 
 	def testWinningContextSettingRemovesAnUnusedConfigurationCycle(self):
 		file = self.template({"title": "Masked cycle", "env": {"MODE": "{{ params.label }}"},
@@ -128,7 +128,7 @@ class ParameterConfigurationTests(unittest.TestCase):
 			with self.assertRaisesRegex(AutoError, "temperature must be a finite number"):
 				ElaborationApply(self.ctx, self.plan, value, "resolved-invalid-settings")
 			self.assertEqual(shell.call_count, 1)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(journal(self.plan), [])
 
 	def testShellBackedReferenceSettingsResolveBeforeConfiguredShellParameters(self):

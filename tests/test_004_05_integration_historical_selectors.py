@@ -22,8 +22,8 @@ class HistoricalSelectorTests(unittest.TestCase):
 		PlanRevise(self.ctx, self.plan, [{"op": "remove", "task": task}], "Archive definition source")
 
 	def testArchivedNestedSectionChainKeepsAliasesAndRelativeInputOrigins(self):
-		(self.plan / "tasks").mkdir()
-		(self.plan / "tasks/data.txt").write_text("Archived data")
+		(self.plan / "tsk").mkdir(exist_ok=True)
+		(self.plan / "tsk/data.txt").write_text("Archived data")
 		self.add("library", inputs={"data": "./data.txt"}, sections={
 			"Process": "@auto:demo/task/library/definition#Post",
 			"Post": "@task:library/definition#Details",
@@ -41,7 +41,7 @@ class HistoricalSelectorTests(unittest.TestCase):
 	def testArchivedLineSelectorRetainsExactBytesAndImplicitDependencies(self):
 		self.add("data")
 		self.add("library", sections={"Process": "Preamble\n{{ inputs.extra }}\n@task:data"})
-		file = self.plan / "tasks/library.md"
+		file = self.plan / "tsk/library.md"
 		raw = file.read_text()
 		line = next(index for index, text in enumerate(raw.splitlines(), 1) if text == "@task:data")
 		self.archive("library")
@@ -52,7 +52,7 @@ class HistoricalSelectorTests(unittest.TestCase):
 			self.assertEqual(content.path, file)
 			self.assertEqual(ScriptInputs(self.ctx, ref)["inputs"], ["extra"])
 		self.add("reader", process=f"@task:library/definition#L{line-1}-{line}")
-		self.assertEqual(TaskDependencies(self.ctx, "reader"), ["data"])
+		self.assertEqual(TaskDependencies(self.ctx, "tsk-reader"), ["tsk-data"])
 
 	def testArchivedAliasCycleFailsWithoutCreatingReaderOrExecutingChecks(self):
 		self.add("library")
@@ -66,7 +66,7 @@ class HistoricalSelectorTests(unittest.TestCase):
 				operation(self.ctx, ref)
 		with self.assertRaisesRegex(AutoError, "Recursive"):
 			self.add("reader", process="@" + ref)
-		self.assertFalse((self.plan / "tasks/reader.md").exists())
+		self.assertFalse((self.plan / "tsk/reader.md").exists())
 		self.assertEqual(self.engine.calls, [])
 
 	def testMissingAndAmbiguousArchivedSelectorsFailInBothDiscoveryAndRendering(self):
@@ -84,7 +84,7 @@ class HistoricalSelectorTests(unittest.TestCase):
 		value = createElaborationFromDict({"task": "root", "tasks": [{"id": "library", "from": str(template)}]})
 		ElaborationApply(self.ctx, self.plan, value, "capture-selected-source")
 		task = TaskGet(self.ctx, "library")
-		ref = next(ref for ref in task.meta["_template_sources"] if ref.startswith("auto:demo/task/library/source/"))
+		ref = next(ref for ref in task.meta["_template_sources"] if ref.startswith("auto:demo/task/tsk-library/source/"))
 		self.archive("library")
 		template.unlink()
 		(self.root / "part.md").unlink()

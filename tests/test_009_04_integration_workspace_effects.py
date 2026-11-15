@@ -8,6 +8,7 @@ from auto.features.plan.events import PlanEvents
 from auto.features.plan.operations import PlanRevise
 from auto.utils.data import AutoError, documentText
 import test_009_02_integration_continuation as fixtures
+from support import rootFile
 
 
 class WorkspaceEffectTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class WorkspaceEffectTests(unittest.TestCase):
 	def otherPlan(self):
 		path = self.plan.with_name("other")
 		path.mkdir()
-		(path / "plan.md").write_text(documentText({"id": "other", "goal": "Other", "effects": ["repo.write"]}, "# Other"))
+		rootFile(path).write_text(documentText({"id": "other", "goal": "Other", "effects": ["repo.write"]}, "# Other"))
 		return path
 
 	def grant(self, effect):

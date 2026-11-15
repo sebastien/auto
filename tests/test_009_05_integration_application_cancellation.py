@@ -15,6 +15,7 @@ from auto.features.plan.store import journal
 from auto.features.task.operations import RunGet, RunList
 from auto.utils.data import AutoError, documentText, yamlText
 import test_004_01_integration_planning as fixtures
+from support import rootFile
 
 
 class ApplicationCancellationTests(unittest.TestCase):
@@ -23,7 +24,7 @@ class ApplicationCancellationTests(unittest.TestCase):
 	def pending(self, parameter="Stored", *, question=False):
 		elaborator = self.root / "elaborator.md"
 		elaborator.write_text(documentText({"title": "Elaborate"}, "## Process\nProduce tasks\n"))
-		(self.plan / "plan.md").write_text(documentText({"id": "demo", "goal": "Demo",
+		rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Demo",
 			"elaborator": {"task": str(elaborator)}}, "# Demo"))
 		template = self.root / "template.md"
 		template.write_text(documentText({"title": "Work", "params": {"label": parameter}}, "## Process\n{{ params.label }}\n"))
@@ -55,7 +56,7 @@ class ApplicationCancellationTests(unittest.TestCase):
 		self.assertEqual(events[-1]["data"]["stop"], "cancelled")
 		self.assertNotIn("error", events[-1]["data"])
 		self.assertEqual(journal(self.plan), [])
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(len(self.engine.calls), 1)
 		self.assertEqual(receipt.read_bytes(), original)
 		self.assertEqual([value["id"] for value in RunList(self.ctx)], [run["id"]])
@@ -126,7 +127,7 @@ class ApplicationCancellationTests(unittest.TestCase):
 			worker.join(5)
 		self.assertEqual(errors, [])
 		self.assertEqual(result[-1]["data"]["stop"], "held")
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertEqual(len(self.engine.calls), 1)
 		self.assertEqual(receipt.read_bytes(), original)
 		self.assertFalse(any(row.get("elaborationRun") for row in journal(self.plan)))
@@ -164,7 +165,7 @@ class ApplicationCancellationTests(unittest.TestCase):
 		self.assertEqual(errors, [])
 		self.assertEqual(events[-1]["data"]["stop"], "held")
 		self.assertEqual(receipt.read_bytes(), original)
-		self.assertFalse((self.plan / "tasks/work.md").exists())
+		self.assertFalse((self.plan / "tsk/work.md").exists())
 		self.assertFalse(any(row.get("elaborationRun") for row in journal(self.plan)))
 		self.assertEqual(len(self.engine.calls), 2)
 		# Recovery applies the successful output rather than running the Elaborator again.

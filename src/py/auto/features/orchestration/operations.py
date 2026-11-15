@@ -19,6 +19,7 @@ from auto.features.task.operations import RunList, TaskStart, effectiveTask, has
 from auto.runtime.model import Limits, RunStatus, budgetValue
 from auto.runtime.operations import Knowledge
 from auto.utils.data import AutoError, identity, jsonText, readJson, timestamp
+from auto.utils.layout import runsPath
 
 
 def requiresWorkspace(context, tasks):
@@ -68,7 +69,7 @@ def PlanContinue(context, plan):
 	path = planPath(context, plan)
 	context = context.derive(plan=path, question=None)
 	threshold = timeoutCount(context, path)
-	value = Continuation(identity(), timestamp()).asDict()
+	value = Continuation(identity("cnt"), timestamp()).asDict()
 	cancel = threading.Event()
 	worker, outcome = None, {}
 	cursor, timeouts, attempted, refined = 0, 0, set(), set()
@@ -82,7 +83,7 @@ def PlanContinue(context, plan):
 		for event in PlanEvents(context.derive(cancelled=lambda: False), since=cursor):
 			cursor = event["seq"]
 			if event["kind"] == PlanEventKind.RUN_STARTED:
-				run = readReceipt(path / "runs" / event["data"]["run"])
+				run = readReceipt(runsPath(path) / event["data"]["run"])
 				if run.get("continuation") == value["id"] and run["id"] not in value["runs"]:
 					value["runs"].append(run["id"])
 					saveContinuation(path, value)
@@ -148,7 +149,7 @@ def PlanContinue(context, plan):
 				if not interrupted and not planHold(path):
 					applied = {row.get("elaborationRun") for row in journal(path)}
 					for run in RunList(context, {"task": "elaborator", "status": RunStatus.SUCCEEDED}):
-						if run["id"] not in applied and readJson(path / "runs" / run["id"] / "state.json", {}).get("applyElaboration"):
+						if run["id"] not in applied and readJson(runsPath(path) / run["id"] / "state.json", {}).get("applyElaboration"):
 							yield from perform(lambda run=run: applyPending(workerContext, run))
 				with locked(path):
 					status = PlanStatus(context)
@@ -176,7 +177,7 @@ def PlanContinue(context, plan):
 						and (latestRun(path, id) or {}).get("status") not in {RunStatus.FAILED, RunStatus.TIMED_OUT}), key=order.get)
 				if waiting:
 					run, gap = waiting[0]
-					allocation = budgetValue(readJson(path / "runs" / run["id"] / "state.json")["task"].get("budget")) if run["task"] != "root" else {}
+					allocation = budgetValue(readJson(runsPath(path) / run["id"] / "state.json")["task"].get("budget")) if run["task"] != "root" else {}
 					if any(amount <= 0 or max(0, allocation.get(key, 0) - run["usage"].get(key, 0)) > amount for key, amount in remaining.items()):
 						stop = ContinuationStop.BUDGET
 						break

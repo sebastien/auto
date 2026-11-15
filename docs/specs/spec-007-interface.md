@@ -70,7 +70,7 @@ auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
 - *Context*: `--plan`, `--engine`, `--model` and `--agent` are available on
   every command where they apply, with `AUTO_PLAN`, `AUTO_ENGINE`,
   `AUTO_MODEL` and `AUTO_AGENT` as environment equivalents. A plan is given
-  by id, resolved as `.auto/plans/{plan}/` in the project (see
+  by id, resolved as `.auto/{plan}/` in the project (see
   [Plan](spec-004-plan.md)), or by path.
 - *Output*: results are written on stdout, diagnostics on stderr. `--format`
   selects `text` (default, for humans), `markdown` (for inclusion in prompts)
