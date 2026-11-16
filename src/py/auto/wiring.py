@@ -60,7 +60,7 @@ def prepareRun(context: Context, run: dict, state: dict):
 
 
 def planRunBudget(context: Context, task, budget: dict, run=None, *, assessment=False):
-	from auto.features.orchestration.budgets import planRunBudget as allocate
+	from auto.features.plan.budgets import planRunBudget as allocate
 	return allocate(context, task, budget, run, assessment=assessment)
 
 

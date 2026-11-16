@@ -97,6 +97,7 @@ src/py/auto/
       events.py             # Durable plan events and their repair
       control.py            # Hold revisions and continuation state
       policy.py             # Plan policy: effects, rules and grants
+      budgets.py            # Run admission against the plan budget
     elaboration/
       model.py              # TaskElaboration model
       operations.py         # Elaboration, plan creation and refinement
@@ -107,6 +108,8 @@ src/py/auto/
       operations.py         # Consolidation, triggers, decision cursors, wake
     orchestration/
       operations.py         # Sequential continuation, selection, limits and hints
+    guided/
+      operations.py         # The person's loop: plan, confirm, run, ask, summarise
   app/
     operations.py           # Exposure metadata shared by interfaces
     cli/
@@ -127,7 +130,7 @@ tests/
 - Keep files under 1000 lines, split into submodules as they grow.
 - Follow `review-py` standards.
 - Depend downward: `utils` and `runtime` know no feature; integrations implement
-  the contracts in `runtime/integration.py`; `script → task → plan → elaboration → orchestration`;
+  the contracts in `runtime/integration.py`; `script → task → plan → elaboration → orchestration → guided`;
   `app` projects feature operations. Reference-scheme wiring lives in
   `wiring.py`, the only module that knows both the runtime and the features.
 - Operations are `PascalCase` (`{Noun}{Verb}`); helpers and model members are

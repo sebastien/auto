@@ -403,7 +403,7 @@ Shell checks can still run within the time limit. An empty aggregate with no
 lifecycle checks requires no tokens/cost and can assemble outputs after its
 children exhaust those dimensions, including nested aggregates.
 
-The composition root connects task start/resume to orchestration's budget
+The composition root connects task start/resume to the plan's budget
 admission. Under the plan writer lock, admission subtracts measured usage and
 the unspent budgets of other Running/Pending runs, then publishes the admitted
 budget in the active receipt before releasing the lock. Waiting runs release

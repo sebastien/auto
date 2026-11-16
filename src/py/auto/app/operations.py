@@ -68,14 +68,14 @@ def gapCandidates(context, arguments):
 
 
 def questionCandidates(context, arguments):
-	from auto.features.orchestration.guided import openQuestions
+	from auto.features.guided.operations import openQuestions
 	from auto.features.plan.store import planPath
 	return [(str(index), firstLine(gap["question"])) for index, gap in enumerate(openQuestions(context, planPath(context)), 1)]
 
 
 def openGap(context, arguments) -> dict:
 	"""Return the open gap an `answer` argument refers to, by id or number."""
-	from auto.features.orchestration.guided import openQuestions
+	from auto.features.guided.operations import openQuestions
 	from auto.features.plan.store import planPath
 	gaps = openQuestions(context, planPath(context))
 	selected = str(arguments.get("gap") or arguments.get("number") or "")
@@ -234,28 +234,28 @@ class Exposure:
 
 # Main operations come first, in the order of the CLI reference; internals follow (see spec-007).
 EXPOSURES = [
-	Exposure("PlanDo", "orchestration.guided", ("goal",), "Plan a goal, confirm it, then run it until it ends or needs you", command="new", everyday=True,
+	Exposure("PlanDo", "guided.operations", ("goal",), "Plan a goal, confirm it, then run it until it ends or needs you", command="new", everyday=True,
 		optional=("yes", "budget", "effects", "agents"), inputs=True, stream=True, effects=True),
 	Exposure("PlanStatus", "plan.operations", (), "Show where the plan stands and what needs you", command="status", everyday=True, mcp=True, needsPlan=True),
-	Exposure("PlanGo", "orchestration.guided", (), "Continue the plan until it ends or needs you", command="go", everyday=True, optional=("task",),
+	Exposure("PlanGo", "guided.operations", (), "Continue the plan until it ends or needs you", command="go", everyday=True, optional=("task",),
 		stream=True, passPlan=True, effects=True, needsPlan=True),
-	Exposure("QuestionAnswer", "orchestration.guided", (), "Answer the plan's open questions", command="answer", everyday=True, optionalArguments=("number", "answer"),
+	Exposure("QuestionAnswer", "guided.operations", (), "Answer the plan's open questions", command="answer", everyday=True, optionalArguments=("number", "answer"),
 		optional=("rationale",), valueArguments=("answer",), effects=True, needsPlan=True),
 	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Change the plan, or one task with --task", command="change", everyday=True, optional=("task",),
 		resumable=True, passPlan=True, effects=True, needsPlan=True),
-	Exposure("PlanPause", "orchestration.guided", (), "Pause the plan once its current task finishes", command="pause", optionalArguments=("reason",),
+	Exposure("PlanPause", "guided.operations", (), "Pause the plan once its current task finishes", command="pause", optionalArguments=("reason",),
 		passPlan=True, effects=True, needsPlan=True),
-	Exposure("PlanStop", "orchestration.guided", (), "Stop the plan now, cancelling its current task", command="stop", optionalArguments=("reason",),
+	Exposure("PlanStop", "guided.operations", (), "Stop the plan now, cancelling its current task", command="stop", optionalArguments=("reason",),
 		passPlan=True, effects=True, needsPlan=True),
-	Exposure("PlanResume", "orchestration.guided", (), "Release a paused or stopped plan and continue it", command="resume",
+	Exposure("PlanResume", "guided.operations", (), "Release a paused or stopped plan and continue it", command="resume",
 		optionalArguments=("reason",), stream=True, passPlan=True, effects=True, needsPlan=True),
 	Exposure("PlanEvents", "plan.events", (), "Show the plan's history", command="log", mcp=True, stream=True, optional=("since", "follow"), needsPlan=True),
-	Exposure("TaskShow", "orchestration.guided", ("task",), "Show a task, its latest attempt and its output", command="show", everyday=True, mcp=True, needsPlan=True),
+	Exposure("TaskShow", "guided.operations", ("task",), "Show a task, its latest attempt and its output", command="show", everyday=True, mcp=True, needsPlan=True),
 	Exposure("PlanList", "plan.operations", (), "List the project's plans", command="plans", mcp=True, optional=("filter",)),
-	Exposure("PlanUse", "orchestration.guided", ("id",), "Choose the plan later commands act on", command="use"),
+	Exposure("PlanUse", "guided.operations", ("id",), "Choose the plan later commands act on", command="use"),
 	Exposure("DecisionRecord", "plan.gaps", ("question", "answer"), "Record a decision made outside a question", command="decide",
 		optional=("rationale", "concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
-	Exposure("LearningStatus", "orchestration.guided", (), "Show what memory agents have learned and what awaits them", command="learned", mcp=True),
+	Exposure("LearningStatus", "guided.operations", (), "Show what memory agents have learned and what awaits them", command="learned", mcp=True),
 	Exposure("ScriptStart", "script.operations", ("script",), "Run a Markdown script on its own, without a plan", command="run",
 		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True, effects=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),

@@ -24,7 +24,7 @@ from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, merge, yamlLoad
 from auto.utils.layout import planPaths, storePath, taskId
 
-# Events the guided plan operations add to the plan events they stream (see orchestration.guided).
+# Events the guided plan operations add to the plan events they stream (see features.guided).
 PROPOSED = "PlanProposed"
 SUMMARY = "PlanSummary"
 

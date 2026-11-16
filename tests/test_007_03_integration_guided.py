@@ -14,7 +14,7 @@ from unittest.mock import patch
 from auto.app.cli.frontend import TIPS, planView, summaryView, tipFor
 from auto.app.cli.main import reference
 from auto.app.operations import exitStatus
-from auto.features.orchestration.guided import (PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow,
+from auto.features.guided.operations import (PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow,
 	failureText)
 from auto.features.plan.gaps import GapList
 from auto.features.plan.operations import PlanRevise, PlanStatus

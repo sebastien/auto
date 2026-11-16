@@ -24,8 +24,9 @@ consideration:
   recurrent questions, edge cases, patterns) that inform planning and
   execution.
 
-The plan holds the structure and state; decisions about sequencing, retries
-and budget enforcement belong to Orchestration.
+The plan holds the structure and state, and its budget: each run is admitted
+against what the plan has left. Decisions about sequencing and retries belong
+to Orchestration, which stops when the budget cannot cover the next run.
 
 ## Conceptual Model
 
