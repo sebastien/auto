@@ -29,7 +29,8 @@ def planRunBudget(context, task, budget, run=None, *, assessment=False):
 		if emptyAggregate and key != "time":
 			needed = 0
 		if not assessment and (needed > available or available <= 0 and (key == "time" or not emptyAggregate)):
-			raise AutoError(f"Plan {key} budget cannot cover the run allocation", "budget")
+			raise AutoError(f"Plan {key} budget cannot cover the next run: {available:g} left of {maximum:g}", "budget",
+				recovery="auto status shows what the plan has spent; a plan started with a larger --budget can go further.")
 		cap = usage.get(key, 0) + available
 		result[key] = min(result.get(key, cap), cap)
 	return result

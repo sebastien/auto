@@ -208,14 +208,18 @@ takes; they add no state of their own.
   asks a `PlanConfirm` question, answered `run`, `change` (then what should
   change, applied as a refinement before proposing again) or `no`. It then
   continues the plan as `PlanGo` does. With `yes`, or no person to ask, it
-  runs without confirmation.
+  runs without confirmation. When its planning fails, it stops `unplanned`,
+  with the reason of the failure (validation violations by their messages).
+  A plan whose creation fails before anything was recorded or run (eg. a
+  budget too small to plan) is removed: the current plan and the plan
+  counter are as they were.
 - `PlanGo` asks the open questions, then runs continuations (see
   [Orchestration](spec-009-orchestration.md)): when one stops `waiting` and a
   person can be asked, it asks every open question, recording each answer as
   a decision, and continues. `task` first runs that task again, eg. after a
   failure.
 - Both end with a `PlanSummary` event: status, why it stopped (a continuation
-  stop, or `declined`), tasks done, usage, budget, decisions, open questions,
+  stop, `declined` or `unplanned`, which exits 1) and its `reason`, tasks done, usage, budget, decisions, open questions,
   failed tasks, the first line of each succeeded task's output, the plan's
   memory agents and the files changed while it ran. Its exit status follows
   the stop, as a `ContinuationStopped` event's does.

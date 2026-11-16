@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 
 from liquid.exceptions import LiquidError
 
@@ -24,7 +25,8 @@ from auto.runtime.model import RunStatus, budgetValue
 from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, atomicWrite, digest, document, documentText, identifier, identity, jsonText, promptText, sections, yamlLoad
 from auto.utils.references import relocateMeta
-from auto.utils.layout import PLAN_PREFIX, historyFile, planFile, planNumber, setCurrentPlan, storePath, taskFile, taskId, taskRef
+from auto.utils.layout import (CURRENT, PLAN_PREFIX, currentPlan, historyFile, isPlan, planFile, planNumber, runsPath, setCurrentPlan, storePath,
+	taskFile, taskId, taskRef)
 
 
 # -----------------------------------------------------------------------------
@@ -367,6 +369,7 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 	agents = defaultAgents(context) if agents is None else list(validateAgents(context, agents))
 	plans = storePath(context.project)
 	plans.mkdir(parents=True, exist_ok=True)
+	previous = currentPlan(context.project)
 	# The plans lock makes the counter safe across concurrent creations.
 	with locked(plans):
 		counter = plans / ".counter"
@@ -379,19 +382,47 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		path.mkdir(exist_ok=False)
 		atomicWrite(counter, f"{number + 1:03x}\n")
 		setCurrentPlan(context.project, path)
-	# The goal is the root task's description: the plan's directory names it.
-	inputs = relocateMeta({"inputs": inputs or {}}, context.project)["inputs"]
-	root = {**({"requested_effects": effects} if effects else {}), **({"agents": agents} if agents else {}),
-		**({"inputs": inputs} if inputs else {}), **({"budget": budget} if budget else {})}
-	atomicWrite(planFile(path), documentText(root, goal.strip() + "\n"))
-	if effects:
-		base = "auto:" + name
-		rootDigest = digest(planFile(path).read_bytes())
-		operations = [{"op": RevisionOp.GRANT, "effect": effect, "scope": base, "source": base + "/task/root/definition", "source_digest": rootDigest}
-			for effect in dict.fromkeys(effects)]
-		with locked(path):
-			commit(context, path, operations, reason="Human-requested goal effects")
-	return PlanRefine(context.derive(plan=path), path, "Initial elaboration")
+	try:
+		# The goal is the root task's description: the plan's directory names it.
+		inputs = relocateMeta({"inputs": inputs or {}}, context.project)["inputs"]
+		root = {**({"requested_effects": effects} if effects else {}), **({"agents": agents} if agents else {}),
+			**({"inputs": inputs} if inputs else {}), **({"budget": budget} if budget else {})}
+		atomicWrite(planFile(path), documentText(root, goal.strip() + "\n"))
+		if effects:
+			base = "auto:" + name
+			rootDigest = digest(planFile(path).read_bytes())
+			operations = [{"op": RevisionOp.GRANT, "effect": effect, "scope": base, "source": base + "/task/root/definition", "source_digest": rootDigest}
+				for effect in dict.fromkeys(effects)]
+			with locked(path):
+				commit(context, path, operations, reason="Human-requested goal effects")
+		return PlanRefine(context.derive(plan=path), path, "Initial elaboration")
+	except BaseException as error:
+		if discardUnstarted(context, path, number, previous) and isinstance(error, AutoError) and error.kind == "budget":
+			raise AutoError(str(error), "budget", recovery="Planning is paid from the budget too: try again with a larger --budget.") from error
+		raise
+
+
+def discardUnstarted(context, path, number: int, previous) -> bool:
+	"""Remove a plan whose creation failed before anything was recorded or run, restoring the current plan and the counter."""
+	runs = runsPath(path)
+	started = (path / "journal.jsonl").exists() or (runs.is_dir() and any((run / name).is_file()
+		for run in runs.iterdir() for name in ("receipt.json", "active.json")))
+	if started:
+		return False
+	plans = storePath(context.project)
+	with locked(plans):
+		shutil.rmtree(path, ignore_errors=True)
+		counter = plans / ".counter"
+		if counter.exists() and counter.read_text().strip() == f"{number + 1:03x}":
+			atomicWrite(counter, f"{number:03x}\n")
+		# Another creation may have become current meanwhile: only this plan's selection is undone.
+		current = plans / CURRENT
+		if current.exists() and current.read_text().strip() == path.name:
+			if previous is not None and isPlan(previous):
+				setCurrentPlan(context.project, previous)
+			else:
+				current.unlink()
+	return True
 
 
 def PlanRefine(context, plan, reason: str, task: str = "root") -> dict:

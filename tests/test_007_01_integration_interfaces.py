@@ -234,9 +234,9 @@ class InterfaceTests(unittest.TestCase):
 				result = self.cli("x", "task", "run", ".auto/catalogue/task/audit-architecture.md", "--format", "json", cwd=directory)
 		self.assertEqual(result.returncode, 2)
 		failure = json.loads(result.stdout)["failure"]
-		self.assertEqual(failure["reason"], "This operation requires a plan")
+		self.assertEqual(failure["reason"], "No plan selected")
 		self.assertIn("--plan <name-or-path>", failure["recovery"])
-		self.assertIn('auto "<goal>"', failure["recovery"])
+		self.assertIn('auto "GOAL"', failure["recovery"])
 		self.assertIn("not a catalogue Markdown path", failure["recovery"])
 
 	def testInvalidContextAndValuesAreUsageErrorsWithCandidates(self):

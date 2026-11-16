@@ -9,6 +9,7 @@ loop stops where it needs one, as a continuation does.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from auto.features.elaboration.operations import PlanCreate, PlanRefine
@@ -38,6 +39,8 @@ SUMMARY = "PlanSummary"
 # The question asking whether to run a proposed plan: answered `run`, `change` or `no`.
 CONFIRM = "PlanConfirm"
 DECLINED = "declined"
+# Why a guided plan stopped before it had tasks: its planning run did not succeed.
+UNPLANNED = "unplanned"
 
 # -----------------------------------------------------------------------------
 #
@@ -106,6 +109,18 @@ def proposal(context, path) -> dict:
 		"questions": [gap["question"] for gap in status["gaps"]], "agents": createPlan(path).meta.get("agents", [])}
 
 
+def failureText(failure) -> str:
+	"""Return why a run failed, in a line: validation violations are listed by their messages."""
+	reason = (failure or {}).get("reason") if isinstance(failure, dict) else failure
+	try:
+		violations = json.loads(reason) if isinstance(reason, str) else reason
+	except ValueError:
+		violations = None
+	if isinstance(violations, list) and violations and all(isinstance(item, dict) and "message" in item for item in violations):
+		return "; ".join(dict.fromkeys(str(item["message"]) for item in violations))
+	return excerpt(reason or "", 300)
+
+
 def excerpt(value, size: int = 160) -> str:
 	"""Return the first meaningful line of an output, clipped to `size`."""
 	text = value if isinstance(value, str) else str(value)
@@ -142,7 +157,7 @@ def PlanDo(context, goal: str, budget: dict | None = None, effects: list | None 
 	context = context.derive(plan=path)
 	run = settle(context, created["run"])
 	if run["status"] not in {RunStatus.SUCCEEDED, RunStatus.WAITING}:
-		yield {"kind": SUMMARY, "data": PlanSummary(context, path, ContinuationStop.FAILED)}
+		yield {"kind": SUMMARY, "data": PlanSummary(context, path, UNPLANNED, reason=failureText(run.get("failure")) or run["status"])}
 		return
 	while True:
 		if context.question:
@@ -204,8 +219,8 @@ def PlanUse(context, id: str) -> dict:
 	return {"id": plan.id, "goal": plan.goal.strip().partition("\n")[0], "path": str(path)}
 
 
-def PlanSummary(context, plan, stop: str | None = None, changed: list | None = None) -> dict:
-	"""Summarise where a plan stands: progress, cost, decisions, results, files `changed` and why it stopped."""
+def PlanSummary(context, plan, stop: str | None = None, changed: list | None = None, reason: str | None = None) -> dict:
+	"""Summarise where a plan stands: progress, cost, decisions, results, files `changed` and why it stopped, with the `reason` of a failed planning."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	status = PlanStatus(context, path)
@@ -220,7 +235,7 @@ def PlanSummary(context, plan, stop: str | None = None, changed: list | None = N
 				output = ""
 			results.append({"task": id, "goal": status["taskDetails"][id]["goal"], "output": output})
 	decisions = sum(op["op"] in {RevisionOp.RESOLVE, RevisionOp.RECORD} for row in journal(path) for op in row["operations"])
-	return {"id": status["id"], "goal": status["goal"], "path": status["path"], "status": status["status"], "stop": stop,
+	return {"id": status["id"], "goal": status["goal"], "path": status["path"], "status": status["status"], "stop": stop, "reason": reason,
 		"done": sum(status["tasks"][id] == RunStatus.SUCCEEDED for id in tasks), "total": len(tasks), "usage": status["usage"],
 		"budget": status["budget"], "decisions": decisions, "questions": [gap["question"] for gap in status["gaps"]], "results": results, "changed": changed,
 		"failed": [id for id in tasks if status["tasks"][id] in {RunStatus.FAILED, RunStatus.TIMED_OUT}],

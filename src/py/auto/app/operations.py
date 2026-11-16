@@ -124,9 +124,9 @@ DESCRIPTORS = {
 	"script": Descriptor("path", "A markdown script", suffix=".md"),
 	"elaboration": Descriptor("path", "A task elaboration document", suffix=".md"),
 	"audit": Descriptor("path", "An audit report", suffix=".md"),
-	"budget": Descriptor("structured", "Optional YAML budget mapping, eg. {cost: 2, time: 1800}"),
-	"effects": Descriptor("structured", "YAML list of dotted effect names"),
-	"agents": Descriptor("structured", "YAML list of agent references"),
+	"budget": Descriptor("structured", "What the plan may spend, as YAML, eg. '{cost: 2, time: 1800}' (dollars, seconds)"),
+	"effects": Descriptor("structured", "Effects granted up front, as a YAML list, eg. '[vcs.commit, net.read]'"),
+	"agents": Descriptor("structured", "Memory agents watching the plan, as a YAML list; default: default_agents"),
 	"agent": Descriptor("choice", "The Auto agent to consolidate", candidates=agentCandidates),
 	"phases": Descriptor("structured", "YAML list of Memoriser phases; omitted means all"),
 	"overrideAllowance": Descriptor("text", "Explicitly override a consolidation allowance"),
@@ -361,7 +361,7 @@ def exitStatus(result, exposure: Exposure | None = None) -> int:
 				return 0
 			if data["stop"] == "cancelled" and result["kind"] == "PlanSummary":
 				return 130
-			return 1 if data["stop"] == "failed" else 3
+			return 1 if data["stop"] in {"failed", "unplanned"} else 3
 		if isinstance(result.get("run"), dict):
 			return exitStatus(result["run"])
 		if result.get("failure") or result.get("pass") is False:

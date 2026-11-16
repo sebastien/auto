@@ -62,7 +62,8 @@ MARKERS = {RunStatus.SUCCEEDED: ("✓", "32"), RunStatus.RUNNING: ("●", "36"),
 	RunStatus.FAILED: ("✗", "31"), RunStatus.TIMED_OUT: ("✗", "31"), RunStatus.CANCELLED: ("⊘", "2"), RunStatus.SKIPPED: ("–", "2"),
 	RunStatus.BLOCKED: ("○", "2"), "Ready": ("○", "")}
 STOPS = {"waiting": "Waiting for your answers", "failed": "Stopped: a task failed", "budget": "Stopped: the budget is spent",
-	"held": "Paused", "blocked": "Stopped: nothing can run", "cancelled": "Interrupted", "declined": "Not run"}
+	"held": "Paused", "blocked": "Stopped: nothing can run", "cancelled": "Interrupted", "declined": "Not run", "unplanned": "Planning failed"}
+REPLAN = 'auto change "…" to plan it again, saying what to do differently'
 CHANGES = {"added": ("+", "32"), "modified": ("~", "33"), "deleted": ("-", "31")}
 # Files listed in a summary before the rest are counted.
 CHANGES_SHOWN = 12
@@ -140,6 +141,9 @@ def nextStep(value: dict) -> str:
 		return f"auto show {failed[0]} to see why, then auto go --task {failed[0]} to retry"
 	if any(task["blocked"] for task in value["policy"]["tasks"].values()):
 		return "auto x policy show to see what policy blocks"
+	if list(tasks) == ["root"] and value["failures"]:
+		# The plan has no tasks because planning failed.
+		return REPLAN
 	return "auto go"
 
 
@@ -222,13 +226,15 @@ def summaryView(value: dict, *, color: bool = False) -> str:
 		headline = {"Succeeded": paint("Done", "1;32", color), "Failed": paint("Failed", "1;31", color)}.get(status, status)
 	else:
 		headline = paint(STOPS.get(stop, "Stopped"), "1;33", color)
-	facts = [f"{value['done']}/{value['total']} tasks"]
+	facts = [] if stop == "unplanned" else [f"{value['done']}/{value['total']} tasks"]
 	usage = usageText(value["usage"], value["budget"])
 	if usage:
 		facts.append(usage)
 	if value["decisions"]:
 		facts.append(f"{value['decisions']} decision" + ("s" if value["decisions"] != 1 else ""))
-	lines = [headline + " · " + " · ".join(facts)]
+	lines = [" · ".join([headline, *facts])]
+	if value.get("reason"):
+		lines.append("  " + paint(safeText(value["reason"]), "31", color))
 	if value["results"]:
 		lines.append("Results:")
 		size = max(width(result["task"]) for result in value["results"])
@@ -274,6 +280,8 @@ def summaryNext(value: dict) -> str:
 		return "auto answer, then auto go"
 	if stop == "declined":
 		return 'auto go to run it, or auto change "…" to revise it'
+	if stop == "unplanned":
+		return REPLAN
 	if stop == "held":
 		return "auto resume"
 	if value["failed"]:

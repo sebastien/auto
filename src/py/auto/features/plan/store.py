@@ -48,9 +48,8 @@ def planPath(context, plan=None) -> Path:
 	"""Resolve the directory of the current or named plan."""
 	path = plan or context.plan
 	if path is None:
-		raise AutoError("This operation requires a plan", recovery='Choose a plan with auto use PLAN, --plan <name-or-path> or AUTO_PLAN. '
-			'If you have no plan, start one with auto "<goal>". '
-			'Task runs take a task ID defined in that plan, not a catalogue Markdown path.')
+		raise AutoError("No plan selected", recovery='Choose one with auto use PLAN (auto plans lists them), or start one with auto "GOAL".'
+			if planPaths(context.project) else 'Start one with auto "GOAL".')
 	path = Path(path)
 	if not path.is_absolute() and len(path.parts) == 1:
 		from auto.runtime.config import planDirectory

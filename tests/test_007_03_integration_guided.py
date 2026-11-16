@@ -11,9 +11,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto.app.cli.frontend import TIPS, summaryView, tipFor
+from auto.app.cli.frontend import TIPS, planView, summaryView, tipFor
 from auto.app.cli.main import reference
-from auto.features.orchestration.guided import PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow
+from auto.app.operations import exitStatus
+from auto.features.orchestration.guided import (PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow,
+	failureText)
 from auto.features.plan.gaps import GapList
 from auto.features.plan.operations import PlanRevise, PlanStatus
 from auto.runtime.config import contextFor
@@ -91,6 +93,41 @@ class GuidedTests(unittest.TestCase):
 		self.assertTrue(summary["data"]["results"][0]["output"].startswith("Result:"))
 		self.assertEqual(currentPlan(self.root), Path(summary["data"]["path"]))
 		self.assertEqual(contextFor(self.root).plan, Path(summary["data"]["path"]))
+
+	def testFailedPlanningSaysWhyAndHowToTryAgain(self):
+		class Unplannable(Engine):
+			def start(self, context, request):
+				self.calls.append(request["prompt"])
+				yield {"type": "ScriptEnded", "status": "Succeeded", "output": "---\ntask: root\n---\n## task: \n"}
+		events = list(PlanDo(self.context(Unplannable(), ["run"]), "Write a small report"))
+		summary = events[-1]["data"]
+		self.assertEqual(summary["stop"], "unplanned")
+		self.assertTrue(summary["reason"])
+		self.assertEqual(exitStatus(events[-1]), 1)
+		text = summaryView(summary)
+		self.assertTrue(text.startswith("Planning failed"), text)
+		self.assertIn("  " + summary["reason"], text)
+		self.assertIn('Next: auto change "…" to plan it again', text)
+		self.assertNotIn("tasks", text.splitlines()[0])
+		status = PlanStatus(self.context(Unplannable()), Path(summary["path"]))
+		self.assertIn('Next: auto change "…" to plan it again', planView(status))
+		violations = '[{"element": "elaboration", "message": "A"}, {"element": "task:x", "message": "B"}, {"element": "task:y", "message": "A"}]'
+		self.assertEqual(failureText({"reason": violations}), "A; B")
+		self.assertEqual(failureText({"reason": "Engine missing\nmore"}), "Engine missing")
+
+	def testAPlanThatCannotStartLeavesNothingBehind(self):
+		engine = Engine()
+		first = Path(list(PlanDo(self.context(engine, ["no"]), "Write a small report"))[-1]["data"]["path"])
+		calls = len(engine.calls)
+		with self.assertRaisesRegex(AutoError, "Plan cost budget cannot cover the next run: 0 left of 0") as failure:
+			list(PlanDo(self.context(engine, ["run"]), "Write another report", budget={"cost": 0}))
+		self.assertEqual(failure.exception.recovery, "Planning is paid from the budget too: try again with a larger --budget.")
+		self.assertEqual(len(engine.calls), calls)
+		self.assertEqual([path.name for path in (self.root / ".auto").glob("pln-*")], [first.name])
+		self.assertEqual(currentPlan(self.root), first)
+		# The failed plan's number is free again.
+		events = list(PlanDo(self.context(engine, ["no"]), "Write a third report"))
+		self.assertEqual(Path(events[-1]["data"]["path"]).name, "pln-001-write-third-report")
 
 	def testDecliningKeepsThePlanWithoutRunningIt(self):
 		engine = Engine()
@@ -208,6 +245,31 @@ class GuidedCliTests(unittest.TestCase):
 		(plan / "tsk/index.md").write_text("---\nid: index\ntitle: Build the search index\n---\n## Process\n\nIndex documents\n")
 		return plan
 
+	def testCommandHelpDescribesEveryOptionAndKeepsSettingsApart(self):
+		with tempfile.TemporaryDirectory() as directory:
+			text = self.cli("new", "--help", cwd=directory).stdout
+			options, _, settings = text.partition("engine and output:")
+			self.assertIn("--budget", options)
+			self.assertIn("--engine ENGINE", settings)
+			self.assertNotIn("--plan", text)
+			lines = text.splitlines()
+			for index, line in enumerate(lines):
+				# Every option is followed by what it does, on its line or the next.
+				if line.startswith("  --") and len(line.split("  ")) < 3 and not lines[index + 1].startswith(" " * 8):
+					self.fail(f"Undescribed option: {line}")
+			self.assertIn("--plan PLAN", self.cli("go", "--help", cwd=directory).stdout)
+
+	def testWithoutAPlanCommandsSayHowToStartOne(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".git").mkdir()
+			status = self.cli("status", cwd=root)
+			self.assertEqual(status.returncode, 2)
+			self.assertIn("No plan selected", status.stderr)
+			self.assertIn('Recovery: Start one with auto "GOAL".', status.stderr)
+			self.assertNotIn("AUTO_PLAN", status.stderr)
+			self.assertIn("AUTO_PLAN", self.cli("x", "plan", "continue", cwd=root).stderr)
+
 	def testBareAutoWelcomesThenShowsTheOnlyPlan(self):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
@@ -263,10 +325,11 @@ class GuidedCliTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			(root / ".git").mkdir()
-			for words in (("stauts",), ("write", "a", "report")):
+			for words, recovery in ((("stauts",), "Did you mean auto status? To start a plan, use auto new stauts."),
+					(("write", "a", "report"), 'To start a plan, quote the goal: auto "write a report".')):
 				typo = self.cli(*words, cwd=root)
 				self.assertEqual(typo.returncode, 2)
-				self.assertIn('quote the goal: auto "<goal>"', typo.stderr)
+				self.assertIn(recovery, typo.stderr)
 			internal = self.cli("gap", "list", cwd=root)
 			self.assertEqual(internal.returncode, 2)
 			self.assertIn("auto x gap --help", internal.stderr)
