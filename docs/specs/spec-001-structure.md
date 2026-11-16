@@ -69,6 +69,7 @@ src/py/auto/
       engine.py             # OpenCode integration
     pi/
       engine.py             # Pi integration
+      worker.py             # Warm RPC workers, fresh conversations per invocation
     llm/
       engine.py             # llm integration
     memo/

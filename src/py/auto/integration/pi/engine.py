@@ -5,7 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 
-from auto.integration.process import streamProcess
+from auto.integration.pi.worker import streamWorker
 from auto.runtime.model import DETAIL, Event, RunStatus
 from auto.utils.data import AutoError
 
@@ -17,7 +17,7 @@ from auto.utils.data import AutoError
 
 
 class Pi:
-	"""Run a single ephemeral session, with native tools unless restricted, and explicit isolation."""
+	"""Run fresh conversations on warm Pi RPC workers, with explicit tools and isolation."""
 
 	def start(self, context, request):
 		config = request["config"]
@@ -25,7 +25,7 @@ class Pi:
 			raise AutoError("Pi needs a model to select a provider; set model as well")
 		if config.get("agent"):
 			raise AutoError("Pi CLI does not expose named agents")
-		args = ["pi", "--mode", "json", "--no-session"]
+		args = ["pi", "--mode", "rpc", "--no-session"]
 		if config.get("isolated", False):
 			args += ["--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"]
 		if config.get("model"):
@@ -39,7 +39,7 @@ class Pi:
 			args += ["--system-prompt", config["prompt"] + "\n"]
 		decoder, pending, output, settled = codecs.getincrementaldecoder("utf-8")(), "", "", False
 		stderr, currentUsage, detail = [], {"tokens": 0, "cost": 0}, dict.fromkeys(DETAIL, 0)
-		stream = streamProcess(context.process, args, config, request["prompt"])
+		stream = streamWorker(context.process, args, config, request["prompt"])
 		try:
 			for number, chunk in stream:
 				if number == 1:

@@ -38,7 +38,11 @@ class EngineTests(unittest.TestCase):
 					"usage": {"totalTokens": 4, "input": 1, "output": 1, "cacheRead": 2, "cacheWrite": 0, "cost": {"total": .01}}, "stopReason": "stop"}},
 				{"type": "agent_settled", "aborted": False},
 			]
-			pi.write_text("#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\nPath('args').write_text('\\n'.join(sys.argv[1:]))\nsys.stdin.read()\nprint(" + repr("\n".join(json.dumps(event) for event in events)) + ")\n")
+			pi.write_text("#!/usr/bin/env python3\nimport sys,json\nfrom pathlib import Path\nPath('args').write_text('\\n'.join(sys.argv[1:]))\n"
+				"for line in sys.stdin:\n"
+				" command=json.loads(line)\n"
+				" print(json.dumps({'type':'response','id':command['id'],'success':True}),flush=True)\n"
+				" if command['type']=='prompt': print(" + repr("\n".join(json.dumps(event) for event in events)) + ",flush=True)\n")
 			pi.chmod(0o755)
 			ctx = Context(project=root, config={"engine": "pi"}, limits=Limits({"tokens": 10}), environ={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]})
 			events = list(ScriptStart(ctx, Script("Hello", root / "hello.md")))
@@ -90,7 +94,7 @@ class EngineTests(unittest.TestCase):
 				def stream():
 					yield 0, data
 					yield 2, 0
-				with patch("auto.integration.pi.engine.streamProcess", return_value=stream()):
+				with patch("auto.integration.pi.engine.streamWorker", return_value=stream()):
 					if stop == "stop":
 						result = list(Pi().start(context, {"config": {}, "prompt": "Work"}))[-1]
 						self.assertEqual(result["status"], "Succeeded")
