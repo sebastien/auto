@@ -243,7 +243,7 @@ def _drive(context, path, run, state, request, answer=None):
 	run["runtime"].update({key: request["config"][key] for key in ("engine", "model") if key in request["config"]})
 	saveRun(context, path, run, state)
 	kind = "memory" if context.runScope is not None else "elaboration" if run["task"] == "elaborator" else "task"
-	stream = executePrepared(context, request, {"kind": kind, "run": run["id"], "task": taskId})
+	stream = executePrepared(context, request, {"kind": kind, "phase": state.get("phase"), "attempt": state.get("repairs", 0), "run": run["id"], "task": taskId})
 	journaled = {}
 	try:
 		while True:
@@ -596,7 +596,7 @@ def _assess(context, run, check, instructions=None):
 			if request:
 				request["policy"] = policy
 				request = ctx.runtime.prepareRunRequest(receipt, state, request)
-				stream = executePrepared(ctx, request, {"kind": "assessment", "run": path.name, "task": task.id, "check": check})
+				stream = executePrepared(ctx, request, {"kind": "assessment", "phase": check, "attempt": 0, "run": path.name, "task": task.id, "check": check})
 				answer = None
 				while True:
 					event = stream.send(answer)

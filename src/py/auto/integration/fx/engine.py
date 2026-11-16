@@ -56,6 +56,9 @@ class Fx:
 			context.limits.check()
 			if any(usage.get(key) is not None for key in ("input_tokens", "output_tokens")):
 				yield {"type": Event.SCRIPT_META, "name": "usage", "value": dict(context.limits.usage)}
+		if any(usage.get(key) is not None for key in ("input_tokens", "output_tokens")):
+			# fx does not report turns or cache use: those stay unknown.
+			yield {"type": Event.SCRIPT_META, "name": "tokens", "value": {"input": usage.get("input_tokens") or 0, "output": usage.get("output_tokens") or 0}}
 		if code or result["exit_code"]:
 			raise AutoError(f"fx failed ({code or result['exit_code']}): {result.get('error') or stderr or 'request failed'}", "system")
 		if not isinstance(result.get("final_output"), str):

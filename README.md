@@ -240,10 +240,26 @@ auto x usage --where plan=pln-000 --entries
 auto x usage --format tsv > usage.tsv # or --format json
 ```
 
-Groups and filters accept `day`, `month`, `project`, `plan`, `kind`, `run`,
-`task`, `engine`, `provider`, `model` and `status`. Tokens and cost show `-`
-when no run in a group reported usage; `PARTIAL` counts runs whose usage is
-missing or incomplete (`llm`, `fx`), so their totals are lower bounds.
+Groups and filters accept `day`, `month`, `project`, `plan`, `kind`, `phase`,
+`attempt`, `run`, `task`, `engine`, `provider`, `model` and `status`. Tokens and
+cost show `-` when no run in a group reported usage; `PARTIAL` counts runs whose
+usage is missing or incomplete (`llm`, `fx`), so their totals are lower bounds.
+Engines that report it add model `TURNS` and tokens by kind (`INPUT`, `OUTPUT`,
+`CACHED` reads); `TOKENS` counts them all, as budgets do.
+
+When an engine reports no cost (eg. a subscription), `≈COST` estimates it from
+a price table, in dollars per million tokens. Auto knows a few models; add or
+override others, by model or `provider/model`:
+
+```toml
+[prices."openai/gpt-6-luna"]
+input = 0.10
+output = 0.50
+cache_read = 0.01   # defaults to input; cache_write too
+```
+
+A guided plan's summary ends with what each stage spent: planning, tasks,
+checks, repairs and memory, eg. `Spent: planning 140k tokens 10 turns ≈$0.02`.
 
 ### Consolidation
 

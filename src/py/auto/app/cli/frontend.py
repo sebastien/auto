@@ -105,6 +105,27 @@ def moneyText(cost) -> str:
 	return "<$0.01" if cost < .01 else f"${cost:.2f}"
 
 
+def countText(count) -> str:
+	"""Format a token count briefly: `850`, `12k`, `1.4M`."""
+	return f"{count / 1_000_000:.1f}M" if count >= 1_000_000 else f"{round(count / 1000)}k" if count >= 1000 else str(count)
+
+
+def spendingText(stages: list) -> str:
+	"""Format what each stage of a plan spent: tokens, model turns and cost, marked `≈` when estimated."""
+	parts = []
+	for stage in stages:
+		facts = [stage["stage"]]
+		if stage.get("tokens") is not None:
+			facts.append(countText(stage["tokens"]) + " tokens")
+		if stage.get("turns"):
+			facts.append(f"{stage['turns']} turn" + ("s" if stage["turns"] != 1 else ""))
+		cost = stage.get("cost_estimate")
+		if cost:
+			facts.append(("≈" if not stage.get("cost") else "") + (moneyText(cost) or "$0"))
+		parts.append(" ".join(facts))
+	return " · ".join(parts)
+
+
 def usageText(usage: dict, budget: dict | None = None) -> str:
 	"""Format time and cost, with the budget when one is set."""
 	parts = [durationText(usage.get("time"))] if usage.get("time") else []
@@ -235,6 +256,9 @@ def summaryView(value: dict, *, color: bool = False) -> str:
 	lines = [" · ".join([headline, *facts])]
 	if value.get("reason"):
 		lines.append("  " + paint(safeText(value["reason"]), "31", color))
+	spending = spendingText(value.get("spending") or [])
+	if spending:
+		lines.append(paint("Spent: " + spending, "2", color))
 	if value["results"]:
 		lines.append("Results:")
 		size = max(width(result["task"]) for result in value["results"])

@@ -10,7 +10,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from auto.integration.process import capture
-from auto.runtime.model import Event, RunStatus
+from auto.runtime.model import DETAIL, Event, RunStatus
 from auto.utils.data import AutoError, jsonText
 
 # -----------------------------------------------------------------------------
@@ -141,11 +141,13 @@ class OpenCode:
 					response = self.api(context, "get", base + "/message?cursor=" + quote(response["cursor"]["next"], safe=""), config=config)
 					messages.extend(response.get("data", []))
 				step, cost, tokens = "", 0, 0
+				detail = dict.fromkeys(DETAIL, 0)
 				lastAssistant, lastText = None, ""
 				for message in messages:
 					if message["type"] != "assistant":
 						continue
 					lastAssistant = message
+					detail["turns"] += 1
 					text = "".join(part["text"] for part in message.get("content", []) if part["type"] == "text")
 					lastText = text or seen.get(message["id"], "")
 					if lastText:
@@ -159,8 +161,13 @@ class OpenCode:
 					cost += message.get("cost", 0)
 					usage = message.get("tokens", {})
 					tokens += sum(usage.get(key, 0) for key in ("input", "output", "reasoning")) + sum(usage.get("cache", {}).values())
+					for key in ("input", "output", "reasoning"):
+						detail[key] += usage.get(key, 0)
+					detail["cache_read"] += usage.get("cache", {}).get("read", 0)
+					detail["cache_write"] += usage.get("cache", {}).get("write", 0)
 				if step:
 					output = step
+				yield {"type": Event.SCRIPT_META, "name": "tokens", "value": detail}
 				for key, value in (("tokens", tokens), ("cost", cost)):
 					if context.limits:
 						context.limits.usage[key] += value - accounted[key]

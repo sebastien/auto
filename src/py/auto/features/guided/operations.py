@@ -21,6 +21,7 @@ from auto.features.plan.model import ContinuationStop, GapState, PlanEventKind, 
 from auto.features.plan.operations import PlanStatus, tasksAt
 from auto.features.plan.store import journal, planPath
 from auto.features.task.operations import RunAnswer, RunGet, RunList, RunOutput, TaskStart
+from auto.features.usage.operations import UsageStages
 from auto.runtime.model import Event, RunStatus
 from auto.utils.data import AutoError
 from auto.utils.layout import setCurrentPlan, storePath, taskId
@@ -239,7 +240,7 @@ def PlanSummary(context, plan, stop: str | None = None, changed: list | None = N
 		"done": sum(status["tasks"][id] == RunStatus.SUCCEEDED for id in tasks), "total": len(tasks), "usage": status["usage"],
 		"budget": status["budget"], "decisions": decisions, "questions": [gap["question"] for gap in status["gaps"]], "results": results, "changed": changed,
 		"failed": [id for id in tasks if status["tasks"][id] in {RunStatus.FAILED, RunStatus.TIMED_OUT}],
-		"hold": status["hold"], "agents": createPlan(path).meta.get("agents", [])}
+		"hold": status["hold"], "agents": createPlan(path).meta.get("agents", []), "spending": UsageStages(context, path.name)}
 
 
 def TaskShow(context, task: str) -> dict:

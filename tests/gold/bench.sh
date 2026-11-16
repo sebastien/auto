@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Measures what a goal costs, from start to result: tests/gold/bench.sh [GOAL_ID...]
+#
+# Each goal runs as a person would (`auto "GOAL" --yes`) in a fresh copy of
+# fixtures/bench-app, then reports its outcome, wall time and what each stage
+# (planning, tasks, checks, repairs) spent. Results are appended to
+# $GOLD_ROOT/bench.jsonl, one line per goal, to compare changes over time.
+# Like gold tests, it calls a real engine and costs tokens.
+set -uo pipefail
+
+GOLD_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+AUTO="${AUTO:-$GOLD_DIR/../../bin/auto}"
+: "${GOLD_ENGINE:=opencode}"
+: "${GOLD_PROVIDER=openai}"
+: "${GOLD_MODEL=gpt-6-luna}"
+: "${GOLD_TIMEOUT:=1800}"
+GOLD_ROOT="${GOLD_ROOT:-${TMPDIR:-/tmp}/auto-gold}"
+LABEL="${BENCH_LABEL:-$(git -C "$GOLD_DIR" log -1 --format=%h 2>/dev/null || echo unknown)}"
+
+# Goals by increasing size: id, then the goal as a person would type it.
+declare -A GOALS=(
+	[trivial]="Add a .gitignore for this Python project"
+	[small]="Add a --shout option to app.py that prints the greeting in upper case, with a test"
+	[multi]="Add a README explaining how to run the app and its tests, and a Makefile with run and test targets that the README uses"
+)
+ORDER=(trivial small multi)
+[ "$#" -eq 0 ] || ORDER=("$@")
+
+command -v jq >/dev/null || {
+	echo "bench: jq is required" >&2
+	exit 2
+}
+mkdir -p "$GOLD_ROOT"
+export NO_COLOR=1 TERM=dumb
+
+printf '%-8s %-10s %7s  %s\n' GOAL OUTCOME SECONDS SPENT
+for id in "${ORDER[@]}"; do
+	goal="${GOALS[$id]:-}"
+	[ -n "$goal" ] || {
+		echo "bench: unknown goal $id (one of: ${!GOALS[*]})" >&2
+		exit 2
+	}
+	sandbox="$(mktemp -d "$GOLD_ROOT/bench-$id-XXXX")"
+	cp -R "$GOLD_DIR/fixtures/bench-app/." "$sandbox/"
+	mkdir -p "$sandbox/.auto"
+	{
+		echo "[runtime]"
+		echo "engine = \"$GOLD_ENGINE\""
+		[ -z "$GOLD_PROVIDER" ] || echo "provider = \"$GOLD_PROVIDER\""
+		[ -z "$GOLD_MODEL" ] || echo "model = \"$GOLD_MODEL\""
+	} >"$sandbox/.auto/config.toml"
+	git -C "$sandbox" init -q
+	git -C "$sandbox" add -A
+	git -C "$sandbox" -c user.name=bench -c user.email=bench@localhost commit -qm fixture
+	started="$(date +%s.%N)"
+	(cd "$sandbox" && timeout "$GOLD_TIMEOUT" "$AUTO" "$goal" --yes --no-input --format json </dev/null) >"$sandbox.out" 2>"$sandbox.err"
+	status=$?
+	seconds="$(echo "$(date +%s.%N) - $started" | bc)"
+	summary="$(jq -c 'select(.kind == "PlanSummary") | .data' "$sandbox.out" 2>/dev/null | tail -1)"
+	[ -n "$summary" ] || summary='{}'
+	outcome="$(jq -r '.stop // "error"' <<<"$summary")"
+	[ "$outcome" != ended ] || outcome="$(jq -r '.status' <<<"$summary")"
+	spent="$(jq -r '[(.spending // [])[] | "\(.stage) \((.tokens // 0) / 1000 | floor)k/\(.turns // "?")t" + (if .cost_estimate then " $\(.cost_estimate * 10000 | round / 10000)" else "" end)] | join(", ")' <<<"$summary")"
+	printf '%-8s %-10s %7.1f  %s\n' "$id" "$outcome" "$seconds" "$spent"
+	jq -cn --arg label "$LABEL" --arg id "$id" --arg goal "$goal" --arg engine "$GOLD_ENGINE" --arg model "$GOLD_PROVIDER/$GOLD_MODEL" \
+		--argjson status "$status" --argjson seconds "$seconds" --arg sandbox "$sandbox" --argjson summary "$summary" \
+		'{ts: (now | todate), label: $label, goal: $id, text: $goal, engine: $engine, model: $model, status: $status, seconds: $seconds,
+		outcome: ($summary.stop // "error"), plan: $summary.status, tasks: $summary.total, done: $summary.done,
+		changed: (($summary.changed // []) | map(.path)), reason: $summary.reason, spending: ($summary.spending // []), sandbox: $sandbox}' \
+		>>"$GOLD_ROOT/bench.jsonl"
+done
+echo "Results appended to $GOLD_ROOT/bench.jsonl (label $LABEL)"

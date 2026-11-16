@@ -47,6 +47,11 @@ class FailureKind(StrEnum):
 	OUTPUT = "output"
 
 
+# The token breakdown an engine may report for a run, cumulative, as a `tokens` ScriptMeta event:
+# model turns, then tokens by kind. Budgets use the `usage` totals; this explains them.
+DETAIL = ("turns", "input", "output", "reasoning", "cache_read", "cache_write")
+
+
 class Event(StrEnum):
 	"""Journal and stream event names shared by runtime, features and integrations."""
 

@@ -15,6 +15,16 @@ Requirements: `jq`, `python3`, `git`, Memo installed in Auto's environment
 engine set up as for normal use (eg. `opencode` and the bridge dependencies,
 see the main README).
 
+## Benchmark
+
+`tests/gold/bench.sh [trivial|small|multi…]` (or `kame bench`) runs goals of
+increasing size as a person would, `auto "GOAL" --yes`, each in a fresh copy of
+`fixtures/bench-app`. It prints each goal's outcome, wall time and what each
+stage spent (planning, tasks, checks, repairs: tokens, model turns, cost,
+estimated from `[prices]` when the engine reports none), and appends one line
+per goal to `$GOLD_ROOT/bench.jsonl`, labelled with the checkout's commit or
+`BENCH_LABEL`, to compare changes. It uses the engine settings below.
+
 ## What they check
 
 Scenarios only use the CLI (arguments, exit statuses, `--format json`) and the

@@ -12,5 +12,9 @@ test :
 gold :
 	tests/gold/run.sh
 
+# What goals cost from start to result, by stage; appends to $GOLD_ROOT/bench.jsonl
+bench :
+	tests/gold/bench.sh
+
 check : test
 	uv run python -m compileall -q src/py

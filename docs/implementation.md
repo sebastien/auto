@@ -332,7 +332,13 @@ directory: `ts`, `project`, `plan`, `kind`, `run`, `task`, `engine`, the
 `provider` and `model` reported by the engine (else configured), `status`,
 `failure`, `duration_s`, and the invocation's `tokens` and `cost` delta.
 Usage is `null` when the engine reported none; `usage_complete` is true only
-for engines that report full usage (OpenCode, Pi). A resumed run logs one line
+for engines that report full usage (OpenCode, Pi). Task runs add the lifecycle
+`phase` and the repair `attempt`. Engines may report a `tokens` ScriptMeta
+breakdown (`runtime.model.DETAIL`: `turns`, `input`, `output`, `reasoning`,
+`cache_read`, `cache_write`), recorded as is; when no cost was reported and the
+model has a price (`[prices]`, else built in), `cost_estimate` is added.
+`UsageStages` totals a plan's lines by stage (planning, tasks, checks, repairs,
+memory) for the guided summary's `spending`. A resumed run logs one line
 per invocation under the same `run`. Set `journal = false` to disable it.
 
 Plan mutations hold a filesystem writer lock and stage `.pending.json` before

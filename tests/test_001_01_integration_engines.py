@@ -34,14 +34,18 @@ class EngineTests(unittest.TestCase):
 			events = [
 				{"type": "message_start", "message": {"role": "assistant"}},
 				{"type": "message_update", "usage": {"totalTokens": 4, "cost": {"total": .01}}, "assistantMessageEvent": {"type": "text_delta", "delta": "Hello"}},
-				{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}], "usage": {"totalTokens": 4, "cost": {"total": .01}}, "stopReason": "stop"}},
+				{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}],
+					"usage": {"totalTokens": 4, "input": 1, "output": 1, "cacheRead": 2, "cacheWrite": 0, "cost": {"total": .01}}, "stopReason": "stop"}},
 				{"type": "agent_settled", "aborted": False},
 			]
 			pi.write_text("#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\nPath('args').write_text('\\n'.join(sys.argv[1:]))\nsys.stdin.read()\nprint(" + repr("\n".join(json.dumps(event) for event in events)) + ")\n")
 			pi.chmod(0o755)
 			ctx = Context(project=root, config={"engine": "pi"}, limits=Limits({"tokens": 10}), environ={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]})
-			result = list(ScriptStart(ctx, Script("Hello", root / "hello.md")))[-1]
+			events = list(ScriptStart(ctx, Script("Hello", root / "hello.md")))
+			result = events[-1]
 			self.assertEqual(result["status"], "Succeeded")
+			self.assertEqual([event["value"] for event in events if event.get("name") == "tokens"],
+				[{"turns": 1, "input": 1, "output": 1, "reasoning": 0, "cache_read": 2, "cache_write": 0}])
 			self.assertNotIn("--no-context-files", (root / "args").read_text())
 			result = list(ScriptStart(ctx.derive(limits=Limits({})), Script("Hello", root / "hello.md", {"isolated": True})))[-1]
 			self.assertEqual(result["status"], "Succeeded")
@@ -147,6 +151,23 @@ class EngineTests(unittest.TestCase):
 		self.assertEqual(result["status"], "Succeeded")
 		self.assertEqual(result["output"], "Done")
 		self.assertGreater(engine.polls, 2)
+
+	def testOpenCodeReportsTokensByKindAndTurns(self):
+		class Stub(OpenCode):
+			def api(self, context, method, path, data=None, config=None):
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					tokens = {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 1000, "write": 50}}
+					return {"data": [{"id": "step", "type": "assistant", "content": [], "tokens": tokens},
+						{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": "Done"}], "tokens": tokens},
+						{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		ctx = Context(engines={"opencode": Stub()}, config={"engine": "opencode"}, limits=Limits({}))
+		events = list(ScriptStart(ctx, Script("Work", Path("work.md"))))
+		detail = [event["value"] for event in events if event.get("name") == "tokens"][-1]
+		self.assertEqual(detail, {"turns": 2, "input": 200, "output": 40, "reasoning": 10, "cache_read": 2000, "cache_write": 100})
+		self.assertEqual(ctx.limits.usage["tokens"], 2350, "budgets still count every token, cached or not")
 
 	def testOpenCodeKeepsOutputSeenBeforeIdle(self):
 		class Stub(OpenCode):

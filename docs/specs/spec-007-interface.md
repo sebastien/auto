@@ -229,6 +229,10 @@ takes; they add no state of their own.
   not; files that differed from the commit beforehand count only if they
   changed again, and ignored files and `.auto/` are left out. Outside git,
   `changed` is null. Changes made by anyone else meanwhile are included.
+- *Spending*: the summary's `spending` totals the plan's usage journal by
+  stage (`planning`, `tasks`, `checks`, `repairs`, `memory`): runs, duration,
+  model turns, tokens by kind, cost and `cost_estimate` (the reported cost, or
+  an estimate from the model's price where none was reported).
 - A runtime policy request answered yes becomes the grant its rule requires
   (see [Plan Policy](spec-008-plan-policy.md)).
 

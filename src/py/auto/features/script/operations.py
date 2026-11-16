@@ -16,7 +16,7 @@ from auto.features.script.model import Script, createScript
 from auto.features.script.templates import Renderer
 from auto.features.usage.operations import UsageRecord
 from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
-from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
+from auto.runtime.model import DETAIL, Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
 from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, document, documentText, jsonText, merge, promptText, timestamp
@@ -130,6 +130,9 @@ def executePrepared(context: Context, request: dict, journal: dict | None = None
 				return
 			if event["type"] == Event.SCRIPT_META and event.get("name") == "usage":
 				reported = True
+			elif event["type"] == Event.SCRIPT_META and event.get("name") == "tokens" and isinstance(event.get("value"), dict):
+				# Cumulative for this stream: the last report is the run's breakdown.
+				entry.update({key: event["value"][key] for key in DETAIL if isinstance(event["value"].get(key), int)})
 			elif event["type"] == Event.SCRIPT_META and event.get("name") == "runtime" and isinstance(event.get("value"), dict):
 				value = event["value"]
 				entry.update({key: value[source] for key, source in (("provider", "provider"), ("provider", "resolved_provider"), ("model", "model"))

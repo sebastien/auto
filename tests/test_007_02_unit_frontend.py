@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto.app.cli.frontend import Frontend, clip, costText, safeText, width
+from auto.app.cli.frontend import Frontend, clip, costText, safeText, spendingText, width
 from auto.integration.process import capture
 from auto.runtime.model import Context
 
@@ -89,6 +89,12 @@ class FrontendTests(unittest.TestCase):
 				frontend.error("error text")
 			self.assertEqual("\033[33m!\033[0m" in err.getvalue(), not noColor)
 			self.assertEqual("\033[31mauto: error:\033[0m" in err.getvalue(), not noColor)
+
+	def testSpendingByStage(self):
+		stages = [{"stage": "planning", "tokens": 140_074, "turns": 10, "cost": None, "cost_estimate": .021},
+			{"stage": "tasks", "tokens": 850, "turns": 1, "cost": .5, "cost_estimate": .5}, {"stage": "checks", "tokens": None, "turns": None, "cost": None, "cost_estimate": None}]
+		self.assertEqual(spendingText(stages), "planning 140k tokens 10 turns ≈$0.02 · tasks 850 tokens 1 turn $0.50 · checks")
+		self.assertEqual(spendingText([]), "")
 
 	def testFormattingAndProcessTicks(self):
 		self.assertEqual(costText(None), "—")

@@ -431,8 +431,13 @@ def showConfig(config: dict, sources: dict, prefix: tuple = ()) -> None:
 		print(f"{style(name, '36')}{' ' * (nameWidth - width(name) + 2)}{value}{' ' * (valueWidth - width(value) + 2)}{style(source, '2')}")
 
 
-ENTRY_COLUMNS = ("ts", "plan", "kind", "task", "engine", "provider", "model", "status", "duration_s", "tokens", "cost")
-TOTAL_COLUMNS = ("runs", "failed", "duration_s", "tokens", "cost", "partial")
+ENTRY_COLUMNS = ("ts", "plan", "kind", "phase", "attempt", "task", "engine", "provider", "model", "status", "duration_s", "turns", "input", "output",
+	"cache_read", "tokens", "cost", "cost_estimate")
+TOTAL_COLUMNS = ("runs", "failed", "duration_s", "turns", "input", "output", "cache_read", "tokens", "cost", "cost_estimate", "partial")
+# Column headers that differ from the field names; the estimate counts reported costs, and estimates where none was reported.
+HEADERS = {"duration_s": "DURATION", "cache_read": "CACHED", "cost_estimate": "≈COST"}
+# Counts of tokens, shown with thousands separators.
+COUNTS = ("tokens", "turns", "input", "output", "cache_read")
 
 
 def showUsage(context, args) -> int:
@@ -471,17 +476,19 @@ def showUsage(context, args) -> int:
 		if name == "duration_s":
 			minutes, seconds = divmod(round(value), 60)
 			return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
-		if name == "cost":
+		if name in {"cost", "cost_estimate"}:
 			return f"${value:.4f}" if value < 1 else f"${value:.2f}"
-		if name == "tokens":
+		if name in COUNTS:
 			return f"{value:,}"
 		if name == "ts":
 			return value[:19].replace("T", " ")
 		return str(value)
-	headers = [{"duration_s": "DURATION"}.get(name, name.upper()) for name in columns]
+	# Breakdown columns that no selected run reported are left out, rather than shown empty.
+	columns = [name for name in columns if name not in (*COUNTS[1:], "cost_estimate") or any(row.get(name) is not None for row in rows)]
+	headers = [HEADERS.get(name, name.upper()) for name in columns]
 	table = [[cell(name, row.get(name)) for name in columns] for row in rows]
 	widths = [max(width(text) for text in column) for column in zip(headers, *table)]
-	numeric = {index for index, name in enumerate(columns) if name in (*TOTAL_COLUMNS, "tokens", "cost", "duration_s")}
+	numeric = {index for index, name in enumerate(columns) if name in (*TOTAL_COLUMNS, "attempt")}
 	color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
 	def line(cells, total=False):
 		text = "  ".join(" " * (size - width(value)) + value if index in numeric else value + " " * (size - width(value))

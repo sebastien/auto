@@ -6,7 +6,7 @@ import codecs
 import json
 
 from auto.integration.process import streamProcess
-from auto.runtime.model import Event, RunStatus
+from auto.runtime.model import DETAIL, Event, RunStatus
 from auto.utils.data import AutoError
 
 # -----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ class Pi:
 		if "prompt" in config:
 			args += ["--system-prompt", config["prompt"] + "\n"]
 		decoder, pending, output, settled = codecs.getincrementaldecoder("utf-8")(), "", "", False
-		stderr, currentUsage = [], {"tokens": 0, "cost": 0}
+		stderr, currentUsage, detail = [], {"tokens": 0, "cost": 0}, dict.fromkeys(DETAIL, 0)
 		stream = streamProcess(context.process, args, config, request["prompt"])
 		try:
 			for number, chunk in stream:
@@ -74,6 +74,11 @@ class Pi:
 						yield {"type": Event.SCRIPT_MESSAGE, "content": event["assistantMessageEvent"]["delta"]}
 					elif kind == "message_end" and event["message"]["role"] == "assistant":
 						message = event["message"]
+						final = message.get("usage") or {}
+						detail["turns"] += 1
+						for key, source in (("input", "input"), ("output", "output"), ("cache_read", "cacheRead"), ("cache_write", "cacheWrite")):
+							detail[key] += final.get(source) or 0
+						yield {"type": Event.SCRIPT_META, "name": "tokens", "value": dict(detail)}
 						yield {"type": Event.SCRIPT_META, "name": "runtime", "value": {key: message[key] for key in ("provider", "model") if key in message}}
 						if message.get("stopReason") in {"error", "aborted"}:
 							raise AutoError(message.get("errorMessage", "Pi execution failed"), "system")
