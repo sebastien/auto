@@ -23,7 +23,7 @@ named `{Noun}{Verb}` (eg. `PlanCreate`, `ElaborationValidate`).
 
 Interface: a projection of a subset of operations.
 - *CLI*: commands, for humans, scripts and shell checks
-- *MCP*: tools, for agents, served by the CLI (`auto mcp`)
+- *MCP*: tools, for agents, served by the CLI (`auto x mcp`)
 
 Exposure: the operations exposed by each interface, with the need they serve
 (see Exposure).
@@ -88,7 +88,9 @@ operation remains available, by noun and verb, under `auto x`.
   *current plan* (the last created, or selected with `auto use`), then the
   project's only plan.
 - *Guidance*: human results end with the next command the person most likely
-  needs (eg. `Next: auto answer`), derived from the plan state. Hints are
+  needs (eg. `Next: auto answer`), derived from the plan state. A guided plan
+  that succeeds also ends with one tip, chosen by the plan's number, so that
+  each new plan of a project introduces one more command. Hints and tips are
   never written in `json` output.
 - *Engine*: when no engine is configured and the default one is not
   installed, operations with effects use the first installed engine, saying
@@ -108,7 +110,9 @@ operation remains available, by noun and verb, under `auto x`.
   `Cancelled`.
 - *Help*: `auto help`, `auto {command} --help`, `auto x --help` and
   `auto x {noun} {verb} --help` are generated from the operations, and are
-  the command reference.
+  the command reference. `auto help` lists the everyday commands of the loop
+  first (`new`, `status`, `go`, `answer`, `change`, `show`, by their
+  shorthands where they have one), then the others under "More", then `x`.
 
 Exit status:
 
@@ -212,9 +216,15 @@ takes; they add no state of their own.
   failure.
 - Both end with a `PlanSummary` event: status, why it stopped (a continuation
   stop, or `declined`), tasks done, usage, budget, decisions, open questions,
-  failed tasks, the first line of each succeeded task's output and the plan's
-  memory agents. Its exit status follows the stop, as a `ContinuationStopped`
-  event's does.
+  failed tasks, the first line of each succeeded task's output, the plan's
+  memory agents and the files changed while it ran. Its exit status follows
+  the stop, as a `ContinuationStopped` event's does.
+- *Changed files*: when the project is in a git working tree, the summary
+  lists the files added, modified or deleted between the start of the
+  continuation (after confirmation, for `PlanDo`) and its end, committed or
+  not; files that differed from the commit beforehand count only if they
+  changed again, and ignored files and `.auto/` are left out. Outside git,
+  `changed` is null. Changes made by anyone else meanwhile are included.
 - A runtime policy request answered yes becomes the grant its rule requires
   (see [Plan Policy](spec-008-plan-policy.md)).
 

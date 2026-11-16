@@ -23,6 +23,7 @@ from auto.features.task.operations import RunAnswer, RunGet, RunList, RunOutput,
 from auto.runtime.model import Event, RunStatus
 from auto.utils.data import AutoError
 from auto.utils.layout import setCurrentPlan, storePath, taskId
+from auto.utils.workspace import changes, snapshot
 
 # -----------------------------------------------------------------------------
 #
@@ -112,8 +113,9 @@ def excerpt(value, size: int = 160) -> str:
 	return line if len(line) <= size else line[:size - 1] + "…"
 
 
-def drive(context, path):
-	"""Continue a plan, asking for answers whenever it waits on them, then summarise."""
+def drive(context, path, before: dict | None = None):
+	"""Continue a plan, asking for answers whenever it waits on them, then summarise with what changed since `before`."""
+	before = before or snapshot(context.project)
 	stop = None
 	while True:
 		stop = None
@@ -124,7 +126,7 @@ def drive(context, path):
 		if stop == ContinuationStop.WAITING and context.question and answerOpen(context, path):
 			continue
 		break
-	yield {"kind": SUMMARY, "data": PlanSummary(context, path, stop)}
+	yield {"kind": SUMMARY, "data": PlanSummary(context, path, stop, changes(context.project, before))}
 
 # -----------------------------------------------------------------------------
 #
@@ -164,13 +166,14 @@ def PlanGo(context, plan, task: str | None = None):
 	"""Continue a plan until it ends or needs a person, asking them on the way; `task` first runs one task again."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
+	before = snapshot(context.project)
 	if task:
 		cursor = (eventRows(path) or [{"seq": 0}])[-1]["seq"]
 		TaskStart(context.derive(question=None), task)
 		yield from PlanEvents(context, path, since=cursor)
 	if context.question:
 		answerOpen(context, path)
-	yield from drive(context, path)
+	yield from drive(context, path, before)
 
 
 def PlanResume(context, plan, reason: str | None = None):
@@ -201,8 +204,8 @@ def PlanUse(context, id: str) -> dict:
 	return {"id": plan.id, "goal": plan.goal.strip().partition("\n")[0], "path": str(path)}
 
 
-def PlanSummary(context, plan, stop: str | None = None) -> dict:
-	"""Summarise where a plan stands: progress, cost, decisions, results and why it stopped."""
+def PlanSummary(context, plan, stop: str | None = None, changed: list | None = None) -> dict:
+	"""Summarise where a plan stands: progress, cost, decisions, results, files `changed` and why it stopped."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	status = PlanStatus(context, path)
@@ -219,7 +222,7 @@ def PlanSummary(context, plan, stop: str | None = None) -> dict:
 	decisions = sum(op["op"] in {RevisionOp.RESOLVE, RevisionOp.RECORD} for row in journal(path) for op in row["operations"])
 	return {"id": status["id"], "goal": status["goal"], "path": status["path"], "status": status["status"], "stop": stop,
 		"done": sum(status["tasks"][id] == RunStatus.SUCCEEDED for id in tasks), "total": len(tasks), "usage": status["usage"],
-		"budget": status["budget"], "decisions": decisions, "questions": [gap["question"] for gap in status["gaps"]], "results": results,
+		"budget": status["budget"], "decisions": decisions, "questions": [gap["question"] for gap in status["gaps"]], "results": results, "changed": changed,
 		"failed": [id for id in tasks if status["tasks"][id] in {RunStatus.FAILED, RunStatus.TIMED_OUT}],
 		"hold": status["hold"], "agents": createPlan(path).meta.get("agents", [])}
 

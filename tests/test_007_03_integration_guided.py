@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from auto.app.cli.frontend import TIPS, summaryView, tipFor
+from auto.app.cli.main import reference
 from auto.features.orchestration.guided import PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow
 from auto.features.plan.gaps import GapList
 from auto.features.plan.operations import PlanRevise, PlanStatus
@@ -130,6 +132,25 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual((shown["id"], shown["state"], shown["attempts"]), ("tsk-work", "Succeeded", 1))
 		self.assertIn("markdown", shown["output"])
 
+	def testTheSummaryListsTheFilesTheRunChanged(self):
+		subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+		(self.root / "notes.txt").write_text("mine\n")
+		engine = Engine()
+		start = engine.start
+		def write(context, request):
+			prompt = request["prompt"]
+			if "Produce the result" in prompt and "set `task: root`" not in prompt and "score" not in prompt.lower():
+				(self.root / "report.md").write_text("# Report\n")
+			yield from start(context, request)
+		engine.start = write
+		summary = list(PlanDo(self.context(engine, ["run"]), "Write a small report"))[-1]["data"]
+		self.assertEqual(summary["status"], "Succeeded")
+		self.assertEqual(summary["changed"], [{"path": "report.md", "change": "added"}])
+		# Outside git, there is nothing to list.
+		(self.root / ".git").rename(self.root / "git")
+		summary = list(PlanGo(self.context(Engine()), summary["path"], task="work"))[-1]["data"]
+		self.assertIsNone(summary["changed"])
+
 	def testPauseResumeAndPlanSelection(self):
 		plan = self.root / ".auto/pln-000-demo"
 		rootFile(plan).write_text(documentText({"id": "pln-000-demo", "goal": "Demo"}, "# Demo"))
@@ -144,6 +165,35 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual(PlanUse(context, "000")["id"], "pln-000-demo")
 		self.assertEqual(currentPlan(self.root), plan)
 		self.assertEqual(PlanSummary(context, plan, "ended")["done"], 1)
+
+
+class GuidedViewTests(unittest.TestCase):
+	def summary(self, **values):
+		return {"id": "pln-001-report", "goal": "Write a report", "path": "/p", "status": "Succeeded", "stop": "ended", "done": 1, "total": 1,
+			"usage": {}, "budget": {}, "decisions": 0, "questions": [], "results": [], "failed": [], "hold": None, "agents": [], "changed": None,
+			**values}
+
+	def testSummaryShowsChangedFilesAndOneTipPerPlan(self):
+		changed = [{"path": f"docs/{index:02}.md", "change": "added"} for index in range(13)] + [{"path": "old.md", "change": "deleted"}]
+		text = summaryView(self.summary(changed=changed))
+		self.assertIn("Changed 14 files:\n  + docs/00.md", text)
+		self.assertNotIn("docs/12.md", text)
+		self.assertIn("… and 2 more (git status)", text)
+		self.assertTrue(text.endswith("Tip: " + TIPS[1]))
+		self.assertNotEqual(tipFor("pln-000-a"), tipFor("pln-001-b"))
+		self.assertEqual(tipFor("pln-000-a"), tipFor(f"pln-{len(TIPS):03x}-c"))
+		waiting = summaryView(self.summary(status="Active", stop="waiting", questions=["Which format?"], changed=[]))
+		self.assertNotIn("Tip:", waiting)
+		self.assertNotIn("Changed", waiting)
+
+	def testHelpListsTheEverydayCommandsFirst(self):
+		text = reference()
+		everyday, more = text.split("\n\n")
+		for command in ('auto "GOAL"', "auto go", "auto answer", "auto change", "auto show"):
+			self.assertIn(command, everyday)
+		for command in ("auto pause", "auto plans", "auto learned", "auto FILE.md", "auto init", "auto x"):
+			self.assertIn(command, more)
+		self.assertIn("(or auto new)", everyday)
 
 
 class GuidedCliTests(unittest.TestCase):

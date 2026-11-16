@@ -49,12 +49,19 @@ Results:
   ✓ tsk-survey-modules  Six packages: app, features, integration, runtime, utils…
   ✓ tsk-draft-overview  Wrote docs/architecture.md
   ✓ tsk-review          The overview matches the code.
+Changed 2 files:
+  + docs/architecture.md
+  ~ README.md
 Next: auto change "…" to refine it, or auto log to review it
+Tip: auto show TASK prints a task's full output
 ```
 
 Auto plans the goal, shows you the plan, and runs it once you agree. When a
 task needs an answer, Auto asks you and carries on. Choose `c` to say what
-should change before anything runs, or `n` to keep the plan for later.
+should change before anything runs, or `n` to keep the plan for later. In a
+git project, the summary lists the files the run added (`+`), modified (`~`)
+or deleted (`-`); each plan that succeeds ends with a tip about one more
+command.
 
 Plans are kept in `.auto/` at the root of the project, which Auto creates the
 first time. The plan you created or selected last is the *current plan*: the
@@ -81,6 +88,8 @@ Every view ends with the command you most likely want next.
 
 ## The commands
 
+Every day:
+
 | Command | What it does |
 |---|---|
 | `auto "GOAL"` | Plan a goal, confirm it, run it and summarise (same as `auto new "GOAL"`) |
@@ -88,10 +97,15 @@ Every view ends with the command you most likely want next.
 | `auto go` | Continue the plan until it ends or needs you; `--task ID` runs a task again |
 | `auto answer` | Answer the open questions, one by one; or `auto answer 1 "markdown"` |
 | `auto change "WHAT"` | Change the plan, or one task with `--task ID` |
+| `auto show TASK` | A task, its latest attempt and its output |
+
+More, when you need it:
+
+| Command | What it does |
+|---|---|
 | `auto pause` / `auto stop` | Pause once the current task finishes, or stop it now |
 | `auto resume` | Release a paused or stopped plan and continue it |
 | `auto log` | The plan's history; `--follow` keeps watching it |
-| `auto show TASK` | A task, its latest attempt and its output |
 | `auto plans` / `auto use PLAN` | List the project's plans, choose the current one |
 | `auto decide "QUESTION" "ANSWER"` | Record a decision made outside a question |
 | `auto learned` | What memory agents have learned and what awaits them |

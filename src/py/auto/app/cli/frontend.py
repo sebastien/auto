@@ -12,6 +12,7 @@ import unicodedata
 
 from auto.app.operations import render
 from auto.runtime.model import Event, RunStatus
+from auto.utils.layout import planNumber
 
 # -----------------------------------------------------------------------------
 #
@@ -62,6 +63,21 @@ MARKERS = {RunStatus.SUCCEEDED: ("✓", "32"), RunStatus.RUNNING: ("●", "36"),
 	RunStatus.BLOCKED: ("○", "2"), "Ready": ("○", "")}
 STOPS = {"waiting": "Waiting for your answers", "failed": "Stopped: a task failed", "budget": "Stopped: the budget is spent",
 	"held": "Paused", "blocked": "Stopped: nothing can run", "cancelled": "Interrupted", "declined": "Not run"}
+CHANGES = {"added": ("+", "32"), "modified": ("~", "33"), "deleted": ("-", "31")}
+# Files listed in a summary before the rest are counted.
+CHANGES_SHOWN = 12
+# One tip ends each plan that succeeds, by plan number, so that every new plan introduces one more command.
+TIPS = (
+	"auto show TASK prints a task's full output",
+	"auto log --follow watches a plan from another terminal",
+	'auto change "…" revises a plan; --task TASK revises one task',
+	"auto plans lists your plans, and auto use PLAN switches to one",
+	"auto \"GOAL\" --budget 'cost: 1' caps what a plan may spend",
+	"auto ./script.md runs a Markdown prompt with inputs, without a plan",
+	"auto x usage shows what runs cost, by engine and model",
+	"memory agents learn from your plans and decisions: see auto learned",
+	"auto x --help lists the internals: runs, questions, policy, catalogue",
+)
 
 
 def paint(text: str, code: str, color: bool) -> str:
@@ -221,13 +237,35 @@ def summaryView(value: dict, *, color: bool = False) -> str:
 				+ safeText(result["output"] or firstLine(result["goal"])))
 	for id in value["failed"]:
 		lines.append(f"  {marker(RunStatus.FAILED, color)} {id}")
+	lines += changeLines(value.get("changed") or [], color)
 	if value["questions"]:
 		lines.append(paint("Needs you:", "1;33", color))
 		lines += [f"  {index}. {safeText(firstLine(question))}" for index, question in enumerate(value["questions"], 1)]
 	if value["agents"] and stop == "ended":
 		lines.append(paint("Learning: " + ", ".join(value["agents"]) + " (auto learned)", "2", color))
 	lines.append("Next: " + paint(summaryNext(value), "36", color))
+	if value["status"] == "Succeeded":
+		lines.append(paint("Tip: " + tipFor(value["id"]), "2", color))
 	return "\n".join(lines)
+
+
+def changeLines(changed: list, color: bool) -> list:
+	"""Render the files a guided run changed, one per line, then how many more."""
+	if not changed:
+		return []
+	lines = [f"Changed {len(changed)} file" + ("s:" if len(changed) != 1 else ":")]
+	for item in changed[:CHANGES_SHOWN]:
+		symbol, code = CHANGES[item["change"]]
+		lines.append(f"  {paint(symbol, code, color)} {safeText(item['path'])}")
+	if len(changed) > CHANGES_SHOWN:
+		lines.append(paint(f"  … and {len(changed) - CHANGES_SHOWN} more (git status)", "2", color))
+	return lines
+
+
+def tipFor(plan: str) -> str:
+	"""Return the tip ending a plan: the first plan of a project gets the first tip, and so on."""
+	number = planNumber(plan)
+	return TIPS[int(number, 16) % len(TIPS) if number else 0]
 
 
 def summaryNext(value: dict) -> str:
@@ -241,7 +279,7 @@ def summaryNext(value: dict) -> str:
 	if value["failed"]:
 		return f"auto show {value['failed'][0]} to see why, then auto go --task {value['failed'][0]} to retry"
 	if stop == "budget":
-		return "auto x plan status to review the budget, then auto go"
+		return "auto status to review the budget, then auto go"
 	if value["status"] == "Succeeded":
 		return 'auto change "…" to refine it, or auto log to review it'
 	return "auto status"
