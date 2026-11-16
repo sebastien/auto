@@ -17,7 +17,7 @@ An Audit report: frontmatter with the verdict and counts, then the `Scope`,
 `Recommendations` and `Changes`. Criteria and findings are lists, so that
 they can be edited and compared as plain markdown.
 
-Its Post runs `auto audit validate`, which fails when:
+Its Post runs `auto x audit validate`, which fails when:
 
 - The scope lists no audited item, or there is no criterion.
 - A criterion has no status among `pass`, `partial`, `fail`, `n/a` and

@@ -199,7 +199,7 @@ class SchedulerTests(unittest.TestCase):
 		atomicWrite(root / "pending.json", "invalid JSON")
 		stdout = io.StringIO()
 		with patch("auto.app.cli.main.contextFor", return_value=self.context), patch("sys.stdout", stdout):
-			status = main(["catalogue", "list", "--format", "json", "--no-input"])
+			status = main(["x", "catalogue", "list", "--format", "json", "--no-input"])
 		self.assertEqual(status, 0)
 		self.assertIsInstance(json.loads(stdout.getvalue()), list)
 		self.assertTrue(readJson(root / "maintenance.json")["failure"])
@@ -222,7 +222,7 @@ class SchedulerTests(unittest.TestCase):
 				yield {"type": "ScriptEnded", "status": "Succeeded", "output": json.dumps(outer.build(context.inputs))}
 		context = self.context.derive(engines={"fake": Checking()})
 		with patch("auto.app.cli.main.contextFor", return_value=context), patch("sys.stdout", stdout):
-			status = main(["catalogue", "list", "--format", "json", "--no-input"])
+			status = main(["x", "catalogue", "list", "--format", "json", "--no-input"])
 		self.assertEqual(status, 0)
 		self.assertEqual(len(self.calls), 1)
 		self.assertIsInstance(json.loads(stdout.getvalue()), list)

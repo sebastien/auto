@@ -41,36 +41,36 @@ mkdir -p "$SANDBOX/.auto/catalogue"
 cp -R "$FIXTURE/catalogue/." "$SANDBOX/.auto/catalogue/"
 git -C "$SANDBOX" add -A
 git -C "$SANDBOX" -c user.name=gold -c user.email=gold@example.invalid commit -q -m "Gold fixture"
-auto-step config auto config
+auto-step config auto x config
 auto-expect-status 0
 auto-assert "configuration selects $GOLD_ENGINE" grep -q "runtime.engine = \"$GOLD_ENGINE\"" "$LAST_OUT"
-auto-step catalogue auto catalogue list
+auto-step catalogue auto x catalogue list
 auto-expect-status 0
 auto-assert "the project catalogue provides check-site" \
 	jq -e --arg ref "auto:$CHECK_SITE" 'any(.[]; .identity == $ref and .layer == "project")' "$LAST_OUT"
 
 # -----------------------------------------------------------------------------
 test-step "Script: a standalone script runs on the engine"
-auto-step script auto script run "$FIXTURE/hello.md" --format json --no-input
+auto-step script auto run "$FIXTURE/hello.md" --format json --no-input
 auto-expect-status 0 || test-abort "the engine cannot run a script, see $LAST.*"
 auto-assert "the script output greets" grep -qi "HELLO gold test" "$LAST_OUT"
 
 # -----------------------------------------------------------------------------
 test-step "Create: the plan is elaborated from the goal"
-auto-step create auto plan create "$(<"$FIXTURE/goal.md")" \
+auto-step create auto x plan create "$(<"$FIXTURE/goal.md")" \
 	--effects '[repo.read, repo.write, shell.run]' --budget "$GOLD_BUDGET" --agents '[]' \
 	--format json --no-input
 auto-expect-status 0 3 || test-abort "plan creation failed"
 CREATED="$LAST"
 PLAN="$(basename "$(auto-json .plan)")"
 auto-assert "plan id is NNN-slug" grep -Eq '^[0-9a-f]{3,}-[a-z0-9-]+$' <<<"$PLAN"
-auto-step list auto plan list --format json
+auto-step list auto plans --format json
 auto-assert "plan list includes $PLAN" jq -e --arg plan "$PLAN" 'any(.[]; .id == $plan)' "$LAST_OUT"
 
 # -----------------------------------------------------------------------------
 test-step "Decision: a decision made outside a gap is recorded"
-auto-step decision auto decision record "Which language and locale should the site content use?" \
-	"$(auto-yaml 'British English, with <html lang="en-GB">')" "The bakery serves a UK neighbourhood" \
+auto-step decision auto decide "Which language and locale should the site content use?" \
+	"$(auto-yaml 'British English, with <html lang="en-GB">')" --rationale "The bakery serves a UK neighbourhood" \
 	--concerns '[content]' --source 'gold:T001-01' --plan "$PLAN" --format json --no-input
 auto-expect-status 0
 DECISION="$(auto-json .id)"
@@ -88,14 +88,14 @@ auto-assert "every task succeeded" jq -e '[.tasks[]] | all(. == "Succeeded")' "$
 auto-assert "elaboration produced at least two tasks" \
 	jq -e '[.taskDetails | keys[] | select(. != "root")] | length >= 2' "$STATUS"
 for run in $(jq -r '.taskDetails[].run.id // empty' "$STATUS"); do
-	auto-step run auto run get "$run" --plan "$PLAN" --format json
+	auto-step run auto x run get "$run" --plan "$PLAN" --format json
 	auto-expect-status 0
 done
 
 # -----------------------------------------------------------------------------
 test-step "Gaps: gaps were raised, decided and journalled"
 auto-plan-events
-auto-step gaps auto gap list --plan "$PLAN" --format json
+auto-step gaps auto x gap list --plan "$PLAN" --format json
 GAPS="$LAST_OUT"
 auto-assert "at least one gap was raised" test "$(auto-events-count GapRaised)" -ge 1
 auto-assert "a gap asked for the accent colour" \
@@ -132,7 +132,7 @@ auto-warn "pages follow the recorded locale decision (lang=\"en-GB\")" \
 if [ "$GOLD_REFINE" = 1 ]; then
 	test-step "Refine: a new page is added to the completed plan"
 	REVISIONS="$(auto-events-count PlanRevised)"
-	auto-step refine auto plan refine "Add an about page, site/about.html, telling the story of the bakery, linked from the navigation of every page, then check the site again." \
+	auto-step refine auto change "Add an about page, site/about.html, telling the story of the bakery, linked from the navigation of every page, then check the site again." \
 		--plan "$PLAN" --format json --no-input
 	auto-expect-status 0 3 || test-abort "refinement failed"
 	if [ "$LAST_STATUS" = 3 ]; then
@@ -150,7 +150,7 @@ fi
 
 # -----------------------------------------------------------------------------
 test-step "Usage: engine runs are accounted to the plan"
-auto-step usage auto usage --by plan --format json
+auto-step usage auto x usage --by plan --format json
 auto-expect-status 0
 auto-assert "usage has runs for $PLAN" \
 	jq -e --arg plan "$PLAN" 'any(.[]; ((.plan // "") | tostring | contains($plan)) and .runs > 0)' "$LAST_OUT"

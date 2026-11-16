@@ -27,6 +27,8 @@ TASK_PREFIX = "tsk-"
 ROOT = "root"
 RUNS = "runs"
 HISTORY = ".history"
+# The plan commands act on when none is selected, beside the plans.
+CURRENT = ".current"
 # Memo kinds of the knowledge records Auto keeps per plan.
 KINDS = {"gap": "gap", "decision": "dec"}
 
@@ -122,5 +124,22 @@ def planNumber(name: str) -> str:
 	"""Return the number of a created plan name (`pln-00a-slug` → `00a`), else ``""``."""
 	match = re.fullmatch(rf"{PLAN_PREFIX}([0-9a-f]+)(?:-.*)?", name)
 	return match[1] if match else ""
+
+
+def currentPlan(project: Path) -> Path | None:
+	"""Return the project's current plan, as last created or selected, if it still exists."""
+	file = storePath(project) / CURRENT
+	try:
+		name = file.read_text().strip()
+	except OSError:
+		return None
+	path = storePath(project) / name
+	return path if name and "/" not in name and isPlan(path) else None
+
+
+def setCurrentPlan(project: Path, path: Path) -> None:
+	"""Make the plan at `path` the project's current plan."""
+	from auto.utils.data import atomicWrite
+	atomicWrite(storePath(project) / CURRENT, Path(path).name + "\n")
 
 # EOF

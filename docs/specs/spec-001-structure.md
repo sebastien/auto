@@ -112,7 +112,7 @@ src/py/auto/
     cli/
       main.py               # Main CLI module
     mcp/
-      main.py               # MCP server, served by `auto mcp`
+      main.py               # MCP server, served by `auto x mcp`
   utils/
     data.py                 # YAML/JSON, digests and atomic writes
     references.py           # Relative reference relocation

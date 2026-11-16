@@ -108,7 +108,7 @@ class UsageSummaryTests(unittest.TestCase):
 
 	def testCommand(self):
 		def auto(*args):
-			return subprocess.run([sys.executable, "-m", "auto.app.cli.main", "usage", *args], cwd=self.root, text=True, capture_output=True)
+			return subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "usage", *args], cwd=self.root, text=True, capture_output=True)
 		result = auto("--format", "tsv", "--by", "engine")
 		self.assertEqual(result.returncode, 0, result.stderr)
 		self.assertEqual(result.stdout.splitlines()[0].split("\t"), ["engine", "runs", "failed", "duration_s", "tokens", "cost", "partial"])

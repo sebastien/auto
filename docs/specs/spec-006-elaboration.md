@@ -390,7 +390,7 @@ assets rather than part of this specification.
 
 `auto:catalogue/task/elaborate` is the default Elaborator, at the *Extracted*
 and *Variants* stages. It produces an `auto:catalogue/artifact/task-elaboration`,
-and its Post is a shell check running `auto elaboration validate`. It takes two
+and its Post is a shell check running `auto x elaboration validate`. It takes two
 parameters, which vary independently:
 
 | Param | Values | Effect |
@@ -407,7 +407,7 @@ tasks, for a plan run like a script.
 `auto:catalogue/task/audit` checks a scope of the project against a list of
 criteria, from one perspective (eg. conventions, structure, symbols,
 documentation, UI/UX, security). It produces an `auto:catalogue/artifact/audit`,
-whose Post runs `auto audit validate`. An audit is specialised by a task
+whose Post runs `auto x audit validate`. An audit is specialised by a task
 giving `### Scope` and `### Criteria` in its Process, then transcluding
 `@auto:catalogue/task/audit#Process` (see `auto:catalogue/task/audit-symbols`).
 

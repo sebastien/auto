@@ -57,73 +57,309 @@ def costText(cost, budget=None) -> str:
 	return amount(cost) + (" / " + amount(budget) if budget is not None else "")
 
 
-def planStatusText(value: dict) -> str:
-	"""Summarize plan identity, execution, task progress and blockers."""
+MARKERS = {RunStatus.SUCCEEDED: ("✓", "32"), RunStatus.RUNNING: ("●", "36"), RunStatus.PENDING: ("●", "36"), RunStatus.WAITING: ("?", "33"),
+	RunStatus.FAILED: ("✗", "31"), RunStatus.TIMED_OUT: ("✗", "31"), RunStatus.CANCELLED: ("⊘", "2"), RunStatus.SKIPPED: ("–", "2"),
+	RunStatus.BLOCKED: ("○", "2"), "Ready": ("○", "")}
+STOPS = {"waiting": "Waiting for your answers", "failed": "Stopped: a task failed", "budget": "Stopped: the budget is spent",
+	"held": "Paused", "blocked": "Stopped: nothing can run", "cancelled": "Interrupted", "declined": "Not run"}
+
+
+def paint(text: str, code: str, color: bool) -> str:
+	"""Wrap `text` in an ANSI style when `color` is enabled."""
+	return f"\033[{code}m{text}\033[0m" if color and code else text
+
+
+def colorFor(stream) -> bool:
+	"""Tell whether styled text may be written to `stream`."""
+	return stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+
+def durationText(seconds) -> str:
+	"""Format a duration in seconds as `4m12s`."""
+	seconds = max(0, round(seconds or 0))
+	minutes, seconds = divmod(seconds, 60)
+	return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
+
+
+def moneyText(cost) -> str:
+	"""Format a cost briefly, or nothing when unknown."""
+	if type(cost) not in (int, float) or not math.isfinite(cost) or cost <= 0:
+		return ""
+	return "<$0.01" if cost < .01 else f"${cost:.2f}"
+
+
+def usageText(usage: dict, budget: dict | None = None) -> str:
+	"""Format time and cost, with the budget when one is set."""
+	parts = [durationText(usage.get("time"))] if usage.get("time") else []
+	cost = moneyText(usage.get("cost"))
+	if (budget or {}).get("cost") is not None:
+		parts.append((cost or "$0") + " of " + (moneyText(budget["cost"]) or "$0"))
+	elif cost:
+		parts.append(cost)
+	return " · ".join(parts)
+
+
+def marker(state: str, color: bool) -> str:
+	symbol, code = MARKERS.get(state, ("·", ""))
+	return paint(symbol, code, color)
+
+
+def nextStep(value: dict) -> str:
+	"""Return the command a person most likely wants next, from a plan status."""
 	tasks, details = value["tasks"], value["taskDetails"]
-	plan = shlex.quote(value["path"])
+	continuation = value.get("continuation") or {}
+	if value.get("hold"):
+		return "auto resume"
+	if value["gaps"]:
+		return "auto answer"
+	if continuation and not continuation.get("ended") or any((detail["run"] or {}).get("status") in {RunStatus.PENDING, RunStatus.RUNNING}
+			for detail in details.values()):
+		return "auto log --follow"
+	if value["status"] == "Succeeded":
+		return 'auto change "…" to refine it, or auto "<goal>" to start another plan'
+	if value["status"] == "Abandoned":
+		return 'auto "<goal>" to start another plan'
+	failed = [id for id, state in tasks.items() if state in {RunStatus.FAILED, RunStatus.TIMED_OUT} and (id != "root" or len(tasks) == 1)]
+	if failed:
+		return f"auto show {failed[0]} to see why, then auto go --task {failed[0]} to retry"
+	if any(task["blocked"] for task in value["policy"]["tasks"].values()):
+		return "auto x policy show to see what policy blocks"
+	return "auto go"
+
+
+def taskLines(tasks: dict, details: dict, color: bool, verbose: bool = False) -> list:
+	"""Render plan tasks as one line each, with their marker and what they wait on."""
+	shown = [id for id in tasks if id != "root"] or ["root"]
+	size = max(width(id) for id in shown)
+	lines = []
+	for id in shown:
+		state, detail = tasks[id], details[id]
+		text = f"  {marker(state, color)} {id}{' ' * (size - width(id))}  {safeText(firstLine(detail['goal']))}"
+		run = detail.get("run") or {}
+		if state == RunStatus.BLOCKED:
+			pending = [dependency for dependency in detail["dependencies"] if tasks.get(dependency) != RunStatus.SUCCEEDED]
+			if pending:
+				text += paint("  ← " + ", ".join(pending), "2", color)
+		elif run.get("failure") and state in {RunStatus.FAILED, RunStatus.TIMED_OUT}:
+			text += paint("  " + safeText(firstLine(run["failure"].get("reason") or run["failure"])), "31", color)
+		if verbose and run:
+			text += paint(f"  [{run['id']} {run['status']}]", "2", color)
+		lines.append(text)
+	return lines
+
+
+def firstLine(text) -> str:
+	return str(text or "").strip().partition("\n")[0]
+
+
+def planView(value: dict, *, color: bool = False, verbose: bool = False) -> str:
+	"""Render where a plan stands, what needs the person and what to do next."""
+	tasks, details = value["tasks"], value["taskDetails"]
 	children = [id for id in tasks if id != "root"]
 	done = sum(tasks[id] == RunStatus.SUCCEEDED for id in children)
-	lines = [f"Plan: {safeText(value['id'])}", f"Goal: {safeText(value['goal'])}",
-		f"Status: {safeText(value['status'])}", f"Path: {safeText(value['path'])}"]
-	inFlight = [id for id, detail in details.items() if (detail["run"] or {}).get("status") in {"Pending", "Running", "Waiting"}]
-	continuation = value.get("continuation")
-	execution = "in flight: " + ", ".join(inFlight) if inFlight else "idle (no run in flight)"
-	if continuation and not continuation.get("ended"):
-		execution = "continuation in progress; " + execution
-	lines.append("Execution: " + safeText(execution))
-	if continuation and continuation.get("ended"):
-		lines.append("Last continuation: stopped — " + safeText(continuation.get("stop") or "unknown"))
-		if continuation.get("error"):
-			lines.append("  Error: " + safeText(continuation["error"]))
+	lines = [paint(safeText(value["id"]), "1", color) + "  " + safeText(firstLine(value["goal"]))]
+	facts = [value["status"], f"{done}/{len(children)} tasks" if children else "no tasks yet"]
+	usage = usageText(value["usage"], value["budget"])
+	lines.append(paint(" · ".join(facts + ([usage] if usage else [])), "2", color))
 	if value.get("hold"):
 		hold = value["hold"]
-		lines.append(f"Hold: {safeText(hold['mode'])} — {safeText(hold['reason'])}")
-	lines += ["", f"Tasks: {done}/{len(children)} completed (excluding root)" if children else "Tasks: no subtasks (root only)"]
-	for id, state in tasks.items():
-		detail = details[id]
-		lines.append(f"  [{safeText(state)}] {safeText(id)} — {safeText(detail['goal'])}")
-		if state == RunStatus.BLOCKED:
-			pending = [dependency for dependency in detail["dependencies"] if tasks[dependency] != RunStatus.SUCCEEDED]
-			if pending:
-				lines.append("    Waiting on: " + safeText(", ".join(pending)))
-			if value["policy"]["tasks"][id]["blocked"]:
-				lines.append("    Blocked by policy")
-		run = detail["run"]
-		if run:
-			lines.append(f"    Run: {safeText(run['id'])} ({safeText(run['status'])})")
-			lines.append(f"    Inspect: auto run get {shlex.quote(run['id'])} --plan {plan}")
-			if run.get("failure"):
-				lines.append("    Failure: " + safeText(run["failure"].get("reason") or run["failure"]))
-			if run.get("question"):
-				lines.append("    Question: " + safeText(run["question"]))
+		reason = hold["reason"] if hold["reason"] not in {"Paused", "Stopped"} else ""
+		lines.append(paint(("Paused" if hold["mode"] == "Pause" else "Stopped") + (": " + safeText(reason) if reason else ""), "33", color))
+	continuation = value.get("continuation") or {}
+	if continuation.get("ended") and continuation.get("error"):
+		lines.append(paint("Last run stopped: " + safeText(continuation["error"]), "31", color))
+	lines += [""] + taskLines(tasks, details, color, verbose)
 	if value["gaps"]:
-		lines += ["", "Open gaps:"]
-		for gap in value["gaps"]:
-			lines.append(f"  {safeText(gap['id'])}: {safeText(gap.get('question', ''))}")
-	if value["failures"]:
-		lines += ["", "Failure runs (including history):"]
-		for run in value["failures"]:
-			lines.append(f"  {safeText(run)}")
-			lines.append(f"    Inspect: auto run get {shlex.quote(run)} --plan {plan}")
-			lines.append(f"    Trace: auto run journal {shlex.quote(run)} --plan {plan}")
-	if value["stale"] or value["staleRuns"]:
-		lines.append(f"Stale context: {len(value['stale'])} plan inputs, {len(value['staleRuns'])} runs")
-	usage, budget = value["usage"], value["budget"]
-	lines += ["", f"Usage: {usage['tokens']} tokens · {costText(usage['cost'], budget.get('cost'))} · {usage['time']:.1f}s"]
-	if budget:
-		lines.append("Budget: " + safeText(render(budget, "text")))
-	lines += ["", "Next steps:", f"  Plan history: auto plan events --plan {plan}"]
-	if value["gaps"]:
-		lines.append(f"  Inspect open gaps: auto gap list --plan {plan}")
-		lines.append("  Resolve a gap: auto gap decide --help")
-	if any(task["blocked"] for task in value["policy"]["tasks"].values()):
-		lines.append(f"  Inspect policy blockers: auto policy show --plan {plan}")
-	if value.get("hold"):
-		lines.append(f'  Release hold when ready: auto plan release "REASON" --plan {plan}')
-	elif not inFlight and not (continuation and not continuation.get("ended")) and value["status"] not in {"Succeeded", "Abandoned", "Failed"}:
-		lines.append(f"  Continue when ready: auto plan continue --plan {plan}")
-	lines.append("  Command help: auto plan status --help")
+		lines += ["", paint("Needs you:", "1;33", color)]
+		lines += [f"  {index}. {safeText(firstLine(gap.get('question', '')))}" for index, gap in enumerate(value["gaps"], 1)]
+	if verbose:
+		lines += ["", "Path: " + safeText(value["path"])]
+		if value["failures"]:
+			lines.append("Earlier failures: " + ", ".join(safeText(run) for run in value["failures"]) + " (auto x run get RUN)")
+		if value["stale"] or value["staleRuns"]:
+			lines.append(f"Stale context: {len(value['stale'])} plan inputs, {len(value['staleRuns'])} runs")
+	lines += ["", "Next: " + paint(nextStep(value), "36", color)]
 	return "\n".join(lines)
+
+
+def proposalView(value: dict, *, color: bool = False) -> str:
+	"""Render a plan proposed for confirmation."""
+	lines = [paint("Plan " + safeText(value["id"]), "1", color) + "  " + safeText(firstLine(value["goal"]))]
+	tasks = value["tasks"]
+	size = max([width(task["id"]) for task in tasks] or [0])
+	for index, task in enumerate(tasks, 1):
+		after = paint("  ← " + ", ".join(task["dependencies"]), "2", color) if task["dependencies"] else ""
+		lines.append(f"  {index:>2} {task['id']}{' ' * (size - width(task['id']))}  {safeText(firstLine(task['goal']))}{after}")
+	if not tasks:
+		lines.append("  The goal is a single task.")
+	if value["budget"]:
+		lines.append(paint("Budget: " + ", ".join(f"{key} {amount}" for key, amount in value["budget"].items()), "2", color))
+	if value["agents"]:
+		lines.append(paint("Learning: " + ", ".join(value["agents"]), "2", color))
+	return "\n".join(lines)
+
+
+def summaryView(value: dict, *, color: bool = False) -> str:
+	"""Render the end of a guided run: outcome, cost, results and the next step."""
+	stop, status = value["stop"], value["status"]
+	if stop == "ended" or status in {"Succeeded", "Failed", "Abandoned"}:
+		headline = {"Succeeded": paint("Done", "1;32", color), "Failed": paint("Failed", "1;31", color)}.get(status, status)
+	else:
+		headline = paint(STOPS.get(stop, "Stopped"), "1;33", color)
+	facts = [f"{value['done']}/{value['total']} tasks"]
+	usage = usageText(value["usage"], value["budget"])
+	if usage:
+		facts.append(usage)
+	if value["decisions"]:
+		facts.append(f"{value['decisions']} decision" + ("s" if value["decisions"] != 1 else ""))
+	lines = [headline + " · " + " · ".join(facts)]
+	if value["results"]:
+		lines.append("Results:")
+		size = max(width(result["task"]) for result in value["results"])
+		for result in value["results"]:
+			lines.append(f"  {marker(RunStatus.SUCCEEDED, color)} {result['task']}{' ' * (size - width(result['task']))}  "
+				+ safeText(result["output"] or firstLine(result["goal"])))
+	for id in value["failed"]:
+		lines.append(f"  {marker(RunStatus.FAILED, color)} {id}")
+	if value["questions"]:
+		lines.append(paint("Needs you:", "1;33", color))
+		lines += [f"  {index}. {safeText(firstLine(question))}" for index, question in enumerate(value["questions"], 1)]
+	if value["agents"] and stop == "ended":
+		lines.append(paint("Learning: " + ", ".join(value["agents"]) + " (auto learned)", "2", color))
+	lines.append("Next: " + paint(summaryNext(value), "36", color))
+	return "\n".join(lines)
+
+
+def summaryNext(value: dict) -> str:
+	stop = value["stop"]
+	if value["questions"]:
+		return "auto answer, then auto go"
+	if stop == "declined":
+		return 'auto go to run it, or auto change "…" to revise it'
+	if stop == "held":
+		return "auto resume"
+	if value["failed"]:
+		return f"auto show {value['failed'][0]} to see why, then auto go --task {value['failed'][0]} to retry"
+	if stop == "budget":
+		return "auto x plan status to review the budget, then auto go"
+	if value["status"] == "Succeeded":
+		return 'auto change "…" to refine it, or auto log to review it'
+	return "auto status"
+
+
+class EventText:
+	"""Render plan events as one readable line each, remembering which run belongs to which task."""
+
+	def __init__(self, *, color: bool = False, times: bool = False):
+		self.color = color
+		self.times = times
+		self.tasks = {}
+
+	def task(self, run: str) -> str:
+		task = self.tasks.get(run, "")
+		return "planning" if task == "elaborator" else task or "a task"
+
+	def line(self, event: dict) -> str | None:
+		kind, data, color = event.get("kind"), event.get("data", {}), self.color
+		if kind == "RunStarted":
+			self.tasks[data["run"]] = data.get("task", "")
+			text = f"{marker(RunStatus.RUNNING, color)} {self.task(data['run'])}"
+		elif kind == "RunEnded":
+			status = data.get("status", "")
+			text = f"{marker(status, color)} {self.task(data['run'])}"
+			usage = usageText(data.get("usage") or {})
+			if usage:
+				text += paint("  " + usage, "2", color)
+			if data.get("failure"):
+				text += paint("  " + safeText(firstLine(data["failure"].get("reason", ""))), "31", color)
+			elif status not in {RunStatus.SUCCEEDED, ""}:
+				text += paint("  " + status, "2", color)
+		elif kind == "RunWaiting":
+			text = f"{marker(RunStatus.WAITING, color)} {self.task(data['run'])} needs an answer"
+		elif kind == "GapRaised":
+			text = f"{marker(RunStatus.WAITING, color)} new question for " + ", ".join(data.get("needed_by", [])) if self.times else None
+		elif kind == "GapResolved":
+			text = paint("✓ question answered", "2", color) if self.times else None
+		elif kind == "GapDismissed":
+			text = paint("– question dismissed", "2", color) if self.times else None
+		elif kind == "DecisionRecorded":
+			text = paint("✓ decision recorded", "2", color)
+		elif kind == "PlanRevised":
+			ops = [op for op in data.get("ops", []) if op in {"add", "remove", "edit", "replace", "update"}]
+			text = paint("↻ plan revised (" + ", ".join(ops) + ")", "2", color) if ops else None
+		elif kind == "PlanHeld":
+			reason = data.get("reason", "")
+			text = paint(("⏸ paused" if data.get("mode") == "Pause" else "■ stopped")
+				+ (": " + safeText(reason) if reason not in {"", "Paused", "Stopped"} else ""), "33", color)
+		elif kind == "PlanReleased":
+			text = paint("▶ resumed", "2", color)
+		elif kind == "ContinuationStarted":
+			text = paint("▶ continuing", "2", color) if self.times else None
+		elif kind == "ContinuationStopped":
+			text = paint("■ " + STOPS.get(data.get("stop"), "stopped").lower(), "2", color) if self.times and data.get("stop") != "ended" else None
+		elif kind == "PlanEnded":
+			text = paint(f"■ plan {str(data.get('status', 'ended')).lower()}", "1", color)
+		else:
+			return None
+		if text is None:
+			return None
+		if self.times and event.get("date"):
+			text = paint(str(event["date"])[5:16].replace("T", " "), "2", color) + "  " + text
+		return text
+
+
+def plansView(plans: list, current: str | None = None, *, color: bool = False) -> str:
+	"""Render the project's plans, marking the current one."""
+	if not plans:
+		return 'No plans yet. Start one with: auto "<goal>"'
+	lines = []
+	for plan in plans:
+		mark = paint("*", "36", color) if plan.get("path") == current else " "
+		# Plan summaries count the root task, which aggregates the others.
+		total = plan.get("tasks", 0) - 1 if plan.get("tasks", 0) > 1 else plan.get("tasks", 0)
+		progress = f"{min(plan.get('done', 0), total)}/{total}" if plan.get("status") != "Unreadable" else "-"
+		needs = paint(f"  {plan['gaps']} question" + ("s" if plan["gaps"] != 1 else ""), "33", color) if plan.get("gaps") else ""
+		lines.append(f"{mark} {plan['id']}  {paint(plan['status'], '2', color)} {progress}  {safeText(firstLine(plan.get('goal') or plan.get('error', '')))}{needs}")
+	return "\n".join(lines) + "\n\nSwitch with: auto use PLAN"
+
+
+def taskView(value: dict, *, color: bool = False) -> str:
+	"""Render one task, its latest attempt and output."""
+	lines = [f"{marker(value['state'], color)} {paint(value['id'], '1', color)}  {safeText(firstLine(value['goal']))}",
+		paint(" · ".join(filter(None, [value["state"], f"{value['attempts']} attempt" + ("s" if value["attempts"] != 1 else ""),
+			usageText((value["latest"] or {}).get("usage") or {})])), "2", color)]
+	if value["dependencies"]:
+		lines.append("After: " + ", ".join(value["dependencies"]))
+	run = value["latest"] or {}
+	if run.get("failure"):
+		lines.append(paint("Failure: " + safeText(run["failure"].get("reason") or run["failure"]), "31", color))
+	for question in value["questions"]:
+		lines.append(paint("Needs you: " + safeText(firstLine(question)), "33", color))
+	if value["output"] is not None:
+		lines += ["", render(value["output"], "text").rstrip()]
+	elif value["description"]:
+		lines += ["", safeText(value["description"]).rstrip()]
+	if run.get("id"):
+		lines += ["", paint(f"Run {run['id']}: auto x run journal {shlex.quote(run['id'])}", "2", color)]
+	return "\n".join(lines)
+
+
+def learningView(agents: list, *, color: bool = False) -> str:
+	"""Render memory agents' consolidation state."""
+	if not agents:
+		return ("No memory agents are enabled for this project.\n"
+			"Configure one under [memory.agents] and list it in [memory] default_agents to learn from plans.")
+	lines = []
+	for agent in agents:
+		if agent.get("error"):
+			lines.append(f"{paint(agent['agent'], '1', color)}  {paint(safeText(agent['error']), '31', color)}")
+			continue
+		facts = [("last consolidated " + str(agent["consolidated"])[:16].replace("T", " ")) if agent["consolidated"] else "not consolidated yet"]
+		facts += [f"{agent[key]} {label}" for key, label in (("due", "observations due"), ("proposals", "proposals"), ("questions", "questions")) if agent[key]]
+		if agent["pending"]:
+			facts.append("consolidation pending")
+		lines.append(f"{paint(agent['agent'], '1', color)}  " + " · ".join(facts))
+	return "\n".join(lines) + "\n\nConsolidate now: auto x consolidation run AGENT"
 
 # -----------------------------------------------------------------------------
 #
@@ -221,7 +457,8 @@ class Frontend:
 			self.cost = usage.get("cost") or None
 			self.tokens = usage.get("tokens") or None
 			if self.terminal:
-				print("  › Task: " + safeText(event.get("task", "")), file=self.stderr, flush=True)
+				task = event.get("task", "")
+				print("  › " + ("Planning" if task == "elaborator" else "Task: " + safeText(task)), file=self.stderr, flush=True)
 		elif kind == Event.RUN_PHASE:
 			self.operation = safeText(event.get("phase", "Running"))
 		elif kind == Event.SCRIPT_ACTION:

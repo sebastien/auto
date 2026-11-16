@@ -23,7 +23,7 @@ inputs:
   policy: ""
   context: []
   methodology: ""
-  catalogue: "!auto catalogue list --format markdown"
+  catalogue: "!auto x catalogue list --format markdown"
   learnings: ""
 params:
   breakdown: coarse

@@ -55,23 +55,44 @@ These rules apply to all interfaces:
 ## CLI
 
 ```
-auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
+auto {command} [ARGUMENT…] [--{name} VALUE…]          main commands
+auto x {noun} {verb} [ARGUMENT…] [--{name} VALUE…]    internals
 ```
 
-- *Naming*: nouns and verbs are lowercase, multi-word names separated by `-`
-  (eg. `auto script run`, `auto elaboration validate`).
-- *Shorthand*: `auto PATH.md [OPTIONS]` is equivalent to
-  `auto script run PATH.md [OPTIONS]`. Paths resolve from the working directory;
-  execution context discovery is unchanged by the script's location.
-- *Arguments*: required arguments are positional, optional arguments are
-  `--{name}` flags. Repeated arguments repeat the flag (eg.
+The CLI is for people first: its main commands follow the goal-to-result loop
+(see [Goal](spec-000-goal.md)) and act on the current plan, while every other
+operation remains available, by noun and verb, under `auto x`.
+
+- *Naming*: a main command is one lowercase verb (eg. `auto go`,
+  `auto answer`), stated by its exposure; an internal one is `x`, then its
+  noun and verb (eg. `auto x run get`, `auto x elaboration validate`).
+- *Shorthands*: `auto PATH.md [OPTIONS]` is `auto run PATH.md [OPTIONS]`;
+  paths resolve from the working directory, and execution context discovery is
+  unchanged by the script's location. `auto "GOAL" [OPTIONS]`, a quoted goal
+  (one argument containing a space), is `auto new "GOAL" [OPTIONS]`; any
+  other unknown word is a usage error, so that a mistyped command never
+  starts a plan (an internal noun points to `auto x`). `auto` alone
+  shows the current plan (`auto status`), or how to start one when there is
+  none.
+- *Arguments*: required arguments are positional, then optional positional
+  arguments (eg. `auto answer [NUMBER] [ANSWER]`); other optional arguments
+  are `--{name}` flags. Repeated arguments repeat the flag (eg.
   `--input a=./a.md --input b=./b.md`). A payload is given as a file path, or
   `-` for stdin.
 - *Context*: `--plan`, `--engine`, `--model` and `--agent` are available on
   every command where they apply, with `AUTO_PLAN`, `AUTO_ENGINE`,
   `AUTO_MODEL` and `AUTO_AGENT` as environment equivalents. A plan is given
-  by id, resolved as `.auto/{plan}/` in the project (see
-  [Plan](spec-004-plan.md)), or by path.
+  by id or number, resolved as `.auto/{plan}/` in the project (see
+  [Plan](spec-004-plan.md)), or by path. Without one, the plan is the one
+  whose directory contains the working directory, then the project's
+  *current plan* (the last created, or selected with `auto use`), then the
+  project's only plan.
+- *Guidance*: human results end with the next command the person most likely
+  needs (eg. `Next: auto answer`), derived from the plan state. Hints are
+  never written in `json` output.
+- *Engine*: when no engine is configured and the default one is not
+  installed, operations with effects use the first installed engine, saying
+  so on stderr; `auto init` saves an engine in the project configuration.
 - *Output*: results are written on stdout, diagnostics on stderr. `--format`
   selects `text` (default, for humans), `markdown` (for inclusion in prompts:
   fenced YAML, or one line per entry for catalogue lists) or `json` (stable,
@@ -80,12 +101,14 @@ auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
 - *Interaction*: in an interactive session, missing verbs, arguments, context
   and inputs are prompted for instead of failing, and questions are prompted;
   otherwise they are usage errors and non-interactive questions (see Mapping
-  Rules). `auto` alone prints the reference (see
+  Rules). A guided plan (`auto new`, `auto go`, `auto resume`) asks the
+  plan's open questions as it reaches them (see
   [CLI Prompt](spec-011-cli-prompt.md)).
 - *Interruption*: `SIGINT` cancels the running script or run, ending it as
   `Cancelled`.
-- *Help*: `auto help`, `auto {noun} --help` and `auto {noun} {verb} --help`
-  are generated from the operations, and are the command reference.
+- *Help*: `auto help`, `auto {command} --help`, `auto x --help` and
+  `auto x {noun} {verb} --help` are generated from the operations, and are
+  the command reference.
 
 Exit status:
 
@@ -94,17 +117,22 @@ Exit status:
 | `0` | Success: operation succeeded, run `Succeeded`, check passed, no violations |
 | `1` | Failure: operation failed, run `Failed`, check failed, violations found |
 | `2` | Usage: invalid command, arguments or flags |
-| `3` | Pending: run `Waiting`, `Blocked` or `Skipped`, which may be resumed or retried later |
+| `3` | Pending: run `Waiting`, `Blocked` or `Skipped`, or a plan stopped waiting for answers, held or out of budget, which may be resumed or retried later |
 | `124` | Run `TimedOut` |
-| `130` | Run `Cancelled` |
+| `130` | Run `Cancelled`, or a guided plan interrupted |
+
+A guided plan that the person chose not to run yet ends with `0`.
 
 ## MCP
 
-`auto mcp` serves the MCP tools over stdio, with the working directory and
+`auto x mcp` serves the MCP tools over stdio, with the working directory and
 flags (eg. `--plan`) as the default context.
 
-- *Naming*: tools are named `{noun}_{verb}` (eg. `script_run`,
-  `elaboration_validate`).
+- *Naming*: tools are named `{noun}_{verb}` after the operation, whatever its
+  CLI command (eg. `script_run`, `plan_status`, `elaboration_validate`).
+- *Authority*: tools act with the server's author. Operations through which a
+  person decides (answering, running a guided plan) are not exposed, so that
+  an agent cannot decide for them.
 - *Arguments*: a JSON object, with one property per argument and a JSON
   Schema derived from the operation. Payloads are given as content or as
   a `PATH`.
@@ -119,30 +147,76 @@ flags (eg. `--plan`) as the default context.
 
 ## Exposure
 
+Main commands, in the order of the reference:
+
 | Operation | CLI | MCP | Need |
 |---|---|---|---|
-| `ScriptStart` | `script run` | `script_run` | Run a script standalone |
+| `PlanDo` | `new` (and `auto "GOAL"`) | — | Go from a goal to a result: plan it, confirm it, run it asking what it needs, and summarise |
+| `PlanStatus` | `status` (and `auto`) | `plan_status` | Know where the plan stands, what needs you and what to do next; give agents the plan state |
+| `PlanGo` | `go` | — | Continue a plan, or run a task again, answering its questions as they come |
+| `QuestionAnswer` | `answer` | — | Answer the plan's open questions, by number or one after the other |
+| `PlanRefine` | `change` | — | Change a plan, or decompose a task, on demand |
+| `PlanPause` | `pause` | — | Pause a plan once its current task finishes |
+| `PlanStop` | `stop` | — | Stop a plan now, cancelling its current task |
+| `PlanResume` | `resume` | — | Release a held plan and continue it |
+| `PlanEvents` | `log` | `plan_events` | Review a plan's history, and follow it, from any interface |
+| `TaskShow` | `show` | `task_show` | Know what a task does, how its latest attempt went and what it produced |
+| `PlanList` | `plans` | `plan_list` | Find the plans of a project, and pick one to follow |
+| `PlanUse` | `use` | — | Choose the plan later commands act on |
+| `DecisionRecord` | `decide` | — | Record a decision made without a gap (eg. in conversation), so that none is lost (see [Plan](spec-004-plan.md)) |
+| `LearningStatus` | `learned` | `learning_status` | Know what memory agents have consolidated and what awaits them (see [Memorisation](spec-010-memorisation.md)) |
+| `ScriptStart` | `run` (and `auto PATH.md`) | `script_run` | Run a script standalone |
+
+Internals, under `auto x`:
+
+| Operation | CLI | MCP | Need |
+|---|---|---|---|
 | `ScriptExpand` | `script expand` | — | Inspect the prompt of a script while authoring it |
-| `PlanCreate` | `plan create` | — | Start a plan from a goal |
-| `PlanRefine` | `plan refine` | — | Refine a plan, or decompose a task, on demand |
-| `PlanList` | `plan list` | `plan_list` | Find the plans of a project, and pick one to follow |
-| `PlanStatus` | `plan status` | `plan_status` | Follow a plan; give agents the plan state |
-| `PlanContinue` | `plan continue` | — | Run a plan until it needs a human (see [Orchestration](spec-009-orchestration.md)) |
+| `PlanCreate` | `plan create` | — | Start a plan from a goal without running it |
+| `PlanContinue` | `plan continue` | — | Run a plan until it needs a human, without asking (see [Orchestration](spec-009-orchestration.md)) |
 | `PlanHold` | `plan hold` | — | Pause or stop a running plan |
-| `PlanRelease` | `plan release` | — | Release a held plan |
-| `PlanEvents` | `plan events` | `plan_events` | Follow a plan, and resume following it, from any interface |
+| `PlanRelease` | `plan release` | — | Release a held plan without continuing it |
 | `PolicyResolve` | `policy show` | `policy_resolve` | Know what a plan or task may do without confirmation (see [Plan Policy](spec-008-plan-policy.md)) |
 | `TaskStart` | `task run` | — | Run a task by hand, outside a continuation |
+| `RunGet` | `run get` | — | Inspect a run's status, failure and receipt |
+| `RunOutput` | `run output` | — | Read the stored output of a run |
 | `RunJournal` | `run journal` | — | Follow a run in progress |
 | `GapList` | `gap list` | `gap_list` | Find what a plan needs |
-| `GapDecide` | `gap decide` | — | Answer a gap; decisions are made by humans through the CLI |
-| `DecisionRecord` | `decision record` | — | Record a decision made without a gap (eg. in conversation), so that none is lost (see [Plan](spec-004-plan.md)) |
+| `GapDecide` | `gap decide` | — | Answer a gap by identity; decisions are made by humans through the CLI |
 | `ConsolidationStart` | `consolidation run` | — | Request a consolidation of an agent's memory (see [Memorisation](spec-010-memorisation.md)) |
 | `ConsolidationStatus` | `consolidation status` | `consolidation_status` | Know an agent's due work, open questions and pending proposals |
 | `CatalogueList` | `catalogue list` | `catalogue_list` | List the framework, as an input of Elaborators |
 | `CatalogueGet` | `catalogue get` | `catalogue_get` | Read a framework entry by identity |
 | `ElaborationValidate` | `elaboration validate` | `elaboration_validate` | Post check of Elaborators, and self-check before answering |
 | `AuditValidate` | `audit validate` | `audit_validate` | Post check of audit reports, and self-check before answering |
+
+`auto x config` (effective configuration and its sources), `auto x usage`
+(the usage journal) and `auto x mcp` are interface commands, not operations.
+
+## Guided Plans
+
+The guided operations compose the plan operations into the steps a person
+takes; they add no state of their own.
+
+- `PlanDo` creates and elaborates a plan, answering the questions of its
+  elaboration, then streams a `PlanProposed` event: its tasks, dependencies,
+  budget, open questions and memory agents. When a person can be asked, it
+  asks a `PlanConfirm` question, answered `run`, `change` (then what should
+  change, applied as a refinement before proposing again) or `no`. It then
+  continues the plan as `PlanGo` does. With `yes`, or no person to ask, it
+  runs without confirmation.
+- `PlanGo` asks the open questions, then runs continuations (see
+  [Orchestration](spec-009-orchestration.md)): when one stops `waiting` and a
+  person can be asked, it asks every open question, recording each answer as
+  a decision, and continues. `task` first runs that task again, eg. after a
+  failure.
+- Both end with a `PlanSummary` event: status, why it stopped (a continuation
+  stop, or `declined`), tasks done, usage, budget, decisions, open questions,
+  failed tasks, the first line of each succeeded task's output and the plan's
+  memory agents. Its exit status follows the stop, as a `ContinuationStopped`
+  event's does.
+- A runtime policy request answered yes becomes the grant its rule requires
+  (see [Plan Policy](spec-008-plan-policy.md)).
 
 ## Rules
 

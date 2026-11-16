@@ -24,7 +24,7 @@ from auto.runtime.model import RunStatus, budgetValue
 from auto.runtime.operations import Resolve, isReference
 from auto.utils.data import AutoError, atomicWrite, digest, document, documentText, identifier, identity, jsonText, promptText, sections, yamlLoad
 from auto.utils.references import relocateMeta
-from auto.utils.layout import PLAN_PREFIX, historyFile, planFile, planNumber, storePath, taskFile, taskId, taskRef
+from auto.utils.layout import PLAN_PREFIX, historyFile, planFile, planNumber, setCurrentPlan, storePath, taskFile, taskId, taskRef
 
 
 # -----------------------------------------------------------------------------
@@ -378,6 +378,7 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		path = plans / name
 		path.mkdir(exist_ok=False)
 		atomicWrite(counter, f"{number + 1:03x}\n")
+		setCurrentPlan(context.project, path)
 	# The goal is the root task's description: the plan's directory names it.
 	inputs = relocateMeta({"inputs": inputs or {}}, context.project)["inputs"]
 	root = {**({"requested_effects": effects} if effects else {}), **({"agents": agents} if agents else {}),

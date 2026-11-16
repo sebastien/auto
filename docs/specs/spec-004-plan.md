@@ -198,6 +198,9 @@ Publish release notes for version 2.0
 Optional definition of done of the plan.
 ```
 
+- `.auto/.current` names the project's *current plan*: the plan created last,
+  or selected by `PlanUse`. Interfaces act on it when no plan is given (see
+  [Interface](spec-007-interface.md)); a pointer to a missing plan is ignored.
 - `tsk/root.md` uses the task format (see Task), whose description is the plan
   goal, stated once. The directory name is the plan id, while the root task
   id is always `root`; `budget` is the plan budget, which the root task runs

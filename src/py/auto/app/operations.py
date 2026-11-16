@@ -67,11 +67,27 @@ def gapCandidates(context, arguments):
 	return [(gap["id"], firstLine(gap["question"])) for gap in GapList(context, filter={"status": GapState.OPEN})]
 
 
+def questionCandidates(context, arguments):
+	from auto.features.orchestration.guided import openQuestions
+	from auto.features.plan.store import planPath
+	return [(str(index), firstLine(gap["question"])) for index, gap in enumerate(openQuestions(context, planPath(context)), 1)]
+
+
+def openGap(context, arguments) -> dict:
+	"""Return the open gap an `answer` argument refers to, by id or number."""
+	from auto.features.orchestration.guided import openQuestions
+	from auto.features.plan.store import planPath
+	gaps = openQuestions(context, planPath(context))
+	selected = str(arguments.get("gap") or arguments.get("number") or "")
+	if selected.isdigit() and 0 < int(selected) <= len(gaps):
+		return gaps[int(selected) - 1]
+	return next((gap for gap in gaps if gap["id"] == selected), {})
+
+
 def answerCandidates(context, arguments):
-	if not arguments.get("gap"):
+	if not arguments.get("gap") and not arguments.get("number"):
 		return []
-	from auto.features.plan.gaps import GapList
-	gap = next((gap for gap in GapList(context) if gap["id"] == arguments["gap"]), {})
+	gap = openGap(context, arguments)
 	options = [option.get("value", option.get("id", option.get("label"))) if isinstance(option, dict) else option for option in gap.get("options", [])]
 	return [(str(option), "") for option in options if option is not None]
 
@@ -88,16 +104,19 @@ def agentCandidates(context, arguments):
 
 # Descriptors are keyed by argument name, which is consistent across exposures.
 DESCRIPTORS = {
-	"plan": Descriptor("choice", "The plan to work in", candidates=planCandidates, recovery='Create a plan with auto plan create "<goal>".'),
+	"plan": Descriptor("choice", "The plan to work in", candidates=planCandidates, recovery='Start a plan with auto "<goal>".'),
+	"id": Descriptor("text", "The plan later commands act on, by id or number", candidates=planCandidates),
 	"goal": Descriptor("multiline", "What the plan should achieve"),
-	"reason": Descriptor("multiline", "Why the plan or task needs this change"),
+	"reason": Descriptor("multiline", "What should change, and why"),
 	"mode": Descriptor("choice", "How to hold the plan", candidates=lambda context, arguments: [("Pause", "Finish the current run"), ("Stop", "Cancel the current run")]),
 	"follow": Descriptor("text", "Keep following new plan events"),
-	"task": Descriptor("choice", "A task of the plan", candidates=taskCandidates, recovery="Check the plan tasks with auto plan status."),
-	"run": Descriptor("choice", "A run of the plan", candidates=runCandidates, recovery="Start a run with auto task run TASK."),
-	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="List gaps with auto gap list."),
-	"answer": Descriptor("value", "The decision, as a YAML value", candidates=answerCandidates),
-	"rationale": Descriptor("text", "Why this decision"),
+	"yes": Descriptor("text", "Run the plan without asking for confirmation"),
+	"task": Descriptor("choice", "A task of the plan", candidates=taskCandidates, recovery="See the plan's tasks with auto status."),
+	"run": Descriptor("choice", "A run of the plan", candidates=runCandidates, recovery="Start a run with auto go --task TASK."),
+	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="See open questions with auto status."),
+	"number": Descriptor("text", "An open question, by number or id", candidates=questionCandidates),
+	"answer": Descriptor("value", "The answer, as a YAML value", candidates=answerCandidates),
+	"rationale": Descriptor("text", "Why this answer or decision"),
 	"question": Descriptor("multiline", "What was decided"),
 	"concerns": Descriptor("structured", "YAML list of labels describing what the decision affects"),
 	"source": Descriptor("text", "Where the decision was made, eg. a conversation reference"),
@@ -142,6 +161,10 @@ class Exposure:
 	noun: str = ""
 	verb: str = ""
 	mcpVerb: str = ""
+	# The CLI command of a main operation (eg. `go`); others are internals, under `auto x NOUN VERB`.
+	command: str = ""
+	# Positional arguments that may be omitted, after the required ones.
+	optionalArguments: tuple[str, ...] = ()
 
 	def __post_init__(self):
 		if self.noun and self.verb:
@@ -153,8 +176,13 @@ class Exposure:
 		object.__setattr__(self, "verb", "run" if parts[1] == "Start" else parts[1].lower())
 
 	@property
-	def words(self) -> tuple[str, str]:
-		return self.noun, self.verb
+	def words(self) -> tuple[str, ...]:
+		"""Return the CLI words of the operation."""
+		return (self.command,) if self.command else ("x", self.noun, self.verb)
+
+	@property
+	def positional(self) -> tuple[str, ...]:
+		return (*self.arguments, *self.optionalArguments)
 
 	@property
 	def toolName(self) -> str:
@@ -162,7 +190,7 @@ class Exposure:
 
 	@property
 	def schema(self):
-		properties = {name: {"type": "string"} for name in (*self.arguments, *self.optional, "plan", "engine", "provider", "model", "agent")}
+		properties = {name: {"type": "string"} for name in (*self.positional, *self.optional, "plan", "engine", "provider", "model", "agent")}
 		if "filter" in properties:
 			properties["filter"] = {"type": "object"}
 		if "budget" in properties:
@@ -175,8 +203,9 @@ class Exposure:
 			properties["concerns"] = {"type": "array", "items": {"type": "string"}}
 		if "since" in properties:
 			properties["since"] = {"type": "integer"}
-		if "follow" in properties:
-			properties["follow"] = {"type": "boolean"}
+		for name in ("follow", "yes"):
+			if name in properties:
+				properties[name] = {"type": "boolean"}
 		if "overrideAllowance" in properties:
 			properties["overrideAllowance"] = {"type": "boolean"}
 		if "phases" in properties:
@@ -201,22 +230,39 @@ class Exposure:
 		return getattr(module, self.name)(context, **arguments)
 
 
-# Exposure order follows the interface specification table (see spec-007).
+# Main operations come first, in the order of the CLI reference; internals follow (see spec-007).
 EXPOSURES = [
-	Exposure("ScriptStart", "script.operations", ("script",), "Run a script standalone",
+	Exposure("PlanDo", "orchestration.guided", ("goal",), "Plan a goal, confirm it, then run it until it ends or needs you", command="new",
+		optional=("yes", "budget", "effects", "agents"), inputs=True, stream=True, effects=True),
+	Exposure("PlanStatus", "plan.operations", (), "Show where the plan stands and what needs you", command="status", mcp=True, needsPlan=True),
+	Exposure("PlanGo", "orchestration.guided", (), "Continue the plan until it ends or needs you", command="go", optional=("task",),
+		stream=True, passPlan=True, effects=True, needsPlan=True),
+	Exposure("QuestionAnswer", "orchestration.guided", (), "Answer the plan's open questions", command="answer", optionalArguments=("number", "answer"),
+		optional=("rationale",), valueArguments=("answer",), effects=True, needsPlan=True),
+	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Change the plan, or one task with --task", command="change", optional=("task",),
+		resumable=True, passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanPause", "orchestration.guided", (), "Pause the plan once its current task finishes", command="pause", optionalArguments=("reason",),
+		passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanStop", "orchestration.guided", (), "Stop the plan now, cancelling its current task", command="stop", optionalArguments=("reason",),
+		passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanResume", "orchestration.guided", (), "Release a paused or stopped plan and continue it", command="resume",
+		optionalArguments=("reason",), stream=True, passPlan=True, effects=True, needsPlan=True),
+	Exposure("PlanEvents", "plan.events", (), "Show the plan's history", command="log", mcp=True, stream=True, optional=("since", "follow"), needsPlan=True),
+	Exposure("TaskShow", "orchestration.guided", ("task",), "Show a task, its latest attempt and its output", command="show", mcp=True, needsPlan=True),
+	Exposure("PlanList", "plan.operations", (), "List the project's plans", command="plans", mcp=True, optional=("filter",)),
+	Exposure("PlanUse", "orchestration.guided", ("id",), "Choose the plan later commands act on", command="use"),
+	Exposure("DecisionRecord", "plan.gaps", ("question", "answer"), "Record a decision made outside a question", command="decide",
+		optional=("rationale", "concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
+	Exposure("LearningStatus", "orchestration.guided", (), "Show what memory agents have learned and what awaits them", command="learned", mcp=True),
+	Exposure("ScriptStart", "script.operations", ("script",), "Run a Markdown script on its own, without a plan", command="run",
 		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True, effects=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
-	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Start a plan from a goal", optional=("budget", "effects", "agents"), inputs=True,
-		effects=True, ask=("budget",)),
-	Exposure("PlanRefine", "elaboration.operations", ("reason",), "Refine a plan or decompose a task", optional=("task",), resumable=True, passPlan=True,
+	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Create and elaborate a plan without running it", optional=("budget", "effects", "agents"),
+		inputs=True, effects=True, ask=("budget",)),
+	Exposure("PlanContinue", "orchestration.operations", (), "Run a plan until it needs a human, without asking", stream=True, passPlan=True,
 		effects=True, needsPlan=True),
-	Exposure("PlanList", "plan.operations", (), "Find the plans of a project", mcp=True, optional=("filter",)),
-	Exposure("PlanStatus", "plan.operations", (), "Follow plan progress", mcp=True, needsPlan=True),
-	Exposure("PlanContinue", "orchestration.operations", (), "Run a plan until it needs a human", stream=True, passPlan=True, effects=True, needsPlan=True),
 	Exposure("PlanHold", "plan.control", ("mode", "reason"), "Pause or stop a plan", passPlan=True, effects=True, needsPlan=True),
-	Exposure("PlanRelease", "plan.control", ("reason",), "Release a held plan", passPlan=True, effects=True, needsPlan=True),
-	Exposure("PlanEvents", "plan.events", (), "Follow a plan from an event cursor", mcp=True, stream=True,
-		optional=("since", "follow"), needsPlan=True),
+	Exposure("PlanRelease", "plan.control", ("reason",), "Release a held plan without continuing it", passPlan=True, effects=True, needsPlan=True),
 	Exposure("PolicyResolve", "plan.policy", (), "Inspect plan policy", mcp=True, optional=("task",), needsPlan=True,
 		noun="policy", verb="show", mcpVerb="resolve"),
 	Exposure("TaskStart", "task.operations", ("task",), "Run a task by hand", inputs=True, resumable=True, effects=True, needsPlan=True),
@@ -224,10 +270,8 @@ EXPOSURES = [
 	Exposure("RunOutput", "task.operations", ("run",), "Read the stored output of a run", needsPlan=True),
 	Exposure("RunJournal", "task.operations", ("run",), "Follow a run", stream=True, optional=("since",), needsPlan=True),
 	Exposure("GapList", "plan.gaps", (), "Find what a plan needs", mcp=True, optional=("filter",), needsPlan=True),
-	Exposure("GapDecide", "plan.gaps", ("gap", "answer", "rationale"), "Resolve a gap with a human decision", valueArguments=("answer",),
+	Exposure("GapDecide", "plan.gaps", ("gap", "answer"), "Resolve a gap with a human decision", optional=("rationale",), valueArguments=("answer",),
 		effects=True, needsPlan=True),
-	Exposure("DecisionRecord", "plan.gaps", ("question", "answer", "rationale"), "Record a decision made without a gap",
-		optional=("concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
 	Exposure("CatalogueList", "elaboration.catalogue", (), "List the available framework", mcp=True, optional=("kind", "query")),
 	Exposure("CatalogueGet", "elaboration.catalogue", ("identity",), "Read a framework entry", mcp=True),
 	Exposure("ConsolidationStart", "memory.consolidation", ("agent",), "Consolidate an agent's memory",
@@ -307,10 +351,14 @@ def exitStatus(result, exposure: Exposure | None = None) -> int:
 	if exposure is not None and exposure.violations:
 		return 1 if result else 0
 	if isinstance(result, dict):
-		if result.get("kind") == "ContinuationStopped":
+		if result.get("kind") in {"ContinuationStopped", "PlanSummary"}:
 			data = result["data"]
 			if data["stop"] == "ended":
 				return 0 if data.get("status") == RunStatus.SUCCEEDED else 1
+			if data["stop"] == "declined":
+				return 0
+			if data["stop"] == "cancelled" and result["kind"] == "PlanSummary":
+				return 130
 			return 1 if data["stop"] == "failed" else 3
 		if isinstance(result.get("run"), dict):
 			return exitStatus(result["run"])

@@ -235,6 +235,11 @@ class Prompter:
 
 	def question(self, event: dict):
 		"""Answer a run question: a confirmation, a form field by field, or free text."""
+		if event.get("type") == "PlanConfirm":
+			def choice(text):
+				return None if text.strip().lower() in ("", "y", "yes", "n", "no", "c", "change") else "Answer y, c or n"
+			value = self.prompt(str(event.get("content") or "Run it?") + " [Y]es / [c]hange / [n]o", check=choice).strip().lower()
+			return "run" if value in ("", "y", "yes") else "change" if value.startswith("c") else "no"
 		self.say(str(event.get("content", "")), "bold")
 		if event.get("type") == Event.POLICY_REQUEST:
 			return self.confirm("Allow?")

@@ -10,7 +10,7 @@ from pathlib import Path
 from auto.runtime.model import Context
 from auto.utils.config import loadConfig
 from auto.utils.data import AutoError, identifier
-from auto.utils.layout import PLAN_PREFIX, STORE, isPlan, planNumber, planPaths, storePath
+from auto.utils.layout import PLAN_PREFIX, STORE, currentPlan, isPlan, planNumber, planPaths, storePath
 
 # -----------------------------------------------------------------------------
 #
@@ -85,7 +85,7 @@ def contextFor(directory: Path | None = None, plan: str | None = None, sources: 
 	if selected:
 		planPath = Path(selected).resolve() if "/" in selected or Path(selected).is_dir() else planDirectory(storePath(project), identifier(selected))
 	else:
-		planPath = next((p for p in (cwd, *cwd.parents) if isPlan(p) and p.parent.name == STORE), None)
+		planPath = next((p for p in (cwd, *cwd.parents) if isPlan(p) and p.parent.name == STORE), None) or currentPlan(project)
 	explicit = {}
 	for key in CONTEXT_KEYS[1:]:
 		value = overrides.get(key) if overrides.get(key) is not None else os.environ.get("AUTO_" + key.upper())

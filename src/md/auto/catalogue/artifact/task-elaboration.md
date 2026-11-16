@@ -17,7 +17,7 @@ section, then one second level section per element (`## task: {id}`,
 
 Its structural rules (resolvable references, valid gaps, titles, a Process
 unless `from` or deferred, new and unique ids) are checked deterministically
-by `auto elaboration validate`, in the Post of the Elaborator
+by `auto x elaboration validate`, in the Post of the Elaborator
 (`auto:catalogue/check/elaboration-valid`), rather than judged by a model.
 
 ## Evaluation

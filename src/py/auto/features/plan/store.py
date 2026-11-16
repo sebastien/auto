@@ -41,15 +41,15 @@ def runPlanPath(context, run) -> Path:
 	if matches:
 		raise AutoError(f"Ambiguous run: {id}", recovery="Select its plan with --plan <name-or-path>. Matching plans: "
 			+ ", ".join(str(path) for path in matches) + ".")
-	raise AutoError(f"Run not found in this project: {id}", recovery="Check auto plan list, or use --plan <path> for a plan outside this project.")
+	raise AutoError(f"Run not found in this project: {id}", recovery="Check auto plans, or use --plan <path> for a plan outside this project.")
 
 
 def planPath(context, plan=None) -> Path:
 	"""Resolve the directory of the current or named plan."""
 	path = plan or context.plan
 	if path is None:
-		raise AutoError("This operation requires a plan", recovery='Select an existing plan with --plan <name-or-path> or AUTO_PLAN. '
-			'If you have no plan, create one with auto plan create "<goal>". '
+		raise AutoError("This operation requires a plan", recovery='Choose a plan with auto use PLAN, --plan <name-or-path> or AUTO_PLAN. '
+			'If you have no plan, start one with auto "<goal>". '
 			'Task runs take a task ID defined in that plan, not a catalogue Markdown path.')
 	path = Path(path)
 	if not path.is_absolute() and len(path.parts) == 1:
@@ -57,7 +57,7 @@ def planPath(context, plan=None) -> Path:
 		path = planDirectory(storePath(context.project), path.name)
 	if not isPlan(path):
 		raise AutoError(f"Plan not found: {path}", recovery=f'Point --plan at a plan directory, containing {taskName("root")}, '
-			'or create a plan with auto plan create "<goal>". Check AUTO_PLAN if you did not pass --plan.')
+			'or start a plan with auto "<goal>". Check AUTO_PLAN if you did not pass --plan.')
 	return path.resolve()
 
 
@@ -102,7 +102,7 @@ def exclusive(path, description):
 		except BlockingIOError:
 			stream.seek(0)
 			raise AutoError(f"{description} already has a running continuation: {stream.read().strip()}",
-				recovery="Follow the running plan with auto plan events --follow.") from None
+				recovery="Follow the running plan with auto log --follow.") from None
 		try:
 			yield stream
 		finally:

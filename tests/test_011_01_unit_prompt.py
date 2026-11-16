@@ -162,7 +162,7 @@ class PromptTests(unittest.TestCase):
 
 	def testMissingVerbIsChosen(self):
 		with self.session("list\r"):
-			status, output = self.invoke("catalogue")
+			status, output = self.invoke("x", "catalogue")
 		self.assertEqual(status, 0)
 		self.assertIn("auto:catalogue/", output)
 
@@ -171,10 +171,10 @@ class PromptTests(unittest.TestCase):
 			script = Path(directory) / "hello.md"
 			script.write_text("Hello {{ name }}")
 			with self.session("world\r"):
-				status, output = self.invoke("script", "expand", str(script))
+				status, output = self.invoke("x", "script", "expand", str(script))
 		self.assertEqual(status, 0)
 		self.assertIn("Hello world", output)
-		self.assertIn(f"› auto script expand {script} --input name=world", self.screen.getvalue())
+		self.assertIn(f"› auto x script expand {script} --input name=world", self.screen.getvalue())
 
 	def testTransitiveDefaultsAndLoopInputsDoNotPrompt(self):
 		from auto.runtime.model import Context
@@ -190,7 +190,7 @@ class PromptTests(unittest.TestCase):
 			self.assertEqual(cli.missingInputs(context, str(script)), [])
 			child.write_text('---\ninputs:\n  base: ""\n  rev: ""\n---\n{{ base }}{{ inputs.rev }}')
 			with self.session("") as prompter:
-				status, _ = self.invoke("script", "expand", str(script))
+				status, _ = self.invoke("x", "script", "expand", str(script))
 			self.assertEqual(status, 0)
 			self.assertFalse(prompter.filled)
 
@@ -200,13 +200,13 @@ class PromptTests(unittest.TestCase):
 			os.chdir(directory)
 			try:
 				with self.session("Ship it" + ESC_ENTER + "\r" + "n\r"):
-					status, _ = self.invoke("plan", "create")
+					status, _ = self.invoke("x", "plan", "create")
 			finally:
 				os.chdir(cwd)
 		self.assertEqual(status, 130)
 		create.assert_not_called()
-		self.assertIn("› auto plan create 'Ship it'", self.screen.getvalue())
-		self.assertIn("Start a plan from a goal", self.screen.getvalue())
+		self.assertIn("› auto x plan create 'Ship it'", self.screen.getvalue())
+		self.assertIn("Create and elaborate a plan without running it", self.screen.getvalue())
 
 	def testEveryRequiredArgumentIsDescribed(self):
 		for exposure in EXPOSURES:
@@ -215,11 +215,11 @@ class PromptTests(unittest.TestCase):
 					self.assertIn(name, DESCRIPTORS)
 
 	def testCommandLine(self):
-		args = cli.parser().parse_args(["gap", "decide", "g1", "yes", "it is fine", "--plan", "p"])
-		self.assertEqual(cli.commandLine(args, args.exposure), "auto gap decide g1 yes 'it is fine' --plan p")
-		args = cli.parser().parse_args(["plan", "events", "--follow", "--plan", "p"])
+		args = cli.parser().parse_args(["x", "gap", "decide", "g1", "yes", "--rationale", "it is fine", "--plan", "p"])
+		self.assertEqual(cli.commandLine(args, args.exposure), "auto x gap decide g1 yes --rationale 'it is fine' --plan p")
+		args = cli.parser().parse_args(["log", "--follow", "--plan", "p"])
 		command = cli.commandLine(args, args.exposure)
-		self.assertEqual(command, "auto plan events --follow --plan p")
+		self.assertEqual(command, "auto log --follow --plan p")
 
 
 if __name__ == "__main__":

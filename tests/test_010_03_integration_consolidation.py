@@ -193,7 +193,7 @@ class ConsolidationTests(unittest.TestCase):
 		from auto.app.operations import EXPOSURES
 		from auto.app.mcp.main import createServer
 		from mcp import types
-		args = parser().parse_args(["consolidation", "run", "auto:agent/ux", "--agent", "reader", "--phases", "[verify]"])
+		args = parser().parse_args(["x", "consolidation", "run", "auto:agent/ux", "--agent", "reader", "--phases", "[verify]"])
 		self.assertEqual(args.agent, "auto:agent/ux")
 		self.assertEqual(args.harnessAgent, "reader")
 		self.assertIn("--agent reader", commandLine(args, args.exposure))
@@ -211,7 +211,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(result.structuredContent["agent"], "auto:agent/ux")
 		(self.root / ".auto").mkdir(exist_ok=True)
 		(self.root / ".auto/config.toml").write_text("[memory.agents.ux]\n")
-		cli = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "consolidation", "status", "auto:agent/ux", "--no-input", "--format", "json"],
+		cli = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "consolidation", "status", "auto:agent/ux", "--no-input", "--format", "json"],
 			cwd=self.root, capture_output=True, text=True, timeout=20)
 		self.assertEqual(cli.returncode, 0, cli.stderr)
 		self.assertEqual(json.loads(cli.stdout)["agent"], "auto:agent/ux")

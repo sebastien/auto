@@ -525,7 +525,7 @@ an affirmative human decision whose pins still match. Each replacement output
 requires a new review. A human can explicitly waive an open or resolved output
 gate with `GapDismiss` and a rationale. Missing gate records do not bypass review.
 
-`auto plan create 'Write notes and commit them' --effects '[vcs.commit]'`
+`auto 'Write notes and commit them' --effects '[vcs.commit]'`
 records the human's explicit effect request against the root definition. The
 grant stops applying if that definition changes. Free-form goal text is not
 automatically classified as an authorization: ambiguous language must not

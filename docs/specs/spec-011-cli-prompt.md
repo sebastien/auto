@@ -39,20 +39,22 @@ otherwise it is non-interactive and behaves as described in
 Command gap: what prevents a command line from being run as typed (not to be
 confused with a plan Gap, see [Plan](spec-004-plan.md)):
 
-- *Missing verb*: a noun without a verb (eg. `auto plan`) → pick a verb of
-  the noun
-- *Missing context*: the operation needs a plan and none resolves → pick a
-  plan of the project
-- *Missing argument*: a required argument is absent (eg. `auto plan create`
-  without a goal)
+- *Missing verb*: an internal noun without a verb (eg. `auto x plan`) →
+  pick a verb of the noun
+- *Missing context*: the operation needs a plan and none resolves (no
+  current plan, and several plans) → pick a plan of the project
+- *Missing argument*: a required argument is absent (eg. `auto new` without
+  a goal). Optional positional arguments are not command gaps: the operation
+  decides what their absence means (eg. `auto answer` asks every open
+  question)
 - *Missing input*: a script uses inputs (see `ScriptInputs` in
   [Script](spec-002-script.md)) that are neither given nor declared with a
   value; each may be skipped
 - *Invalid value*: a value fails validation for an argument with a known
   domain (eg. an unknown task id)
 
-A bare `auto` is not a command gap: it prints the reference, like
-`auto help`.
+A bare `auto` is not a command gap: it shows the current plan, or how to
+start one (see [Interface](spec-007-interface.md)).
 
 Argument descriptor: exposure metadata, per argument:
 
@@ -99,20 +101,29 @@ schemas and of the generated help.
      entered value kept
 3. *Echo*: when gaps were filled, the equivalent command is written on
    stderr, eg.
-   `› auto plan create "Migrate auth to OIDC" --plan auth --budget 'cost: 2'`
+   `› auto x plan create "Migrate auth to OIDC" --budget 'cost: 2'`
 4. *Confirm*: when gaps were filled for an operation with effects,
    `Run? [Y/n]` is asked; declining
-   exits with `130` and nothing run. Read-only operations run directly.
+   exits with `130` and nothing run. Read-only operations run directly, and
+   so does `auto new`, which confirms the plan it proposes instead (see
+   Plan confirmation).
 5. *Run*: the operation runs exactly as if the echoed command had been typed.
 
 In a non-interactive session, command gaps are usage errors (exit `2`, see
 [Interface](spec-007-interface.md)), whose recovery names the missing
 argument and, when it has candidates, lists a few of them.
 
-*Questions*: run questions (`ScriptQuestion`) use the same prompts. A
-question with fields is asked field by field, each with its kind. In a
-non-interactive session, questions are handled as non-interactive (see
-[Interface](spec-007-interface.md)).
+*Questions*: run questions (`ScriptQuestion`) and the open questions (gaps) a
+guided plan reaches use the same prompts. A question with fields is asked
+field by field, each with its kind; a gap with options offers them as
+completions while accepting any answer. A runtime policy request is a yes/no
+confirmation. In a non-interactive session, questions are handled as
+non-interactive (see [Interface](spec-007-interface.md)).
+
+*Plan confirmation*: `auto new` shows the plan it proposes, then asks
+`Run it? [Y]es / [c]hange / [n]o`. `c` asks what should change and proposes
+the refined plan again; `n` keeps the plan without running it (exit `0`,
+`Next: auto go`). `--yes` skips the confirmation.
 
 ## Conventions
 
@@ -135,8 +146,8 @@ non-interactive session, questions are handled as non-interactive (see
 - *Teach*: every filled command is echoed in full before running.
 - *Derived*: no command has a bespoke prompt flow; the need for one is a
   missing descriptor field.
-- *No surprise*: `auto`, `auto help` and `--help` always print the reference,
-  and never prompt.
+- *No surprise*: `auto help` and `--help` always print the reference, and
+  `auto` the current plan; none of them prompts.
 - *Optional*: without the `interactive` extra, the CLI is complete; every
   session is non-interactive.
 

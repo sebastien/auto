@@ -134,7 +134,7 @@ def GapList(context, plan=None, filter: dict | None = None) -> list:
 	return [gap for gap in result if all((taskId(value) in gap["needed_by"] if key == "task" else gap.get(key) == value) for key, value in (filter or {}).items())]
 
 
-def GapDecide(context, gap: str, answer, rationale: str) -> dict:
+def GapDecide(context, gap: str, answer, rationale: str = "") -> dict:
 	"""Resolve a gap with a durable decision; continuation resumes waiting work."""
 	path = planPath(context)
 	store = Knowledge(context)
@@ -176,7 +176,7 @@ def GapDecide(context, gap: str, answer, rationale: str) -> dict:
 	return decision
 
 
-def DecisionRecord(context, plan, question: str, answer, rationale: str, concerns: list | None = None, source: str | None = None) -> dict:
+def DecisionRecord(context, plan, question: str, answer, rationale: str = "", concerns: list | None = None, source: str | None = None) -> dict:
 	"""Record a decision made without a gap, including on an ended plan."""
 	if not isinstance(question, str) or not question.strip() or not isinstance(rationale, str):
 		raise AutoError("Decision requires a question and text rationale")

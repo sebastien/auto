@@ -153,7 +153,7 @@ class ConfigTests(unittest.TestCase):
 			(xdg / "auto/config.toml").write_text('[runtime]\nmodel = "old"\n[features.example]\na = 1\nb = 2\n')
 			(project / ".auto/config.toml").write_text('[runtime]\nprovider = "openai"\n[features.example]\nb = 3\n')
 			environ = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(xdg), "AUTO_MODEL": "env"}
-			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "config", "--model", "flag"], cwd=project, env=environ, text=True, capture_output=True)
+			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "config", "--model", "flag"], cwd=project, env=environ, text=True, capture_output=True)
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn('runtime.engine = "pi" # source=built-in', result.stdout)
 			self.assertIn('runtime.isolated = false # source=built-in', result.stdout)
@@ -162,7 +162,7 @@ class ConfigTests(unittest.TestCase):
 			self.assertIn(f'runtime.provider = "openai" # source={project / ".auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.a = 1 # source={xdg / "auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.b = 3 # source={project / ".auto/config.toml"}', result.stdout)
-			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "config"], cwd=project, env=environ, text=True, capture_output=True)
+			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "config"], cwd=project, env=environ, text=True, capture_output=True)
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn('runtime.model = "env" # source=AUTO_MODEL', result.stdout)
 

@@ -110,7 +110,7 @@ class FrontendTests(unittest.TestCase):
 			script.write_text("Say hello")
 			environ = {key: value for key, value in os.environ.items() if not key.startswith("AUTO_")}
 			environ.update({"HOME": str(root), "XDG_CONFIG_HOME": str(root), "PATH": str(root) + os.pathsep + os.environ["PATH"]})
-			command = [sys.executable, "-m", "auto.app.cli.main", "script", "run", str(script), "--engine", "llm"]
+			command = [sys.executable, "-m", "auto.app.cli.main", "run", str(script), "--engine", "llm"]
 			text = subprocess.run(command, capture_output=True, text=True, env=environ, cwd=root, check=False)
 			self.assertEqual(text.returncode, 0, text.stderr)
 			self.assertEqual(text.stdout, "hello world")

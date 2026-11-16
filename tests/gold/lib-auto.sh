@@ -158,7 +158,7 @@ function auto-yaml {
 # Function: auto-plan-status
 # Saves `plan status` JSON to `$STATUS`.
 function auto-plan-status {
-	auto-step status auto plan status --plan "$PLAN" --format json
+	auto-step status auto status --plan "$PLAN" --format json
 	STATUS="$LAST_OUT"
 	[ "$LAST_STATUS" = 0 ] || test-fail "plan status exited $LAST_STATUS: $(auto-tail)"
 }
@@ -166,7 +166,7 @@ function auto-plan-status {
 # Function: auto-plan-events
 # Saves all plan events (JSON lines) to `$EVENTS`.
 function auto-plan-events {
-	auto-step events auto plan events --plan "$PLAN" --since 0 --format json
+	auto-step events auto log --plan "$PLAN" --since 0 --format json
 	EVENTS="$LAST_OUT"
 	[ "$LAST_STATUS" = 0 ] || test-fail "plan events exited $LAST_STATUS: $(auto-tail)"
 }
@@ -203,7 +203,7 @@ function gold-answer-default {
 # effect grants given at plan creation should have prevented.
 function auto-answer-gaps {
 	local gaps count index gap id kind question
-	auto-step gaps auto gap list --plan "$PLAN" --format json
+	auto-step gaps auto x gap list --plan "$PLAN" --format json
 	[ "$LAST_STATUS" = 0 ] || {
 		test-fail "gap list exited $LAST_STATUS: $(auto-tail)"
 		return 1
@@ -224,7 +224,7 @@ function auto-answer-gaps {
 			# human would: the run resumes and the model continues without them.
 			if jq -e --arg pattern "$GOLD_DECLINE" '(.runtime_policy.effect // "") | test($pattern)' <<<"$gap" >/dev/null; then
 				test_log_message "declining $id: $question"
-				auto-step decline auto gap decide "$id" "$(auto-yaml reject)" "Not needed for this test" --plan "$PLAN" --format json
+				auto-step decline auto x gap decide "$id" "$(auto-yaml reject)" --rationale "Not needed for this test" --plan "$PLAN" --format json
 				auto-expect-status 0 || return 1
 				GOLD_DECLINED+=("$id")
 				continue
@@ -233,7 +233,7 @@ function auto-answer-gaps {
 			return 1
 		fi
 		test_log_message "gap $id ($kind): $question"
-		auto-step decide auto gap decide "$id" "$(auto-yaml "$(gold-answer "$gap")")" "Scripted gold-test answer" --plan "$PLAN" --format json
+		auto-step decide auto x gap decide "$id" "$(auto-yaml "$(gold-answer "$gap")")" --rationale "Scripted gold-test answer" --plan "$PLAN" --format json
 		auto-expect-status 0 || return 1
 		GOLD_GAPS+=("$id")
 	done
@@ -244,7 +244,7 @@ function auto-answer-gaps {
 function auto-continue {
 	local round
 	for ((round = 1; round <= GOLD_MAX_ROUNDS; round++)); do
-		auto-step continue auto plan continue --plan "$PLAN" --format json --no-input
+		auto-step continue auto x plan continue --plan "$PLAN" --format json --no-input
 		case "$LAST_STATUS" in
 		0)
 			test-ok "plan ended after $round continuation(s)"

@@ -80,8 +80,8 @@ class MemoTests(unittest.TestCase):
 			first = DecisionRecord(ctx, plan, "Which database?", "sqlite", "Simple deployment", source="chat:1")
 			store = MemoKnowledge(root)
 			self.assertNotIn("gap", store.get(first["identity"]))
-			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "decision", "record",
-				"Which format?", "{format: markdown}", "Readable", "--plan", str(plan),
+			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "decide",
+				"Which format?", "{format: markdown}", "--rationale", "Readable", "--plan", str(plan),
 				"--concerns", "[documentation]", "--source", "chat:2", "--format", "json", "--no-input"],
 				cwd=root, capture_output=True, text=True, check=False)
 			self.assertEqual(result.returncode, 0, result.stderr)

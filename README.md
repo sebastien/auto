@@ -1,37 +1,115 @@
 # Auto
 
-Composable agent scripts, persisted tasks and revisioned plans. The contracts
-live in [`docs/specs`](docs/specs); implementation notes are in
-[`docs/implementation.md`](docs/implementation.md).
+Auto turns a goal into a plan of tasks, runs them with an agent, asks you when
+it needs a decision, and learns from what happened.
 
-## Setup
+```
+GOAL → PLAN → TASKS → OUTPUTS → LEARNING
+         ↑                         │
+         └──── refines the plan ───┘
+```
 
-Requires Python 3.14+ and a configured Pi, OpenCode V2, fx or LLM CLI.
+## Install
+
+Requires Python 3.14+ and one agent engine: Pi (the default), OpenCode V2,
+Vercel's [fx](https://fx.sh) or the [llm](https://llm.datasette.io) CLI.
 
 ```sh
 # Installs the sibling sebastien/memo checkout (../memo), which stores plans:
-uv sync --extra mcp
-bin/auto help
-bin/auto catalogue list
+uv sync --extra mcp --extra interactive
+bin/auto init   # optional: pick an installed engine and save it
 ```
 
 Memo is a separate project, not the unrelated packages sharing its name on
 package indexes: `uv sync` installs it from the sibling `../memo` checkout.
+The OpenCode engine also needs Node.js 22+ and its bridge dependencies:
+`npm ci --prefix src/py/auto/integration/opencode`.
 
-The OpenCode engine also requires Node.js 22+ and its V2 client bridge dependencies:
+## Start with a goal
 
 ```sh
-npm ci --prefix src/py/auto/integration/opencode
+$ auto "Document the project architecture"
+  › Planning
+Plan pln-000-document-project-architecture  Document the project architecture
+   1 tsk-survey-modules    Map packages and their responsibilities
+   2 tsk-draft-overview    Write the overview  ← tsk-survey-modules
+   3 tsk-review            Review the document  ← tsk-draft-overview
+Run it? [Y]es / [c]hange / [n]o ›
+● tsk-survey-modules
+✓ tsk-survey-modules  41s · $0.08
+● tsk-draft-overview
+Which diagram format should the overview use?
+Answer › mermaid
+✓ tsk-draft-overview  1m50s · $0.31
+● tsk-review
+✓ tsk-review  38s · $0.07
+
+Done · 3/3 tasks · 3m09s · $0.46 · 1 decision
+Results:
+  ✓ tsk-survey-modules  Six packages: app, features, integration, runtime, utils…
+  ✓ tsk-draft-overview  Wrote docs/architecture.md
+  ✓ tsk-review          The overview matches the code.
+Next: auto change "…" to refine it, or auto log to review it
 ```
 
-For an installed Python package, use its integration directory instead:
-`.venv/bin/python -c 'import auto.integration.opencode as m; print(m.__path__[0])'`.
-The bridge uses `@opencode/client` for background service discovery and
-authentication, and receives request bodies through stdin rather than arguments.
+Auto plans the goal, shows you the plan, and runs it once you agree. When a
+task needs an answer, Auto asks you and carries on. Choose `c` to say what
+should change before anything runs, or `n` to keep the plan for later.
+
+Plans are kept in `.auto/` at the root of the project, which Auto creates the
+first time. The plan you created or selected last is the *current plan*: the
+commands below act on it.
+
+## Where am I?
+
+```sh
+$ auto
+pln-000-document-project-architecture  Document the project architecture
+Active · 1/3 tasks · 41s · $0.08
+
+  ✓ tsk-survey-modules  Map packages and their responsibilities
+  ? tsk-draft-overview  Write the overview
+  ○ tsk-review          Review the document  ← tsk-draft-overview
+
+Needs you:
+  1. Which diagram format should the overview use?
+
+Next: auto answer
+```
+
+Every view ends with the command you most likely want next.
+
+## The commands
+
+| Command | What it does |
+|---|---|
+| `auto "GOAL"` | Plan a goal, confirm it, run it and summarise (same as `auto new "GOAL"`) |
+| `auto` | Show where the current plan stands and what needs you (same as `auto status`) |
+| `auto go` | Continue the plan until it ends or needs you; `--task ID` runs a task again |
+| `auto answer` | Answer the open questions, one by one; or `auto answer 1 "markdown"` |
+| `auto change "WHAT"` | Change the plan, or one task with `--task ID` |
+| `auto pause` / `auto stop` | Pause once the current task finishes, or stop it now |
+| `auto resume` | Release a paused or stopped plan and continue it |
+| `auto log` | The plan's history; `--follow` keeps watching it |
+| `auto show TASK` | A task, its latest attempt and its output |
+| `auto plans` / `auto use PLAN` | List the project's plans, choose the current one |
+| `auto decide "QUESTION" "ANSWER"` | Record a decision made outside a question |
+| `auto learned` | What memory agents have learned and what awaits them |
+| `auto run FILE.md` | Run a Markdown script on its own (same as `auto FILE.md`) |
+| `auto init` | Choose an engine and write `.auto/config.toml` |
+
+Each command has `--help`. `--plan ID` selects another plan for one command
+(an ID or its number, eg. `--plan 000`); `AUTO_PLAN` does the same for a
+shell. `--format json` gives structured output, and `--yes` runs a new plan
+without asking. Without a terminal, or with `--no-input`, Auto never prompts:
+a plan that needs an answer stops and waits for `auto answer NUMBER ANSWER`.
+
+Exit statuses: `0` success, `1` failure, `2` invalid usage, `3` waiting on
+you (a question, a pause, the budget), `124` timeout, `130` interrupted.
 
 ## Scripts
 
-Create `hello.md`:
+A script is a Markdown prompt with inputs, run without a plan:
 
 ```markdown
 ---
@@ -44,15 +122,49 @@ Greet {{ name }} in one sentence.
 ```
 
 ```sh
-bin/auto script expand ./hello.md --input name=reader
-bin/auto script run ./hello.md --engine pi --format json
-# Shorthand for script run (also accepts absolute paths):
-bin/auto ./hello.md --engine pi --format json
+auto ./hello.md --input name=reader
 ```
 
-Pi is the default engine. Set defaults in `~/.auto/config.toml`,
-`$XDG_CONFIG_HOME/auto/config.toml` (normally `~/.config/auto/config.toml`),
-or the project's `.auto/config.toml`, in increasing order of precedence:
+## Learning
+
+Plans can be watched by *memory agents*: personas whose observations of runs
+and decisions are kept in Memo and consolidated into learnings that inform
+later plans. Enable one per project:
+
+```toml
+[memory]
+default_agents = ["auto:agent/ui-designer"]
+
+[memory.agents.ui-designer]
+# agent defaults to "agent-ui-designer/agent:UiDesigner"
+# triggers = ["plan-ended", "decision", "backlog:24"]
+```
+
+New plans take `default_agents` unless `--agents` is given (`--agents '[]'`
+selects none). `auto learned` shows what each agent has consolidated and what
+awaits it. See [Memorisation](docs/specs/spec-010-memorisation.md).
+
+## How it works
+
+A *plan* is made of *tasks*: Markdown scripts with a contract (dependencies,
+checks of their output). Auto's Elaborator writes the plan from the goal and
+refines it as tasks complete. A task that needs something it does not have
+raises a *question* (a gap); your answer is kept as a *decision*, with its
+rationale. Each attempt at a task is a *run*, with its journal and receipt.
+
+`.auto/` is a Memo store: each plan is a namespace whose task definitions
+(`tsk/`), questions (`gap/`) and decisions (`dec/`) are Memo documents,
+readable with `memo -m .auto`, beside its runs and journals. The contracts are
+in [`docs/specs`](docs/specs) and implementation notes in
+[`docs/implementation.md`](docs/implementation.md).
+
+## Reference
+
+### Configuration
+
+Settings are read from `~/.auto/config.toml`, `$XDG_CONFIG_HOME/auto/config.toml`
+(normally `~/.config/auto/config.toml`) and the project's `.auto/config.toml`,
+in increasing order of precedence:
 
 ```toml
 [runtime]
@@ -66,101 +178,52 @@ temperature = 0.2
 enabled = true
 ```
 
-Nested tables are merged and available to features through the runtime context.
-
-Memory agents are configured separately from an engine's harness agent:
-
-```toml
-[memory]
-default_agents = ["auto:agent/ui-designer"]
-
-[memory.agents.ui-designer]
-# agent defaults to "agent-ui-designer/agent:UiDesigner"
-# triggers = ["plan-ended", "decision", "backlog:24"]
-```
-
-Plan creation snapshots `default_agents` unless `--agents` is given;
-`--agents '[]'` selects none. Defining an agent alone does not enable it by
-default. Plan runs receive bounded Memo wake layers and performer-owned capture
-instructions. The configured Memo agent and its private observation log must
-already exist with retained identities; consolidation creates no learning stores
-implicitly.
-
-```sh
-auto consolidation status auto:agent/ui-designer
-auto consolidation run auto:agent/ui-designer --phases '[verify, derive]'
-```
-
-Consolidation uses an agent-scoped task run, validates its change set through
-Memo in dry mode, and stages application for recovery after interruption.
-Concurrent requests coalesce. Project and agent allowances reserve capacity
-before execution and charge measured usage separately from plan budgets. An
-explicit `--overrideAllowance` can override project caps while preserving user
-restrictions and the per-run budget. Allowance-blocked requests stay pending.
-Decision inputs use event cursors that advance only after application; existing
-staged applications are reconciled before a new run. Optional `triggers` default
-to `[]`. Selected agents can request consolidation on plan completion, relevant
-decisions or a `backlog:N` threshold checked after task completion.
-
-Successful CLI operations flush their primary output before checking and
-processing housekeeping. MCP checks run in a separate task after the tool
-result is prepared. Each invocation processes at most one pending pass per
-agent; requests arriving during a pass remain pending for another invocation.
-Failures are retained in agent maintenance status and do not replace the
-command's result. There is no housekeeping daemon.
-
-Project owners can configure interface record resolvers:
-
-```toml
-[resolvers]
-auto-agent = "auto-agent excerpt"
-```
-
-Auto runs the command with `REFERENCE --budget BYTES` as separate arguments,
-without a shell, from the project directory. It expects a JSON excerpt object.
-Exit `3` or a missing executable means unavailable; other errors fail resolution.
-Commands and output remain subject to execution and byte limits.
-
 Execution defaults belong under `[runtime]` (or `runtime:` in YAML); flat
-runtime settings and unknown keys within that section are rejected. Script
-frontmatter and CLI flags remain flat.
+runtime settings and unknown keys within that section are rejected. Nested
+tables are merged and available to features through the runtime context.
 Existing `config.yaml` files remain supported; TOML takes precedence over YAML
 at the same location. Script metadata overrides file defaults; `AUTO_ENGINE`,
-`AUTO_PROVIDER`, `AUTO_MODEL`, `AUTO_AGENT`, and corresponding command flags
+`AUTO_PROVIDER`, `AUTO_MODEL`, `AUTO_AGENT`, and the corresponding flags
 override script metadata (flags take priority over environment variables).
-OpenCode also accepts the existing `provider/model` form when `provider` is
-unset. Separate provider selection is not supported by the Pi or llm integrations.
-Scripts execute without creating plan/run storage.
+OpenCode also accepts the `provider/model` form when `provider` is unset;
+Pi and llm do not support a separate provider.
+
+When no engine is configured and Pi is not installed, Auto uses the first
+installed engine and says so; `auto init` saves the choice.
+
+`auto x config` prints the effective configuration and the source of each
+value, secrets included: take care when sharing it.
+
+### Engines
 
 Vercel's [fx CLI](https://fx.sh/docs/using-fx/fx-ask) is available with
-`--engine fx`. Install fx separately and authenticate with `fx login` or set
-`AI_GATEWAY_API_KEY`. Auto runs `fx ask --json --no-save`, preserving fx's
-permission checks and ambient project instructions, skills and MCP configuration.
-`provider` selects an fx connection (`gateway`, `codex`, `grok` or a configured
-custom connection); `model` selects its model. System-prompt overrides are
-supported, but named agents, temperature overrides and `isolated: true` are not.
-Output, tool summaries and main-agent token counts arrive only when fx exits;
-cost is not reported. Token/cost budgets are rejected; timeouts and cancellation
-remain supported. Sessions are not saved, so fx subagents are unavailable.
-The adapter does not bridge live permission approvals or enforce Auto effect
-policies. It never enables fx's full-access mode on its own.
+`--engine fx`. Authenticate with `fx login` or set `AI_GATEWAY_API_KEY`. Auto
+runs `fx ask --json --no-save`, preserving fx's permission checks and ambient
+project instructions, skills and MCP configuration. `provider` selects an fx
+connection (`gateway`, `codex`, `grok` or a configured custom connection);
+`model` selects its model. System-prompt overrides are supported, but named
+agents, temperature overrides and `isolated: true` are not. Output, tool
+summaries and main-agent token counts arrive only when fx exits; cost is not
+reported. Token/cost budgets are rejected; timeouts and cancellation remain
+supported. The adapter does not bridge live permission approvals or enforce
+Auto effect policies, and never enables fx's full-access mode on its own.
 
-Run `auto config` to print the effective configuration and the source of each
-value. Terminal output is shown as a table; set `NO_COLOR` to disable color.
-This includes configured values such as secrets, so take care when sharing its
-output. Script-specific metadata is not included.
+The OpenCode bridge uses `@opencode/client` for background service discovery
+and authentication, and receives request bodies through stdin. For an
+installed package, find its directory with
+`.venv/bin/python -c 'import auto.integration.opencode as m; print(m.__path__[0])'`.
 
-### Usage
+### Usage and cost
 
 Every engine run in a project with an `.auto` directory appends a line to
 `.auto/usage.jsonl`: engine, provider, model, status, duration, tokens and
 cost. Set `journal = false` in configuration to disable it.
 
 ```sh
-auto usage                          # totals by engine, provider and model
-auto usage --by day,model --since 7d
-auto usage --where plan=docs --entries
-auto usage --format tsv > usage.tsv # or --format json
+auto x usage                          # totals by engine, provider and model
+auto x usage --by day,model --since 7d
+auto x usage --where plan=pln-000 --entries
+auto x usage --format tsv > usage.tsv # or --format json
 ```
 
 Groups and filters accept `day`, `month`, `project`, `plan`, `kind`, `run`,
@@ -168,64 +231,54 @@ Groups and filters accept `day`, `month`, `project`, `plan`, `kind`, `run`,
 when no run in a group reported usage; `PARTIAL` counts runs whose usage is
 missing or incomplete (`llm`, `fx`), so their totals are lower bounds.
 
-## Plans
+### Consolidation
 
 ```sh
-bin/auto plan create 'Document the project architecture' --engine pi
-bin/auto plan list
-bin/auto plan status --plan 000
-bin/auto plan continue --plan 000
-bin/auto plan events --plan 000 --since 0 --follow --format json
-bin/auto plan hold Pause 'Review the current result' --plan 000
-bin/auto plan release 'Ready to proceed' --plan 000
-bin/auto task run TASK_ID --plan 000
-bin/auto gap list --plan 000
-bin/auto gap decide GAP_ID 'answer' 'Reason for the choice' --plan 000
-bin/auto decision record 'Which document format?' 'markdown' 'Easy to review' --concerns '[documentation]' --source 'conversation:review' --plan 000
-bin/auto plan refine 'Address the review findings' --plan 000
+auto x consolidation status auto:agent/ui-designer
+auto x consolidation run auto:agent/ui-designer --phases '[verify, derive]'
 ```
 
-Plans live under `.auto/pln-NNN-slug/`, eg. `pln-000-document-project-architecture`,
-where `NNN` is an incremental hex number; `--plan` takes the full id or just
-the number. `.auto/` is a Memo store: each plan is a namespace whose task
-definitions (`tsk/`), gaps (`gap/`) and decisions (`dec/`) are Memo documents,
-readable with `memo -m .auto`, beside its runs and journals. `AUTO_PLAN`
-selects a plan for subsequent commands. Plan creation
-and refinement execute the built-in Elaborator and its checks. A Waiting
-result requires a decision before execution can resume. `plan continue` runs
-ready tasks and aggregates (including `root`) sequentially until the plan ends,
-needs a decision, fails, reaches its budget or is held. Failed runs are not
-retried automatically. `task run` remains available for explicit attempts.
+The configured Memo agent and its private observation log must already exist
+with retained identities; consolidation creates no learning stores implicitly.
+Consolidation uses an agent-scoped task run, validates its change set through
+Memo in dry mode, and stages application for recovery after interruption.
+Concurrent requests coalesce. Project and agent allowances reserve capacity
+before execution and charge measured usage separately from plan budgets.
+`--overrideAllowance` overrides project caps while preserving user
+restrictions and the per-run budget. Allowance-blocked requests stay pending.
+Decision inputs use event cursors that advance only after application.
+Selected agents can request consolidation on plan completion, relevant
+decisions or a `backlog:N` threshold checked after task completion.
 
-Deciding a gap records the answer without starting execution. A running
-continuation resumes the waiting run at its next selection; otherwise run
-`plan continue` when ready. The Python `RunAnswer` operation explicitly answers
-and resumes one run, and terminal question prompts use it.
+Housekeeping runs after a successful command has printed its result, at most
+one pending pass per agent; failures are kept in the agent's maintenance status
+and never replace the command's result. There is no daemon.
 
-`Pause` lets the current run finish; `Stop` cancels it. Holds persist, and
-releasing one starts no work. Plan events cover manual operations as well as
-continuations and can be followed or resumed from their sequence cursor.
+### Interface resolvers
 
-Use `decision record` for choices made outside a gap. It records the question,
-answer, rationale, author and optional concerns and source in Memo and the plan
-journal. Decisions can be recorded after a plan ends without reopening it.
+```toml
+[resolvers]
+auto-agent = "auto-agent excerpt"
+```
 
-`--format json` provides structured output. Exit statuses: `0` success,
-`1` failure, `2` invalid CLI usage, `3` Waiting/Blocked/Skipped, `124` timeout,
-`130` cancellation. Each command has `--help`.
-Continuation stops other than an ended or failed plan use pending status `3`.
+Auto runs the command with `REFERENCE --budget BYTES` as separate arguments,
+without a shell, from the project directory, and expects a JSON excerpt object.
+Exit `3` or a missing executable means unavailable; other errors fail
+resolution. Commands and output remain subject to execution and byte limits.
 
-In a terminal, execution shows a transient activity line on stderr with elapsed
-time and reported cost; task budgets are shown when configured. Cost and token
-usage depend on what the selected engine reports. Redirected output stays plain;
-`NO_COLOR` disables color and `TERM=dumb` disables terminal progress.
+### Internals
 
-## MCP and Python
+`auto x` holds the operations behind the main commands, for inspection,
+recovery and agents: `auto x plan create|continue|hold|release`,
+`auto x task run`, `auto x run get|output|journal`, `auto x gap list|decide`,
+`auto x policy show`, `auto x catalogue list|get`,
+`auto x elaboration validate`, `auto x audit validate`,
+`auto x script expand`, `auto x config`, `auto x usage` and `auto x mcp`.
 
-`bin/auto mcp` serves stdio MCP. It exposes script execution, plan status,
-gap listing, catalogue reads and elaboration validation. The Python operations
+`auto x mcp` serves stdio MCP: script runs, plan status, events, plans, tasks,
+gaps, policy, learning, catalogue reads and validation. The Python operations
 under `auto.features` additionally expose lifecycle, revision, repair and
-reassessment operations; CLI and MCP delegate to those operations.
+reassessment operations; the CLI and MCP delegate to them.
 
 ## Verification
 
