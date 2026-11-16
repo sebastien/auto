@@ -36,8 +36,8 @@ cover:
 - Task definitions are written by Auto's plan commits, which stage them with
   the journal, rather than through Memo: Memo reads them as documents without
   its own timestamps.
-- Auto fields are stored as front matter properties; free text (question,
-  rationale) is also rendered in the body for readability.
+- Auto fields are stored as front matter properties, except free text
+  (question, rationale), which is the body.
 
 ## Format
 
@@ -48,14 +48,15 @@ Entries are stored in the plan's namespace, named after their id:
 {plan}/dec:{id}
 ```
 
-The id is written as a Memo topic (lowercase); the exact id is the `id`
-property. A plan id that is not a Memo namespace (eg. starting with a digit)
+The id is written as a Memo topic (lowercase). The exact id and the plan are
+parts of the `identity` and are not stored again; empty fields (eg. no
+`concerns`) are not stored either. The question, then the rationale under a
+`## Rationale` heading, are the body. A plan id that is not a Memo namespace (eg. starting with a digit)
 is prefixed with `pln-`.
 
 ```markdown
 ---
 identity: auto:pln-00a-release-notes/gap/gap-20261105T101230Z-3f9a1c2e
-plan: auto:pln-00a-release-notes
 gap_kind: approval
 status: Open
 revision: rev-20261105T101230Z-3f9a1c2e
@@ -66,9 +67,7 @@ subjects:
     digest: sha256:9f2c…
 options: [approve, reject]
 ---
-# Approve the release notes summary
-
-Question text, as raised.
+Approve the release notes summary? (The question, as raised.)
 ```
 
 The Gap `kind` (`input`, `information`, `decision`, `approval`) is stored as

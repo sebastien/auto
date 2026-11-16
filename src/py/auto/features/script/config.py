@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from auto.runtime.config import validateConfig as validateConfig
 from auto.utils.data import AutoError
 
 # -----------------------------------------------------------------------------

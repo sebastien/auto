@@ -36,14 +36,10 @@ Breaks the goal of a task into child tasks and gaps. `goal`, `state` and
 
 ## Process
 
-You are elaborating a task: breaking its goal down into child tasks that,
-once run, deliver it. Your output is a TaskElaboration, applied to the plan
-after validation.
-
-The elaborated task is `{{ target }}`: set `task: {{ target }}` in the
-frontmatter. Its children are new tasks, with ids not used in the plan (never
-`{{ target }}` itself). Task ids carry a `tsk-` prefix, which Auto adds when
-you omit it: `build-site` and `tsk-build-site` name the same task.
+You are elaborating task `{{ target }}`: breaking its goal down into child
+tasks that, once run, deliver it. Your output is a TaskElaboration, applied
+to the plan after validation: set `task: {{ target }}` in its frontmatter.
+The children are new tasks, with ids not used in the plan.
 
 ### Goal
 
@@ -66,9 +62,8 @@ you omit it: `build-site` and `tsk-build-site` name the same task.
 No context was given beyond the goal and the plan inputs.
 {% endif %}
 
-Explore the context with your tools as much as the structure of the plan
-requires. List everything you relied on in the `context` field of your
-output.
+Explore it with your tools as far as the plan's structure requires, and list
+everything you relied on in the `context` field of your output.
 
 {% if methodology != blank %}
 ### Methodology
@@ -106,15 +101,14 @@ of the task it affects.
 
 {{ policy }}
 
-Declare each task's expected effects. An effect without a rule in `rules`
-follows the `default` rule. An effect listed in `grants` (for the `plan`, or
-for that `task:ID`) is already authorised: raise no gap for it, whatever its
-rule. Otherwise, do not plan around denied effects; request a human
-decision for a grant. Effects requiring confirmation need an approval
-checkpoint pinned to the task definition. Each policy gap must list
-its effects in `effects`, name the affected task in `needed_by`, and mention
-each effect and its rule (`confirm` or `deny`) in its question. For an approval,
-include `subjects: ["task:ID/definition"]`; Auto pins the proposed definition.
+Declare each task's expected `effects`. An effect's rule is in `rules`, else
+`default`. An effect in `grants` (for the `plan`, or that `task:ID`) is
+authorised whatever its rule: raise no gap for it. Otherwise, do not plan
+around a `deny` effect: raise a `decision` gap requesting a grant; a
+`confirm` effect needs an `approval` gap (a checkpoint) with `subjects:
+["task:ID/definition"]`, which Auto pins to the proposed definition. Each
+such gap lists its `effects`, names the task in `needed_by`, and states each
+effect and its rule (`confirm` or `deny`) in its question.
 
 @./elaborate.instructions.md
 

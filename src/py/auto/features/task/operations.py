@@ -22,13 +22,13 @@ from auto.features.plan.operations import PlanRevise, dependencyGraph, tasksAt
 from auto.features.plan.policy import EFFECT, PolicyResolve, runtimeRule, shellPermitted, taskPolicyBlocked
 from auto.features.plan.references import latestRun, readReceipt, runDirectories
 from auto.features.plan.store import exclusive, journal, locked, planPath, recover, runPlanPath
-from auto.features.script.config import commands, validateConfig
+from auto.features.script.config import commands
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, conform, executePrepared, prepare
 from auto.features.script.templates import Renderer
 from auto.features.script.sources import ScriptSources
 from auto.features.task.model import Run, Task, canonicalTask, createRunFromDict, createTaskFromDict, createTaskFromText
-from auto.runtime.config import RUNTIME_DEFAULTS
+from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
 from auto.runtime.operations import Engine, Knowledge, Resolve, Shell, Value

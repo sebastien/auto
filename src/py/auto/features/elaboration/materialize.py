@@ -8,7 +8,7 @@ from auto.features.task.model import Task, createTaskFromText, taskText
 from auto.features.plan.model import createPlan
 from auto.features.plan.policy import shellPermitted
 from auto.features.task.operations import TaskGet
-from auto.features.script.config import validateConfig
+from auto.runtime.config import validateConfig
 from auto.features.elaboration.parameters import resolveParameters
 from auto.features.elaboration.metadata import MetadataProjection
 from auto.features.elaboration.templates import ParameterTemplate, Unknown

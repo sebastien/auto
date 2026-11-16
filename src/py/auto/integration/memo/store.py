@@ -17,6 +17,9 @@ from auto.utils.layout import KINDS, namespace, stem, storePath
 
 # Record fields kept as the entry body: the question, then a rationale section.
 TEXT = ("question", "rationale")
+# Record fields derived from the identity, and fields kept even when empty.
+DERIVED = ("id", "plan")
+KEPT = ("answer",)
 RATIONALE = "## Rationale\n\n"
 
 
@@ -82,6 +85,9 @@ class MemoKnowledge:
 		# Memo owns these fields; they are neither Auto payload nor write intent.
 		value = {key: item for key, item in entry.meta.items() if key not in {"uuid", "created", "updated"}}
 		value.update(bodyText(entry.body or "", entry.kind == KINDS["decision"]))
+		# The plan and id are parts of the identity (`auto:P/gap/ID`), stated once.
+		plan, _, id = str(value.get("identity", "")).rpartition("/")
+		value = {"id": id, "plan": plan.rsplit("/", 1)[0], **value}
 		if "needed_by" in value:
 			value["needed_by"] = [ref.removeprefix(value["plan"] + "/task/") for ref in value["needed_by"]]
 		return {**value, "digest": entry.revision()}
@@ -100,7 +106,8 @@ class MemoKnowledge:
 	def list(self, plan: str, kind: str) -> list:
 		name = namespace(plan.removeprefix("auto:"))
 		self.records.invalidate()
-		return [self.record(entry) for entry in self.records.listEntries(name, KINDS[kind]) if entry.meta.get("plan") == plan]
+		records = [self.record(entry) for entry in self.records.listEntries(name, KINDS[kind])]
+		return [record for record in records if record["plan"] == plan]
 
 	def get(self, ref: str) -> dict:
 		entry = self.entry(ref)
@@ -110,7 +117,8 @@ class MemoKnowledge:
 
 	def write(self, kind: str, value: dict, expected: str = "") -> None:
 		from memo.features.repository.layout import entryForId
-		value = {key: item for key, item in value.items() if key != "digest"}
+		# Empty fields are not stored: an absent field reads as empty.
+		value = {key: item for key, item in value.items() if key != "digest" and (key in KEPT or item not in (None, [], {}))}
 		current = self.entry(value["identity"])
 		if current is not None:
 			if {key: item for key, item in self.record(current).items() if key != "digest"} == value:
@@ -123,9 +131,9 @@ class MemoKnowledge:
 			current = entryForId(self.entryId(value["plan"], kind, value["id"]))
 		# Free text is the body, stated once; properties hold the structured fields.
 		body = textBody(value)
-		stored = {key: item for key, item in value.items() if key not in TEXT}
+		stored = {key: item for key, item in value.items() if key not in {*TEXT, *DERIVED}}
 		if "needed_by" in stored:
-			stored["needed_by"] = [ref if ref.startswith("auto:") else stored["plan"] + "/task/" + ref for ref in stored["needed_by"]]
+			stored["needed_by"] = [ref if ref.startswith("auto:") else value["plan"] + "/task/" + ref for ref in stored["needed_by"]]
 		try:
 			self.records.put(current.clone(meta={**current.meta, **stored}, body=body), expected=expected)
 		except Exception as error:

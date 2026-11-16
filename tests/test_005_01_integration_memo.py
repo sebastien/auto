@@ -61,6 +61,13 @@ class MemoTests(unittest.TestCase):
 			self.assertEqual(text.count("Which one?"), 1)
 			self.assertNotIn("question:", text)
 			self.assertEqual(GapList(ctx)[0]["question"], "Which one?\nPick carefully.")
+			# The plan and id are read from the identity; empty fields are not written.
+			decisionText = next(plan.glob("dec/*.md")).read_text()
+			for text in (text, decisionText):
+				self.assertNotRegex(text, r"(?m)^(plan|id|concerns):")
+			self.assertEqual((GapList(ctx)[0]["plan"], GapList(ctx)[0]["id"]), ("auto:demo", gap))
+			decision = MemoKnowledge(root).get(f"auto:demo/decision/{GapList(ctx)[0]['decision']}")
+			self.assertEqual((decision["answer"], decision["rationale"], decision.get("concerns", [])), ("first", "", []))
 
 	def testStandaloneDecisionAndCliRoundTrip(self):
 		with tempfile.TemporaryDirectory() as directory:

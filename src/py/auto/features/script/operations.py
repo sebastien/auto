@@ -11,15 +11,15 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from liquid.exceptions import LiquidError
 
-from auto.features.script.config import commands, composedMeta, validateConfig
+from auto.features.script.config import commands, composedMeta
 from auto.features.script.model import Script, createScript
 from auto.features.script.templates import Renderer
 from auto.features.usage.operations import UsageRecord
-from auto.runtime.config import RUNTIME_DEFAULTS
+from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
 from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
-from auto.utils.data import AutoError, document, documentText, jsonText, merge, timestamp
+from auto.utils.data import AutoError, document, documentText, jsonText, merge, promptText, timestamp
 
 
 # -----------------------------------------------------------------------------
@@ -40,6 +40,23 @@ def loadScript(context: Context, script: Script | str | dict) -> Script:
 	return createScript(content.text, content.path, ref=content.ref)
 
 
+def contractText(output: dict) -> str:
+	"""Render an output contract for a model: its format, then its template and schema verbatim."""
+	from auto.features.script.templates import fence
+	parts = [f"Format: {output['format']}"]
+	if "template" in output:
+		template = output["template"] if isinstance(output["template"], str) else jsonText(output["template"])
+		# A template given as one fenced block is shown as is; others are fenced.
+		fenced = re.fullmatch(r"(`{3,}).*\n[\s\S]*\n\1\s*", template)
+		parts.append("Template:\n\n" + (template.strip() + "\n" if fenced else fence(template, output["format"])))
+	if "schema" in output:
+		parts.append("Schema:\n\n" + fence(jsonText(output["schema"]), "json"))
+	others = {key: item for key, item in output.items() if key not in {"format", "template", "schema"}}
+	if others:
+		parts.append(promptText(others))
+	return "\n\n".join(part.rstrip("\n") for part in parts) + "\n"
+
+
 def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
 	"""Render a script and its output contract for one engine request."""
 	loaded = loadScript(context, script)
@@ -58,7 +75,7 @@ def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
 		if "schema" in output:
 			Draft202012Validator.check_schema(output["schema"])
 		if output:
-			prompt += "\n\n## Output contract\n\n" + jsonText(output)
+			prompt += "\n\n## Output contract\n\n" + contractText(output)
 		return {"prompt": prompt, "config": {key: renderer.config[key] for key in RUNTIME_KEYS if key in renderer.config}, "output": output}
 	except (LiquidError, ValueError, SchemaError) as error:
 		raise AutoError(f"{loaded.path}: {error}") from error

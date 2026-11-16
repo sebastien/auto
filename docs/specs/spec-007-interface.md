@@ -73,8 +73,9 @@ auto {noun} {verb} [ARGUMENT…] [--{name} VALUE…]
   by id, resolved as `.auto/{plan}/` in the project (see
   [Plan](spec-004-plan.md)), or by path.
 - *Output*: results are written on stdout, diagnostics on stderr. `--format`
-  selects `text` (default, for humans), `markdown` (for inclusion in prompts)
-  or `json` (stable, following the model). Streams are rendered as text, or
+  selects `text` (default, for humans), `markdown` (for inclusion in prompts:
+  fenced YAML, or one line per entry for catalogue lists) or `json` (stable,
+  following the model). Streams are rendered as text, or
   as JSON lines with `--format json`, one event per line.
 - *Interaction*: in an interactive session, missing verbs, arguments, context
   and inputs are prompted for instead of failing, and questions are prompted;

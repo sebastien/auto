@@ -8,7 +8,8 @@ from auto.features.elaboration.parameters import resolveParameters
 from auto.features.plan.model import createPlan
 from auto.features.script.sources import ScriptSources
 from auto.features.script.model import Script
-from auto.features.script.config import composedMeta, validateConfig
+from auto.features.script.config import composedMeta
+from auto.runtime.config import validateConfig
 from auto.features.task.model import createTaskFromText
 from auto.runtime.operations import isReference
 from auto.runtime.model import Content

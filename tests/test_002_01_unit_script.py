@@ -178,7 +178,7 @@ class ScriptTests(unittest.TestCase):
 		(self.root / "second.md").write_text('---\noutput: {template: "./missing.txt"}\n---\nSecond')
 		loaded = self.script("@./first.md\n@./second.md\n")
 		self.assertEqual(ScriptInputs(self.ctx, loaded)["references"], ["./first.md", "./second.md"])
-		self.assertIn('"template":"First"', ScriptExpand(self.ctx, loaded))
+		self.assertIn("Template:\n\n```markdown\nFirst\n```", ScriptExpand(self.ctx, loaded))
 
 	def testInlineMarkdownDiscoveryDoesNotInspectItsContentsAsAScript(self):
 		(self.root / "inline.md").write_text('---\neach: {x: "./missing.txt"}\noutput: {template: "./missing.txt"}\n---\n@./missing.md\n{{ unused }}')

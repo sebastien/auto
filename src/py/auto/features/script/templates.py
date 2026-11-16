@@ -10,10 +10,10 @@ from liquid import Environment, Node, RenderContext, StrictUndefined, Tag, Undef
 from liquid.template import BoundTemplate
 from liquid.token import TOKEN_TAG
 
-from auto.features.script.config import composedMeta, validateConfig
+from auto.features.script.config import composedMeta
 from auto.features.script.model import Script
 from auto.features.script.sources import ScriptSources
-from auto.runtime.config import RUNTIME_DEFAULTS
+from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.operations import Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, document, jsonText, merge

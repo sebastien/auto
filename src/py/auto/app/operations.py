@@ -320,6 +320,16 @@ def exitStatus(result, exposure: Exposure | None = None) -> int:
 	return 0
 
 
+ENTRY_FIELDS = {"identity", "kind", "layer", "title", "description"}
+
+
+def entryLine(item: dict) -> str:
+	"""Render a catalogue-like entry as one Markdown list item."""
+	labels = ", ".join(str(item[key]) for key in ("kind", "layer") if item.get(key))
+	text = ". ".join(str(item[key]).strip().rstrip(".") for key in ("title", "description") if item.get(key))
+	return f"- `{item['identity']}`" + (f" ({labels})" if labels else "") + (f": {text}." if text else "") + "\n"
+
+
 def render(result, format: str = "text") -> str:
 	"""Render a result in `format` for an interface."""
 	if format == "json":
@@ -331,8 +341,13 @@ def render(result, format: str = "text") -> str:
 	if isinstance(result, dict) and result.get("type") == Event.SCRIPT_ENDED and result.get("output") is not None:
 		return render(result["output"], format)
 	if format == "markdown":
+		if isinstance(result, list) and result and all(isinstance(item, dict) and "identity" in item and item.keys() <= ENTRY_FIELDS for item in result):
+			# Catalogue-like entries: one line each, naming what may be referenced.
+			return "".join(entryLine(item) for item in result)
+		# Results included in prompts: YAML reads and costs less than escaped JSON.
 		from auto.features.script.templates import fence
-		return fence(jsonText(result), "json")
+		from auto.utils.data import promptText
+		return fence(promptText(result), "yaml")
 	return json.dumps(result, indent=2, ensure_ascii=False)
 
 
