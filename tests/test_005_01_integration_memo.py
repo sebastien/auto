@@ -20,6 +20,17 @@ from support import rootFile
 
 @unittest.skipUnless(importlib.util.find_spec("memo"), "Install sebastien/memo to exercise the real integration")
 class MemoTests(unittest.TestCase):
+	def testEveryMemoImportOfTheIntegrationResolves(self):
+		# The integration imports Memo lazily, so a moved name only fails at run time, after a paid elaboration.
+		import ast
+		import importlib
+		for file in sorted((Path(__file__).resolve().parents[1] / "src/py/auto/integration/memo").glob("*.py")):
+			for node in ast.walk(ast.parse(file.read_text())):
+				if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "memo":
+					module = importlib.import_module(node.module)
+					for alias in node.names:
+						self.assertTrue(hasattr(module, alias.name), f"{file.name}: memo has no {node.module}.{alias.name}")
+
 	def testOptimisticWritesAndRepair(self):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
