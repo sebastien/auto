@@ -143,6 +143,14 @@ A grant is the record of an explicit request, made by a human:
   grant in the same revision as the resolution. The effect must be covered by
   the gap, and the scope must be its plan or one of its `needed_by` tasks.
   A plain approval is insufficient to lift a denial.
+- *Plan confirmation*: a plan created with `approval: plan` in its root (the
+  guided `PlanDo`) is approved as a whole by the person who confirms or runs
+  it. When a human runs such a plan (`PlanDo` once confirmed, `PlanGo`,
+  `PlanResume`), `PlanApprove` grants each task the `confirm` effects it
+  declares and has not been granted, scoped to the task, with its definition
+  and digest as source: changing the definition expires the grant, as for
+  goal grants. `deny` effects are never granted this way. Tasks a refinement
+  adds while the person's run continues are approved the same way.
 
 Task definitions, Elaborator outputs, run outputs and learnings never grant
 effects, even when they state them. Granting is recorded in the plan journal
@@ -159,7 +167,8 @@ well-known input `policy`, supplied by Auto (see
 - *Allowed*: when every effect is `allow`ed or granted, the task runs
   without confirmation.
 - *Confirm*: when an effect is `confirm` and not granted, the Elaborator
-  raises a Checkpoint for the task.
+  raises a Checkpoint for the task, unless the plan has `approval: plan`
+  (the `policy` input says so): confirming the plan approves it.
 - *Deny*: when an effect is `deny` and not granted, the Elaborator raises
   a `decision` gap asking for a grant, needed by the task. It never plans
   around the rule (eg. by renaming or splitting the action).
@@ -170,7 +179,7 @@ dependents run.
 
 Validation (see `ElaborationValidate`) adds a violation for any elaborated
 task whose effects are not allowed, granted, or covered by a Checkpoint or
-grant gap.
+grant gap, or, for `confirm` effects, by plan confirmation.
 
 ## Execution
 

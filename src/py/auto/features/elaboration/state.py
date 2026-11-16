@@ -104,6 +104,6 @@ def policyView(policy: dict) -> dict:
 		_, _, task = grant["scope"].partition("/task/")
 		grants.setdefault("task:" + task if task else "plan", []).append(grant["effect"])
 	return compact({"default": default, "rules": {effect: rule["rule"] for effect, rule in policy["rules"].items() if rule["rule"] != default},
-		"grants": {scope: sorted(set(effects)) for scope, effects in grants.items()}})
+		"grants": {scope: sorted(set(effects)) for scope, effects in grants.items()}, "approval": policy.get("approval")})
 
 # EOF

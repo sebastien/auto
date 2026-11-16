@@ -104,11 +104,14 @@ of the task it affects.
 Declare each task's expected `effects`. An effect's rule is in `rules`, else
 `default`. An effect in `grants` (for the `plan`, or that `task:ID`) is
 authorised whatever its rule: raise no gap for it. Otherwise, do not plan
-around a `deny` effect: raise a `decision` gap requesting a grant; a
-`confirm` effect needs an `approval` gap (a checkpoint) with `subjects:
-["task:ID/definition"]`, which Auto pins to the proposed definition. Each
-such gap lists its `effects`, names the task in `needed_by`, and states each
-effect and its rule (`confirm` or `deny`) in its question.
+around a `deny` effect: raise a `decision` gap requesting a grant. With
+`approval: plan`, the person approves the whole plan before it runs, which
+approves its `confirm` effects: declare them, and raise no gap for them.
+Without it, a `confirm` effect needs an `approval` gap (a checkpoint) with
+`subjects: ["task:ID/definition"]`, which Auto pins to the proposed
+definition. Each such gap lists its `effects`, names the task in
+`needed_by`, and states each effect and its rule (`confirm` or `deny`) in its
+question.
 
 @./elaborate.instructions.md
 

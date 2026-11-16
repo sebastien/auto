@@ -160,7 +160,11 @@ def nextStep(value: dict) -> str:
 	failed = [id for id, state in tasks.items() if state in {RunStatus.FAILED, RunStatus.TIMED_OUT} and (id != "root" or len(tasks) == 1)]
 	if failed:
 		return f"auto show {failed[0]} to see why, then auto go --task {failed[0]} to retry"
-	if any(task["blocked"] for task in value["policy"]["tasks"].values()):
+	blocked = [task["blocked"] for task in value["policy"]["tasks"].values() if task["blocked"]]
+	# Running a guided plan approves what it would confirm: only denied effects need the policy.
+	if blocked and value["policy"].get("approval") == "plan" and all(rule == "confirm" for rules in blocked for rule in rules.values()):
+		return "auto go"
+	if blocked:
 		return "auto x policy show to see what policy blocks"
 	if list(tasks) == ["root"] and value["failures"]:
 		# The plan has no tasks because planning failed.

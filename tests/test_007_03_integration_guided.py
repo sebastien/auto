@@ -94,6 +94,36 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual(currentPlan(self.root), Path(summary["data"]["path"]))
 		self.assertEqual(contextFor(self.root).plan, Path(summary["data"]["path"]))
 
+	def testConfirmingTheGuidedPlanApprovesItsConfirmEffects(self):
+		class Writing(Engine):
+			def start(self, context, request):
+				if "set `task: root`" in request["prompt"]:
+					self.calls.append(request["prompt"])
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": ELABORATION.replace("title: Do the work", "title: Do the work\neffects: [repo.write]")}
+					return
+				yield from super().start(context, request)
+		engine = Writing()
+		events = list(PlanDo(self.context(engine, ["no"]), "Write a small report"))
+		self.assertEqual(events[-1]["data"]["stop"], "declined", "no checkpoint is required to plan a confirm effect")
+		self.assertIn("approval: plan", engine.calls[0])
+		plan = Path(events[-1]["data"]["path"])
+		context = self.context(engine)
+		from auto.features.plan.policy import journalGrants, taskRestrictions
+		from auto.features.plan.operations import tasksAt
+		self.assertEqual(journalGrants(plan), [], "declining grants nothing")
+		status = PlanStatus(context, plan)
+		self.assertEqual(status["tasks"]["tsk-work"], "Blocked", "until a person runs the plan")
+		self.assertIn("Next: auto go", planView(status))
+		events = list(PlanGo(context.derive(question=None), plan))
+		self.assertEqual(events[-1]["data"]["status"], "Succeeded", "running the plan approves repo.write for its task")
+		(row, grant), = journalGrants(plan)
+		self.assertEqual((grant["effect"], grant["scope"], row["author"]), ("repo.write", "auto:" + plan.name + "/task/tsk-work", "human"))
+		# Changing the task's definition expires the grant.
+		file = plan / "tsk/work.md"
+		file.write_text(file.read_text() + "\nMore.\n")
+		self.assertEqual(journalGrants(plan), [])
+		self.assertEqual(taskRestrictions(context.derive(plan=plan), tasksAt(plan)["tsk-work"]), {"repo.write": "confirm"})
+
 	def testFailedPlanningSaysWhyAndHowToTryAgain(self):
 		class Unplannable(Engine):
 			def start(self, context, request):

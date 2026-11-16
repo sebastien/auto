@@ -16,7 +16,7 @@ from auto.features.memory.config import defaultAgents, validateAgents
 from auto.features.plan.gaps import prepareGap
 from auto.features.plan.model import GAP_KINDS, GapKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanGet, PlanRevise, dependencyGraph, tasksAt
-from auto.features.plan.policy import EFFECT, PolicyResolve, taskRestrictions
+from auto.features.plan.policy import EFFECT, PolicyResolve, planApproval, taskRestrictions
 from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.features.task.model import createTaskFromText, taskText
 from auto.features.task.operations import RunOutput, TaskGet, TaskStart, TaskValidate, effectiveTask
@@ -292,9 +292,13 @@ def ElaborationValidate(context, plan, elaboration, task: str | None = None, *, 
 				raise AutoError(f"Invalid gap: {gap.get('name')}")
 			if gap["kind"] == GapKind.APPROVAL and not gap.get("subjects"):
 				raise AutoError("Approval gaps require existing pinned subjects; use hints.gate for future outputs")
+		# A guided plan's `confirm` effects are approved with the plan, by the person who runs it (see PlanApprove).
+		approvedWithPlan = planApproval(context.plan)
 		for task in new:
 			ref = next(ref for ref in staged if ref.endswith("/task/" + task.id + "/definition"))
 			for effect, rule in taskRestrictions(context, task).items():
+				if rule == "confirm" and approvedWithPlan:
+					continue
 				kind = GapKind.APPROVAL if rule == "confirm" else GapKind.DECISION
 				if not any(policyGapCovers(gap, task, kind, effect, rule, ref, staged) for gap in gaps):
 					requirement = "checkpoint" if kind == GapKind.APPROVAL else "grant decision gap"
@@ -356,8 +360,9 @@ def planName(goal: str, words: int = 4, size: int = 32) -> str:
 	return name or "plan"
 
 
-def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None) -> dict:
-	"""Create a root and run the ordinary Elaborator to produce its first revision."""
+def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None,
+	approval: str | None = None) -> dict:
+	"""Create a root and run the ordinary Elaborator to produce its first revision; `approval: plan` approves `confirm` effects with the plan."""
 	if not isinstance(goal, str) or not goal.strip():
 		raise AutoError("Plan creation requires a non-empty goal")
 	inputs = context.inputs if inputs is None else inputs
@@ -366,6 +371,8 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		raise AutoError("Requested effects must be a list of dotted effect names")
 	if effects and context.author != "human":
 		raise AutoError("Only a human may request goal effects")
+	if approval not in (None, "plan"):
+		raise AutoError("approval must be plan when given")
 	agents = defaultAgents(context) if agents is None else list(validateAgents(context, agents))
 	plans = storePath(context.project)
 	plans.mkdir(parents=True, exist_ok=True)
@@ -386,7 +393,7 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		# The goal is the root task's description: the plan's directory names it.
 		inputs = relocateMeta({"inputs": inputs or {}}, context.project)["inputs"]
 		root = {**({"requested_effects": effects} if effects else {}), **({"agents": agents} if agents else {}),
-			**({"inputs": inputs} if inputs else {}), **({"budget": budget} if budget else {})}
+			**({"inputs": inputs} if inputs else {}), **({"budget": budget} if budget else {}), **({"approval": approval} if approval else {})}
 		atomicWrite(planFile(path), documentText(root, goal.strip() + "\n"))
 		if effects:
 			base = "auto:" + name

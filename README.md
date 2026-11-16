@@ -56,8 +56,10 @@ Next: auto change "…" to refine it, or auto log to review it
 Tip: auto show TASK prints a task's full output
 ```
 
-Auto plans the goal, shows you the plan, and runs it once you agree. When a
-task needs an answer, Auto asks you and carries on. Choose `c` to say what
+Auto plans the goal, shows you the plan, and runs it once you agree. Agreeing
+approves what its tasks declare they will do and policy would otherwise
+confirm one by one, such as changing project files; denied effects still need
+a decision. When a task needs an answer, Auto asks you and carries on. Choose `c` to say what
 should change before anything runs, or `n` to keep the plan for later. In a
 git project, the summary lists the files the run added (`+`), modified (`~`)
 or deleted (`-`); each plan that succeeds ends with a tip about one more

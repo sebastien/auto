@@ -11,7 +11,7 @@ from auto.features.task.model import Task
 from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.operations import Engine, Knowledge, Resolve
 from auto.utils.data import AutoError, digest
-from auto.utils.layout import planFile, taskId, taskRef
+from auto.utils.layout import planFile, taskFile, taskId, taskRef
 
 # -----------------------------------------------------------------------------
 #
@@ -64,18 +64,60 @@ def policyLayers(context, meta):
 	return layers
 
 
+def definitionDigest(path, source: str) -> str | None:
+	"""Return the digest of the task definition a grant source names, or None when it names none or is gone."""
+	base = "auto:" + createPlan(path).id + "/task/"
+	if not source.startswith(base) or not source.endswith("/definition"):
+		return None
+	task = source.removeprefix(base).removesuffix("/definition")
+	file = planFile(path) if task == "root" else taskFile(path, task)
+	try:
+		return digest(file.read_bytes())
+	except OSError:
+		return None
+
+
 def journalGrants(path):
-	"""Read human grants; a goal grant expires if its definition changes."""
-	root = "auto:" + createPlan(path).id + "/task/root/definition"
-	current = digest(planFile(path).read_bytes())
+	"""Read human grants; a grant whose source is a task definition (eg. the goal) expires if that definition changes."""
 	result = []
 	for row in journal(path):
 		if row.get("author") != "human":
 			continue
 		for op in row["operations"]:
-			if op.get("op") == RevisionOp.GRANT and (op.get("source") != root or op.get("source_digest") == current):
-				result.append((row, op))
+			if op.get("op") != RevisionOp.GRANT:
+				continue
+			if "source_digest" in op and definitionDigest(path, op.get("source", "")) != op["source_digest"]:
+				continue
+			result.append((row, op))
 	return result
+
+
+def planApproval(path) -> bool:
+	"""Tell whether confirming the plan approves its tasks' `confirm` effects (a guided plan)."""
+	return createPlan(path).meta.get("approval") == "plan"
+
+
+def PlanApprove(context, plan=None) -> list:
+	"""Grant each task its declared `confirm` effects, pinned to its definition: a person confirmed or ran the plan.
+
+	Only plans created for plan approval (`approval: plan`) take it; `deny` effects are never granted."""
+	path = planPath(context, plan)
+	if not planApproval(path) or context.author != "human":
+		return []
+	from auto.features.plan.operations import tasksAt
+	base = "auto:" + createPlan(path).id
+	with locked(path):
+		recover(context, path)
+		operations = []
+		for id, task in tasksAt(path).items():
+			confirmed = [effect for effect, rule in taskRestrictions(context.derive(plan=path), task).items() if rule == "confirm"]
+			if confirmed:
+				source = f"{base}/task/{id}/definition"
+				operations += [{"op": RevisionOp.GRANT, "effect": effect, "scope": f"{base}/task/{id}", "source": source,
+					"source_digest": definitionDigest(path, source)} for effect in confirmed]
+		if operations:
+			commit(context, path, operations, reason="Plan confirmed")
+	return operations
 
 
 def PolicyResolve(context, plan=None, task=None):
@@ -113,7 +155,7 @@ def PolicyResolve(context, plan=None, task=None):
 		except AutoError:
 			enforced.clear()
 	return {"rules": {effect: ruleFor(effect, layers) for effect in sorted(effects)}, "default": "confirm",
-		"grants": grants, "unenforceable": sorted(effects - enforced)}
+		"grants": grants, "unenforceable": sorted(effects - enforced), **({"approval": "plan"} if meta.get("approval") == "plan" else {})}
 
 
 def taskRestrictions(context, task):

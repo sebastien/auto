@@ -19,6 +19,7 @@ from auto.features.plan.events import PlanEvents, eventRows
 from auto.features.plan.gaps import GapDecide, GapList
 from auto.features.plan.model import ContinuationStop, GapState, PlanEventKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanStatus, tasksAt
+from auto.features.plan.policy import PlanApprove
 from auto.features.plan.store import journal, planPath
 from auto.features.task.operations import RunAnswer, RunGet, RunList, RunOutput, TaskStart
 from auto.features.usage.operations import UsageStages
@@ -133,6 +134,8 @@ def drive(context, path, before: dict | None = None):
 	"""Continue a plan, asking for answers whenever it waits on them, then summarise with what changed since `before`."""
 	before = before or snapshot(context.project)
 	stop = None
+	# The person running a guided plan approves it: the `confirm` effects of its tasks are granted.
+	PlanApprove(context, path)
 	while True:
 		stop = None
 		for event in PlanContinue(context, path):
@@ -140,6 +143,9 @@ def drive(context, path, before: dict | None = None):
 			if event["kind"] == PlanEventKind.CONTINUATION_STOPPED:
 				stop = event["data"]["stop"]
 		if stop == ContinuationStop.WAITING and context.question and answerOpen(context, path):
+			continue
+		# Tasks added by a refinement while it ran are part of the plan the person is running.
+		if stop == ContinuationStop.BLOCKED and PlanApprove(context, path):
 			continue
 		break
 	yield {"kind": SUMMARY, "data": PlanSummary(context, path, stop, changes(context.project, before))}
@@ -153,7 +159,7 @@ def drive(context, path, before: dict | None = None):
 
 def PlanDo(context, goal: str, budget: dict | None = None, effects: list | None = None, agents: list | None = None, yes: bool = False):
 	"""Plan a goal, confirm it with the person, run it to the end or until it needs them, and summarise."""
-	created = PlanCreate(context, goal, budget=budget, effects=effects, agents=agents)
+	created = PlanCreate(context, goal, budget=budget, effects=effects, agents=agents, approval="plan")
 	path = Path(created["plan"])
 	context = context.derive(plan=path)
 	run = settle(context, created["run"])
@@ -184,6 +190,7 @@ def PlanGo(context, plan, task: str | None = None):
 	context = context.derive(plan=path)
 	before = snapshot(context.project)
 	if task:
+		PlanApprove(context, path)
 		cursor = (eventRows(path) or [{"seq": 0}])[-1]["seq"]
 		TaskStart(context.derive(question=None), task)
 		yield from PlanEvents(context, path, since=cursor)

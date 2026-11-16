@@ -202,7 +202,9 @@ Internals, under `auto x`:
 The guided operations compose the plan operations into the steps a person
 takes; they add no state of their own.
 
-- `PlanDo` creates and elaborates a plan, answering the questions of its
+- `PlanDo` creates a plan with `approval: plan` (confirming it approves its
+  `confirm` effects, see [Plan Policy](spec-008-plan-policy.md)) and
+  elaborates it, answering the questions of its
   elaboration, then streams a `PlanProposed` event: its tasks, dependencies,
   budget, open questions and memory agents. When a person can be asked, it
   asks a `PlanConfirm` question, answered `run`, `change` (then what should
