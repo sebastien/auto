@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto.features.elaboration.operations import PlanCreate, PlanRefine
+from auto.features.elaboration.operations import TRIAGED, PlanCreate, PlanRefine
 from auto.features.orchestration.operations import PlanContinue
 from auto.features.plan.control import PlanHold, PlanRelease, planHold
 from auto.features.plan.events import PlanEvents, eventRows
@@ -108,6 +108,7 @@ def proposal(context, path) -> dict:
 	tasks = [{"id": id, "goal": details[id]["goal"], "dependencies": details[id]["dependencies"], "parent": details[id]["parent"]}
 		for id in status["tasks"] if id != "root"]
 	return {"id": status["id"], "goal": status["goal"], "path": status["path"], "tasks": tasks, "budget": status["budget"],
+		"effects": status["policy"]["tasks"]["root"]["effects"] if not tasks else [],
 		"questions": [gap["question"] for gap in status["gaps"]], "agents": createPlan(path).meta.get("agents", [])}
 
 
@@ -157,19 +158,26 @@ def drive(context, path, before: dict | None = None):
 # -----------------------------------------------------------------------------
 
 
-def PlanDo(context, goal: str, budget: dict | None = None, effects: list | None = None, agents: list | None = None, yes: bool = False):
-	"""Plan a goal, confirm it with the person, run it to the end or until it needs them, and summarise."""
-	created = PlanCreate(context, goal, budget=budget, effects=effects, agents=agents, approval="plan")
+def PlanDo(context, goal: str, budget: dict | None = None, effects: list | None = None, agents: list | None = None, yes: bool = False,
+	route: str | None = None):
+	"""Plan a goal, confirm it with the person, run it to the end or until it needs them, and summarise.
+
+	Triage first decides whether the goal runs directly, as one task, or is planned; `route` decides instead."""
+	created = PlanCreate(context, goal, budget=budget, effects=effects, agents=agents, approval="plan", route=route or TRIAGED)
 	path = Path(created["plan"])
 	context = context.derive(plan=path)
-	run = settle(context, created["run"])
-	if run["status"] not in {RunStatus.SUCCEEDED, RunStatus.WAITING}:
-		yield {"kind": SUMMARY, "data": PlanSummary(context, path, UNPLANNED, reason=failureText(run.get("failure")) or run["status"])}
-		return
+	if created["run"] is not None:
+		run = settle(context, created["run"])
+		if run["status"] not in {RunStatus.SUCCEEDED, RunStatus.WAITING}:
+			yield {"kind": SUMMARY, "data": PlanSummary(context, path, UNPLANNED, reason=failureText(run.get("failure")) or run["status"])}
+			return
+	triage = created.get("triage") or {}
 	while True:
 		if context.question:
 			answerOpen(context, path)
-		yield {"kind": PROPOSED, "data": proposal(context, path)}
+		yield {"kind": PROPOSED, "data": {**proposal(context, path), "route": triage.get("route"), "reason": triage.get("reason")}}
+		# Once changed, the goal is planned: the proposal no longer reflects the triage.
+		triage = {}
 		if yes or not context.question:
 			break
 		choice = context.question({"type": CONFIRM, "content": "Run it?"})

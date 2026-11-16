@@ -27,8 +27,8 @@ class CompactStateTests(unittest.TestCase):
 		self.root = Path(temp.name)
 		self.engine = Fake(["not an elaboration"] * 8)
 		self.ctx = Context(project=self.root, engines={"fake": self.engine}, config={"engine": "fake"}, knowledge=MemoryKnowledge())
-		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: plan):
-			self.plan = PlanCreate(self.ctx, GOAL, budget={"cost": 3}, effects=["repo.write"])
+		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: {"plan": str(plan)}):
+			self.plan = Path(PlanCreate(self.ctx, GOAL, budget={"cost": 3}, effects=["repo.write"])["plan"])
 		self.ctx = self.ctx.derive(plan=self.plan)
 
 	def inputs(self, run):

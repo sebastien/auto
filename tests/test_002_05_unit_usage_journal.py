@@ -123,7 +123,7 @@ class UsageSummaryTests(unittest.TestCase):
 		self.assertEqual([row["day"] for row in UsageSummary(entries, ("day",))], ["2026-11-13", "2026-11-14"])
 
 	def testStagesNameWhatEachInvocationWasFor(self):
-		cases = [({"kind": "elaboration", "phase": "Process", "attempt": 0}, "planning"), ({"kind": "elaboration", "phase": "Process", "attempt": 1}, "repairs"),
+		cases = [({"kind": "triage"}, "planning"), ({"kind": "elaboration", "phase": "Process", "attempt": 0}, "planning"), ({"kind": "elaboration", "phase": "Process", "attempt": 1}, "repairs"),
 			({"kind": "elaboration", "phase": "Post"}, "checks"), ({"kind": "task", "phase": "Process"}, "tasks"), ({"kind": "assessment", "phase": "Evaluation"}, "checks"),
 			({"kind": "memory"}, "memory"), ({"kind": "task"}, "tasks")]
 		for entry, stage in cases:

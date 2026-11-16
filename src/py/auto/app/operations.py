@@ -111,6 +111,8 @@ DESCRIPTORS = {
 	"mode": Descriptor("choice", "How to hold the plan", candidates=lambda context, arguments: [("Pause", "Finish the current run"), ("Stop", "Cancel the current run")]),
 	"follow": Descriptor("text", "Keep following new plan events"),
 	"yes": Descriptor("text", "Run the plan without asking for confirmation"),
+	"route": Descriptor("choice", "direct runs the goal as one task, plan plans it first (default: triage decides)",
+		candidates=lambda context, arguments: [("direct", "Run the goal as one task"), ("plan", "Plan it into tasks first")]),
 	"task": Descriptor("choice", "A task of the plan", candidates=taskCandidates, recovery="See the plan's tasks with auto status."),
 	"run": Descriptor("choice", "A run of the plan", candidates=runCandidates, recovery="Start a run with auto go --task TASK."),
 	"gap": Descriptor("choice", "An open gap of the plan", candidates=gapCandidates, recovery="See open questions with auto status."),
@@ -235,7 +237,7 @@ class Exposure:
 # Main operations come first, in the order of the CLI reference; internals follow (see spec-007).
 EXPOSURES = [
 	Exposure("PlanDo", "guided.operations", ("goal",), "Plan a goal, confirm it, then run it until it ends or needs you", command="new", everyday=True,
-		optional=("yes", "budget", "effects", "agents"), inputs=True, stream=True, effects=True),
+		optional=("yes", "route", "budget", "effects", "agents"), inputs=True, stream=True, effects=True),
 	Exposure("PlanStatus", "plan.operations", (), "Show where the plan stands and what needs you", command="status", everyday=True, mcp=True, needsPlan=True),
 	Exposure("PlanGo", "guided.operations", (), "Continue the plan until it ends or needs you", command="go", everyday=True, optional=("task",),
 		stream=True, passPlan=True, effects=True, needsPlan=True),

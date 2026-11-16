@@ -54,9 +54,10 @@ Produce the result.
 			path.parent.mkdir(parents=True)
 			path.write_text("---\nkind: profile\ntitle: Local\n---\nLocal")
 			(path.parent / "default.example.md").write_text("companion")
-			entries = CatalogueList(ctx, "profile")
-			self.assertEqual(len(entries), 1)
-			self.assertEqual(entries[0]["layer"], "project")
-			self.assertEqual(CatalogueGet(ctx, entries[0]["identity"])["title"], "Local")
+			entries = {entry["identity"]: entry for entry in CatalogueList(ctx, "profile")}
+			self.assertEqual(set(entries), {"auto:catalogue/profile/default", "auto:catalogue/profile/decision"}, "companions are not entries")
+			self.assertEqual(entries["auto:catalogue/profile/default"]["layer"], "project")
+			self.assertEqual(entries["auto:catalogue/profile/decision"]["layer"], "builtin")
+			self.assertEqual(CatalogueGet(ctx, "auto:catalogue/profile/default")["title"], "Local")
 
 # EOF

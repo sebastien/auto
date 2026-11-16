@@ -12,6 +12,7 @@ from auto.features.elaboration.allocation import BudgetAllocation
 from auto.features.elaboration.methodology import validateMethodology
 from auto.features.elaboration.model import TaskElaboration, createElaborationFromDict
 from auto.features.elaboration.state import compact, elaborationState, policyView, roundedBudget
+from auto.features.elaboration.triage import DIRECT, PLAN, ROUTES, GoalTriage
 from auto.features.memory.config import defaultAgents, validateAgents
 from auto.features.plan.gaps import prepareGap
 from auto.features.plan.model import GAP_KINDS, GapKind, RevisionOp, createPlan
@@ -360,9 +361,29 @@ def planName(goal: str, words: int = 4, size: int = 32) -> str:
 	return name or "plan"
 
 
+def undirect(path) -> None:
+	"""Turn a goal that ran directly back into a goal to plan: changing it is planned, into tasks of its own."""
+	file = planFile(path)
+	meta, body = document(file.read_text())
+	if meta.get("route") != DIRECT:
+		return
+	description, _ = sections(body)
+	meta = {key: value for key, value in meta.items() if key not in {"route", "effects"}}
+	atomicWrite(file, documentText(meta, description.strip() + "\n"))
+
+
+# Asks a task created from a goal to say what it did: the summary shows it as the result.
+DIRECT_PROCESS = "When done, say what you did in one or two sentences, starting with the outcome."
+# The route that lets triage decide between planning and running directly.
+TRIAGED = "triage"
+
+
 def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | None = None, effects: list | None = None, agents: list | None = None,
-	approval: str | None = None) -> dict:
-	"""Create a root and run the ordinary Elaborator to produce its first revision; `approval: plan` approves `confirm` effects with the plan."""
+	approval: str | None = None, route: str = PLAN) -> dict:
+	"""Create a root and run the ordinary Elaborator to produce its first revision; `approval: plan` approves `confirm` effects with the plan.
+
+	`route` decides how the goal is carried out: `plan` elaborates it, `direct` makes the root a task that does
+	the goal itself, without elaboration, and `triage` lets `GoalTriage` choose between them."""
 	if not isinstance(goal, str) or not goal.strip():
 		raise AutoError("Plan creation requires a non-empty goal")
 	inputs = context.inputs if inputs is None else inputs
@@ -373,6 +394,8 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		raise AutoError("Only a human may request goal effects")
 	if approval not in (None, "plan"):
 		raise AutoError("approval must be plan when given")
+	if route not in (*ROUTES, TRIAGED):
+		raise AutoError("route must be one of: " + ", ".join((*ROUTES, TRIAGED)))
 	agents = defaultAgents(context) if agents is None else list(validateAgents(context, agents))
 	plans = storePath(context.project)
 	plans.mkdir(parents=True, exist_ok=True)
@@ -394,7 +417,13 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 		inputs = relocateMeta({"inputs": inputs or {}}, context.project)["inputs"]
 		root = {**({"requested_effects": effects} if effects else {}), **({"agents": agents} if agents else {}),
 			**({"inputs": inputs} if inputs else {}), **({"budget": budget} if budget else {}), **({"approval": approval} if approval else {})}
-		atomicWrite(planFile(path), documentText(root, goal.strip() + "\n"))
+		triage = GoalTriage(context.derive(plan=path), goal) if route == TRIAGED else {"route": route, "effects": [], "reason": ""}
+		body = goal.strip() + "\n"
+		if triage["route"] == DIRECT:
+			# The root does the goal itself: the goal is its Process, with the effects triage found.
+			root.update(route=DIRECT, **({"effects": triage["effects"]} if triage["effects"] else {}))
+			body += f"\n## Process\n\n{goal.strip()}\n\n{DIRECT_PROCESS}\n"
+		atomicWrite(planFile(path), documentText(root, body))
 		if effects:
 			base = "auto:" + name
 			rootDigest = digest(planFile(path).read_bytes())
@@ -402,7 +431,9 @@ def PlanCreate(context, goal: str, inputs: dict | None = None, budget: dict | No
 				for effect in dict.fromkeys(effects)]
 			with locked(path):
 				commit(context, path, operations, reason="Human-requested goal effects")
-		return PlanRefine(context.derive(plan=path), path, "Initial elaboration")
+		if triage["route"] == DIRECT:
+			return {"plan": str(path), "run": None, "applied": False, "route": DIRECT, "triage": triage}
+		return {**PlanRefine(context.derive(plan=path), path, "Initial elaboration"), "route": PLAN, "triage": triage}
 	except BaseException as error:
 		if discardUnstarted(context, path, number, previous) and isinstance(error, AutoError) and error.kind == "budget":
 			raise AutoError(str(error), "budget", recovery="Planning is paid from the budget too: try again with a larger --budget.") from error
@@ -436,6 +467,8 @@ def PlanRefine(context, plan, reason: str, task: str = "root") -> dict:
 	"""Elaborate a task and apply the result as one revision."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
+	if taskId(task) == "root":
+		undirect(path)
 	run = ElaborationStart(context.derive(variables={**context.variables, "applyElaboration": True}), path, task, reason)
 	if run["status"] != RunStatus.SUCCEEDED:
 		return {"plan": str(path), "run": run, "applied": False}

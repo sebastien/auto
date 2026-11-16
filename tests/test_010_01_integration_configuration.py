@@ -36,10 +36,10 @@ class MemoryConfigurationTests(unittest.TestCase):
 		original = copy.deepcopy(self.context.defaults)
 		self.assertEqual(agentsFor(self.context)["ui-designer"]["agent"], "agent-ui-designer/agent:UiDesigner")
 		self.assertEqual(defaultAgents(self.context), ["auto:agent/ui-designer"])
-		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: plan):
-			path = PlanCreate(self.context, "Selected defaults")
-			explicit = PlanCreate(self.context, "Explicit selection", agents=["auto:agent/architect"])
-			disabled = PlanCreate(self.context, "No agent memory", agents=[])
+		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: {"plan": str(plan)}):
+			path = Path(PlanCreate(self.context, "Selected defaults")["plan"])
+			explicit = Path(PlanCreate(self.context, "Explicit selection", agents=["auto:agent/architect"])["plan"])
+			disabled = Path(PlanCreate(self.context, "No agent memory", agents=[])["plan"])
 		self.assertEqual(document(rootFile(path).read_text())[0]["agents"], ["auto:agent/ui-designer"])
 		self.assertEqual(document(rootFile(explicit).read_text())[0]["agents"], ["auto:agent/architect"])
 		# No agents is the absence of the field.
@@ -77,8 +77,8 @@ class MemoryConfigurationTests(unittest.TestCase):
 		plans = self.root / ".auto"
 		(plans / "add-tests").mkdir(parents=True)
 		(plans / "pln-001-taken").mkdir()
-		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: plan):
-			names = [PlanCreate(self.context, goal).name for goal in ("agent", "catalogue", "Fix the login bug")]
+		with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda context, plan, reason: {"plan": str(plan)}):
+			names = [Path(PlanCreate(self.context, goal)["plan"]).name for goal in ("agent", "catalogue", "Fix the login bug")]
 		# The prefix keeps the reserved words agent and catalogue out of ids; used numbers are skipped, hex-like slugs are not.
 		self.assertEqual(names, ["pln-000-agent", "pln-002-catalogue", "pln-003-fix-login-bug"])
 		self.assertEqual((plans / ".counter").read_text(), "004\n")

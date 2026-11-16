@@ -59,11 +59,27 @@ Tip: auto show TASK prints a task's full output
 Auto plans the goal, shows you the plan, and runs it once you agree. Agreeing
 approves what its tasks declare they will do and policy would otherwise
 confirm one by one, such as changing project files; denied effects still need
-a decision. When a task needs an answer, Auto asks you and carries on. Choose `c` to say what
-should change before anything runs, or `n` to keep the plan for later. In a
-git project, the summary lists the files the run added (`+`), modified (`~`)
-or deleted (`-`); each plan that succeeds ends with a tip about one more
-command.
+a decision. When a task needs an answer, Auto asks you and carries on. Choose
+`c` to say what should change before anything runs, or `n` to keep the plan
+for later. In a git project, the summary lists the files the run added (`+`),
+modified (`~`) or deleted (`-`); each plan that succeeds ends with a tip about
+one more command.
+
+Most goals need no plan: a quick, cheap model first decides whether the goal
+can run directly, as one task, and Auto then proposes just that:
+
+```
+Plan pln-001-add-gitignore  Add a .gitignore for this Python project
+  Runs directly, as one task (repo.write)
+  Adding a single .gitignore file is a focused change one session can complete.
+Run it? [Y]es / [c]hange / [n]o ›
+```
+
+`--route plan` plans the goal anyway, `--route direct` skips planning. Changing
+a direct goal plans it. The quick model is set by the `decision` profile (Pi
+with `openai/gpt-6-luna`); when it is unavailable, goals are
+planned. To use another, add `.auto/catalogue/profile/decision.md` with your
+`engine`, `provider` and `model`.
 
 Plans are kept in `.auto/` at the root of the project, which Auto creates the
 first time. The plan you created or selected last is the *current plan*: the
@@ -202,7 +218,7 @@ at the same location. Script metadata overrides file defaults; `AUTO_ENGINE`,
 `AUTO_PROVIDER`, `AUTO_MODEL`, `AUTO_AGENT`, and the corresponding flags
 override script metadata (flags take priority over environment variables).
 OpenCode also accepts the `provider/model` form when `provider` is unset;
-Pi and llm do not support a separate provider.
+Pi accepts a separate provider; llm does not.
 
 When no engine is configured and Pi is not installed, Auto uses the first
 installed engine and says so; `auto init` saves the choice.
@@ -211,6 +227,12 @@ installed engine and says so; `auto init` saves the choice.
 value, secrets included: take care when sharing it.
 
 ### Engines
+
+Pi is the default. Auto keeps up to two Pi RPC workers hot during one Auto
+process, reusing workers only when their directory, model, tool settings and
+environment match. Each invocation starts a fresh conversation: tasks do not
+inherit each other's messages. Errors or interruptions discard the worker;
+exiting Auto closes all workers. Separate CLI commands still start cold.
 
 Vercel's [fx CLI](https://fx.sh/docs/using-fx/fx-ask) is available with
 `--engine fx`. Authenticate with `fx login` or set `AI_GATEWAY_API_KEY`. Auto

@@ -10,7 +10,7 @@ set -uo pipefail
 
 GOLD_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 AUTO="${AUTO:-$GOLD_DIR/../../bin/auto}"
-: "${GOLD_ENGINE:=opencode}"
+: "${GOLD_ENGINE:=pi}"
 : "${GOLD_PROVIDER=openai}"
 : "${GOLD_MODEL=gpt-6-luna}"
 : "${GOLD_TIMEOUT:=1800}"
@@ -46,6 +46,8 @@ for id in "${ORDER[@]}"; do
 	{
 		echo "[runtime]"
 		echo "engine = \"$GOLD_ENGINE\""
+		# Pi execution receives Auto's explicit prompt, not ambient skills or context files.
+		[ "$GOLD_ENGINE" != pi ] || echo "isolated = true"
 		[ -z "$GOLD_PROVIDER" ] || echo "provider = \"$GOLD_PROVIDER\""
 		[ -z "$GOLD_MODEL" ] || echo "model = \"$GOLD_MODEL\""
 	} >"$sandbox/.auto/config.toml"
@@ -55,6 +57,18 @@ for id in "${ORDER[@]}"; do
 	started="$(date +%s.%N)"
 	(cd "$sandbox" && timeout "$GOLD_TIMEOUT" "$AUTO" "$goal" --yes --no-input --format json </dev/null) >"$sandbox.out" 2>"$sandbox.err"
 	status=$?
+	# Ambient engine tools (eg. the runner's own OpenCode skills) are declined, as a person would, so results
+	# do not depend on who runs the benchmark; the plan then goes on. Other questions end the goal.
+	for ((round = 0; round < 5 && status == 3; round++)); do
+		declined=0
+		while IFS= read -r gap; do
+			[ -n "$gap" ] || continue
+			(cd "$sandbox" && "$AUTO" x gap decide "$gap" '"reject"' --rationale "Not needed for the benchmark" --format json </dev/null) >>"$sandbox.err" 2>&1 && declined=1
+		done < <(cd "$sandbox" && "$AUTO" x gap list --format json 2>/dev/null | jq -r '.[] | select(.status == "Open" and ((.runtime_policy.effect // "") | test("^engine\\."))) | .id')
+		[ "$declined" = 1 ] || break
+		(cd "$sandbox" && timeout "$GOLD_TIMEOUT" "$AUTO" go --no-input --format json </dev/null) >>"$sandbox.out" 2>>"$sandbox.err"
+		status=$?
+	done
 	seconds="$(echo "$(date +%s.%N) - $started" | bc)"
 	summary="$(jq -c 'select(.kind == "PlanSummary") | .data' "$sandbox.out" 2>/dev/null | tail -1)"
 	[ -n "$summary" ] || summary='{}'

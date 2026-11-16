@@ -15,7 +15,7 @@ AUTO_ROOT="$(cd "$GOLD_DIR/../.." && pwd)"
 AUTO="${AUTO:-$AUTO_ROOT/bin/auto}"
 
 # Variable: GOLD_* settings, see tests/gold/README.md
-: "${GOLD_ENGINE:=opencode}"
+: "${GOLD_ENGINE:=pi}"
 # Set empty to leave them unset in the sandbox configuration
 : "${GOLD_PROVIDER=openai}"
 : "${GOLD_MODEL=gpt-6-luna}"

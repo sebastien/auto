@@ -203,7 +203,10 @@ The guided operations compose the plan operations into the steps a person
 takes; they add no state of their own.
 
 - `PlanDo` creates a plan with `approval: plan` (confirming it approves its
-  `confirm` effects, see [Plan Policy](spec-008-plan-policy.md)) and
+  `confirm` effects, see [Plan Policy](spec-008-plan-policy.md)), triaged
+  unless `route` (`direct` or `plan`) is given (see
+  [Elaboration](spec-006-elaboration.md)): a direct goal is proposed as one
+  task, with its effects and the triage's reason. Otherwise it
   elaborates it, answering the questions of its
   elaboration, then streams a `PlanProposed` event: its tasks, dependencies,
   budget, open questions and memory agents. When a person can be asked, it

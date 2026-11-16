@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto.app.cli.frontend import TIPS, planView, summaryView, tipFor
+from auto.app.cli.frontend import TIPS, planView, proposalView, summaryView, tipFor
 from auto.app.cli.main import reference
 from auto.app.operations import exitStatus
 from auto.features.guided.operations import (PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow,
@@ -41,16 +41,19 @@ Produce the result.
 
 
 class Engine:
-	"""Elaborates one task, passes its evaluation, then answers task prompts, asking first when told to."""
+	"""Triages goals to `route`, elaborates one task, passes its evaluation, then answers task prompts, asking first when told to."""
 
-	def __init__(self, ask: bool = False):
+	def __init__(self, ask: bool = False, route: str = "plan", effects=()):
 		self.ask = ask
+		self.route, self.effects = route, list(effects)
 		self.calls = []
 
 	def start(self, context, request):
 		prompt = request["prompt"]
 		self.calls.append(prompt)
-		if "set `task: root`" in prompt:
+		if prompt.startswith("Decide how to carry out this goal"):
+			output = json.dumps({"route": self.route, "effects": self.effects, "reason": "Triaged by the test"})
+		elif "set `task: root`" in prompt:
 			output = ELABORATION
 		elif '"score"' in prompt or "score" in prompt.lower() and "feedback" in prompt.lower():
 			output = '{"score":0.9,"feedback":"Good"}'
@@ -94,6 +97,45 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual(currentPlan(self.root), Path(summary["data"]["path"]))
 		self.assertEqual(contextFor(self.root).plan, Path(summary["data"]["path"]))
 
+	def testADirectGoalRunsAsOneTaskWithoutPlanning(self):
+		engine = Engine(route="direct", effects=["repo.write", "repo.read", "made.up"])
+		events = list(PlanDo(self.context(engine, ["run"]), "Add a .gitignore"))
+		proposed = next(event["data"] for event in events if event["kind"] == "PlanProposed")
+		self.assertEqual((proposed["tasks"], proposed["route"], proposed["effects"]), ([], "direct", ["repo.write"]), "only known effects that need a rule")
+		self.assertIn("Runs directly, as one task (repo.write)", proposalView(proposed))
+		self.assertFalse(any("set `task: root`" in call for call in engine.calls), "a direct goal is not elaborated")
+		summary = events[-1]["data"]
+		self.assertEqual((summary["status"], summary["done"], summary["total"]), ("Succeeded", 1, 1))
+		self.assertEqual(summary["results"][0]["task"], "root")
+		task = next(call for call in engine.calls if call.startswith("Add a .gitignore"))
+		self.assertIn("say what you did", task)
+		from auto.features.plan.policy import journalGrants
+		self.assertEqual([op["effect"] for _, op in journalGrants(Path(summary["path"]))], ["repo.write"], "confirming approved it")
+		# A change is planned: the goal is elaborated into tasks of its own.
+		plan = Path(summary["path"])
+		from auto.features.elaboration.operations import PlanRefine
+		refined = PlanRefine(self.context(engine), plan, "Also ignore build outputs")
+		self.assertTrue(refined["applied"])
+		self.assertNotIn("## Process", (plan / "tsk/root.md").read_text())
+		self.assertIn("tsk-work", PlanStatus(self.context(engine), plan)["tasks"])
+
+	def testTheRouteCanBeChosenAndTriageNeverBlocks(self):
+		engine = Engine(route="direct")
+		events = list(PlanDo(self.context(engine, ["no"]), "Write a small report", route="plan"))
+		self.assertFalse(any(call.startswith("Decide how") for call in engine.calls), "a chosen route skips triage")
+		self.assertEqual([task["id"] for task in events[0]["data"]["tasks"]], ["tsk-work"])
+		class Failing(Engine):
+			def start(self, context, request):
+				if request["prompt"].startswith("Decide how"):
+					self.calls.append(request["prompt"])
+					yield {"type": "ScriptEnded", "status": "Failed", "output": None, "failure": {"kind": "system", "reason": "model unavailable"}}
+					return
+				yield from super().start(context, request)
+		events = list(PlanDo(self.context(Failing(route="direct"), ["no"]), "Write another report"))
+		proposed = events[0]["data"]
+		self.assertEqual([task["id"] for task in proposed["tasks"]], ["tsk-work"], "a failed triage plans the goal")
+		self.assertIn("model unavailable", proposed["reason"])
+
 	def testConfirmingTheGuidedPlanApprovesItsConfirmEffects(self):
 		class Writing(Engine):
 			def start(self, context, request):
@@ -105,7 +147,7 @@ class GuidedTests(unittest.TestCase):
 		engine = Writing()
 		events = list(PlanDo(self.context(engine, ["no"]), "Write a small report"))
 		self.assertEqual(events[-1]["data"]["stop"], "declined", "no checkpoint is required to plan a confirm effect")
-		self.assertIn("approval: plan", engine.calls[0])
+		self.assertIn("approval: plan", next(call for call in engine.calls if "set `task: root`" in call))
 		plan = Path(events[-1]["data"]["path"])
 		context = self.context(engine)
 		from auto.features.plan.policy import journalGrants, taskRestrictions
@@ -152,7 +194,7 @@ class GuidedTests(unittest.TestCase):
 		with self.assertRaisesRegex(AutoError, "Plan cost budget cannot cover the next run: 0 left of 0") as failure:
 			list(PlanDo(self.context(engine, ["run"]), "Write another report", budget={"cost": 0}))
 		self.assertEqual(failure.exception.recovery, "Planning is paid from the budget too: try again with a larger --budget.")
-		self.assertEqual(len(engine.calls), calls)
+		self.assertEqual(len(engine.calls), calls + 1, "only triage ran: planning could not be admitted")
 		self.assertEqual([path.name for path in (self.root / ".auto").glob("pln-*")], [first.name])
 		self.assertEqual(currentPlan(self.root), first)
 		# The failed plan's number is free again.

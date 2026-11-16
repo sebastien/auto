@@ -40,7 +40,7 @@ behaviour too variable to require are reported as `WARN` without failing.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GOLD_ENGINE` | `opencode` | Engine written to the sandbox's `.auto/config.toml` |
+| `GOLD_ENGINE` | `pi` | Engine written to the sandbox's `.auto/config.toml` |
 | `GOLD_PROVIDER` | `openai` | Provider; empty to leave unset |
 | `GOLD_MODEL` | `gpt-6-luna` | Model; empty to leave unset |
 | `GOLD_REFINE` | `1` | Run the refinement phase |

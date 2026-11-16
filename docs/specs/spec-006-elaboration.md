@@ -323,6 +323,20 @@ Elaboration:
 `PlanCreate` and `PlanRefine` (see Plan) start the elaboration, then validate
 and apply its TaskElaboration.
 
+Triage:
+- `GoalTriage(context,goal)`: decides, in one turn with the decision profile
+  (`auto:catalogue/task/triage`, `auto:catalogue/profile/decision`), whether a
+  goal runs `direct`, as one task, or is planned (`plan`), and which effects
+  it needs (built-in effects other than `repo.read`). It is given the goal,
+  the project's files known to git (up to 200) and the effects with their
+  rules. Any failure answers `plan`, with the reason: triage never blocks.
+- `PlanCreate(…, route)`: `plan` (the default) elaborates the goal; `direct`
+  writes a root that does it, with the goal as its Process and `route:
+  direct`, without elaboration; `triage` lets `GoalTriage` choose. Triage
+  runs once the plan exists, so its usage counts to the plan.
+- `PlanRefine` of a direct root turns it back into a goal to plan (its
+  Process, `route` and `effects` are removed) before elaborating it.
+
 ## Rules
 
 - *Elaborator*: the plan gives its Elaborator and budget (`elaborator.task`,

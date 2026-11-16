@@ -118,7 +118,7 @@ def stageOf(entry: dict) -> str:
 		return "memory"
 	if entry.get("attempt"):
 		return "repairs"
-	if kind == "elaboration" and phase in (None, "Process"):
+	if kind == "triage" or kind == "elaboration" and phase in (None, "Process"):
 		return "planning"
 	if kind == "assessment" or phase not in (None, "Process"):
 		return "checks"

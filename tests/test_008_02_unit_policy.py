@@ -56,8 +56,8 @@ class PolicyTest(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
 			context = Context(project=root)
-			with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda ctx, plan, reason: plan):
-				path = PlanCreate(context, "Write notes and commit them", effects=["vcs.commit"])
+			with patch("auto.features.elaboration.operations.PlanRefine", side_effect=lambda ctx, plan, reason: {"plan": str(plan)}):
+				path = Path(PlanCreate(context, "Write notes and commit them", effects=["vcs.commit"])["plan"])
 				with self.assertRaises(AutoError):
 					PlanCreate(context.derive(author="agent"), "Commit", effects=["vcs.commit"])
 			resolved = PolicyResolve(context, path)

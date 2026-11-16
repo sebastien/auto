@@ -236,7 +236,10 @@ def proposalView(value: dict, *, color: bool = False) -> str:
 		after = paint("  ← " + ", ".join(task["dependencies"]), "2", color) if task["dependencies"] else ""
 		lines.append(f"  {index:>2} {task['id']}{' ' * (size - width(task['id']))}  {safeText(firstLine(task['goal']))}{after}")
 	if not tasks:
-		lines.append("  The goal is a single task.")
+		effects = ", ".join(value.get("effects") or [])
+		lines.append("  Runs directly, as one task" + (f" ({effects})" if effects else ""))
+	if value.get("reason"):
+		lines.append(paint("  " + safeText(value["reason"]), "2", color))
 	if value["budget"]:
 		lines.append(paint("Budget: " + ", ".join(f"{key} {amount}" for key, amount in value["budget"].items()), "2", color))
 	if value["agents"]:
