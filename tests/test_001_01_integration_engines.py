@@ -78,6 +78,40 @@ class EngineTests(unittest.TestCase):
 					self.assertEqual(args[args.index(expected[0]):args.index(expected[0]) + len(expected)], expected)
 					self.assertNotIn(absent, args)
 
+	def testPiToolResultsAndTurnEndDoNotChargeTheAssistantTwice(self):
+		from unittest.mock import patch
+		from auto.integration.pi.engine import Pi
+		messages = [
+			{"role": "assistant", "content": [], "stopReason": "toolUse",
+				"usage": {"totalTokens": 695, "input": 669, "output": 26, "cost": {"total": .0000799}}},
+			{"role": "assistant", "content": [{"type": "text", "text": "Done"}], "stopReason": "stop",
+				"usage": {"totalTokens": 719, "input": 710, "output": 9, "cost": {"total": .0000755}}},
+		]
+		events = []
+		for index, message in enumerate(messages):
+			events += [
+				{"type": "message_start", "message": {"role": "assistant", "usage": {"totalTokens": 0, "cost": {"total": 0}}}},
+				{"type": "message_update", "message": {"role": "assistant", "usage": message["usage"]}},
+				{"type": "message_end", "message": message},
+			]
+			if index == 0:
+				events += [{"type": kind, "message": {"role": "toolResult", "content": []}} for kind in ("message_start", "message_end")]
+			# Pi repeats the completed assistant here, after tool-result messages.
+			events += [{"type": "turn_end", "message": message}]
+		events += [{"type": "agent_settled"}]
+		data = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+		for budget in ({"tokens": 1600}, {"cost": .0002}):
+			with self.subTest(budget=budget):
+				context = Context(limits=Limits(budget))
+				with patch("auto.integration.pi.engine.streamWorker", return_value=(item for item in [(0, data), (2, 0)])):
+					result = list(Pi().start(context, {"config": {}, "prompt": "Work"}))
+				self.assertEqual(result[-1]["status"], "Succeeded", "duplicates must not exhaust the budget")
+				self.assertEqual(context.limits.usage["tokens"], 1414)
+				self.assertAlmostEqual(context.limits.usage["cost"], .0001554)
+				detail = [event["value"] for event in result if event.get("name") == "tokens"][-1]
+				self.assertEqual(detail["turns"], 2)
+				self.assertEqual(detail["input"] + detail["output"], context.limits.usage["tokens"])
+
 	def testPiCurrentJsonAgentEndAndAbortedMessages(self):
 		from unittest.mock import patch
 		from auto.integration.pi.engine import Pi

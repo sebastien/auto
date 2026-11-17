@@ -60,9 +60,12 @@ class Pi:
 					except ValueError as error:
 						raise AutoError("Pi returned malformed JSONL", "system") from error
 					kind = event["type"]
-					if kind == "message_start":
+					message = event.get("message", {})
+					assistant = kind in {"message_start", "message_update", "message_end"} and message.get("role", "assistant") == "assistant"
+					if kind == "message_start" and assistant:
 						currentUsage = {"tokens": 0, "cost": 0}
-					usage = event.get("usage") or event.get("message", {}).get("usage")
+					# turn_end repeats the assistant after tool-result messages; it is not another charge.
+					usage = (event.get("usage") or message.get("usage")) if assistant else None
 					if usage and context.limits:
 						values = {"tokens": usage.get("totalTokens", 0), "cost": usage.get("cost", {}).get("total", 0)}
 						for key, value in values.items():
