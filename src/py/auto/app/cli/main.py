@@ -74,11 +74,12 @@ def assignments(items):
 	return result
 
 
-DESCRIPTION = """Auto turns a goal into a plan of tasks, runs them with an agent, asks you when it
-needs a decision, and learns from what happened (version {version})."""
-EPILOG = "Every command has --help. Without a terminal, or with --no-input, Auto never prompts."
+DESCRIPTION = """Auto runs Markdown scripts or turns a goal into a plan of tasks.
+It runs them with an agent, asks you when it needs a decision, and learns from
+what happened (version {version})."""
+EPILOG = "Use auto help COMMAND or auto COMMAND --help. Without a terminal, or with --no-input, Auto never prompts."
 # The shorthand a person types for a main command, shown in its place by the reference.
-SHORTHANDS = {"new": 'auto "GOAL"', "status": "auto", "run": "auto FILE.md"}
+SHORTHANDS = {"new": 'auto "GOAL"', "status": "auto"}
 ENGINES = ("pi", "opencode", "fx", "llm")
 # What each configuration override selects, for the reference.
 CONTEXT_HELP = {"plan": "The plan to act on, by id, number or path (default: the current plan)",
@@ -122,10 +123,13 @@ def leaf(commands, name: str, exposure):
 def reference() -> str:
 	"""List the main commands for `auto help`: the everyday loop first, then the rest."""
 	def row(label, need):
-		return f"  {label:<16}{need}"
+		return f"  {label:<{labelWidth}}{need}"
 	def label(exposure):
+		if exposure.command == "run":
+			return "auto run FILE.md", " (or auto FILE.md)"
 		shorthand = SHORTHANDS.get(exposure.command)
 		return (shorthand, f" (or auto {exposure.command})") if shorthand else ("auto " + exposure.command, "")
+	labelWidth = max(len(label(exposure)[0]) for exposure in EXPOSURES if exposure.command) + 2
 	everyday, more = ["Every day:"], ["More, when you need it:"]
 	for exposure in EXPOSURES:
 		if exposure.command:
@@ -195,6 +199,8 @@ def parser():
 
 def route(cli, argv: list) -> list:
 	"""Map the shorthands to commands: a script path runs it, a goal of several words starts a plan."""
+	if len(argv) > 1 and argv[0] == "help":
+		return route(cli, [*argv[1:], "--help"])
 	if not argv or argv[0].startswith("-") or argv[0] in cli.commands:
 		return argv
 	if "/" in argv[0] or Path(argv[0].partition("#")[0]).suffix == ".md":

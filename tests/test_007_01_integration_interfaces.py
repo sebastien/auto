@@ -37,6 +37,26 @@ class InterfaceTests(unittest.TestCase):
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn(exposure.need, result.stdout)
 
+	def testHelpMakesMarkdownScriptsDiscoverable(self):
+		for arguments in (("help",), ("--help",)):
+			with self.subTest(arguments=arguments):
+				result = self.cli(*arguments)
+				self.assertEqual(result.returncode, 0, result.stderr)
+				self.assertIn("Auto runs Markdown scripts", result.stdout)
+				everyday = result.stdout.split("Every day:", 1)[1].split("More, when you need it:", 1)[0]
+				self.assertIn("auto run FILE.md  Run a Markdown script on its own, without a plan (or auto FILE.md)", everyday)
+
+	def testHelpCommandMatchesHelpOption(self):
+		commands = [(exposure.command,) for exposure in EXPOSURES if exposure.command]
+		commands += [("init",), ("x",), ("x", "script", "expand"), ("x", "config"), ("script.md",)]
+		for command in commands:
+			with self.subTest(command=command):
+				result = self.cli("help", *command)
+				expected = self.cli(*command, "--help")
+				self.assertEqual(result.returncode, 0, result.stderr)
+				self.assertEqual(result.stdout, expected.stdout)
+				self.assertEqual(result.stderr, expected.stderr)
+
 	def testHumanResultsKeepStdoutClean(self):
 		result = self.cli("x", "script", "expand", "-", stdin="Hello world")
 		self.assertEqual(result.returncode, 0, result.stderr)

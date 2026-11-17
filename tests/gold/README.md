@@ -25,6 +25,12 @@ estimated from `[prices]` when the engine reports none), and appends one line
 per goal to `$GOLD_ROOT/bench.jsonl`, labelled with the checkout's commit or
 `BENCH_LABEL`, to compare changes. It uses the engine settings below.
 
+`BENCH_ROUTE=direct tests/gold/bench.sh trivial` skips triage; the default is
+`BENCH_ROUTE=triage`. Each result records its route. For comparisons, alternate
+routes across repeated trials in fresh sandboxes and compare medians, not a
+single run. Each trial is a new Auto process (cold workers initially); provider
+prompt caches may already be warm.
+
 ## What they check
 
 Scenarios only use the CLI (arguments, exit statuses, `--format json`) and the

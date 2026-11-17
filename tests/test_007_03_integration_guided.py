@@ -298,11 +298,13 @@ class GuidedViewTests(unittest.TestCase):
 	def testHelpListsTheEverydayCommandsFirst(self):
 		text = reference()
 		everyday, more = text.split("\n\n")
-		for command in ('auto "GOAL"', "auto go", "auto answer", "auto change", "auto show"):
+		for command in ('auto "GOAL"', "auto go", "auto answer", "auto change", "auto show", "auto run FILE.md"):
 			self.assertIn(command, everyday)
-		for command in ("auto pause", "auto plans", "auto learned", "auto FILE.md", "auto init", "auto x"):
+		for command in ("auto pause", "auto plans", "auto learned", "auto init", "auto x"):
 			self.assertIn(command, more)
 		self.assertIn("(or auto new)", everyday)
+		self.assertIn("auto run FILE.md  Run a Markdown script on its own, without a plan (or auto FILE.md)", everyday)
+		self.assertNotIn("auto run", more)
 
 
 class GuidedCliTests(unittest.TestCase):

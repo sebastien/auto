@@ -258,7 +258,7 @@ EXPOSURES = [
 	Exposure("DecisionRecord", "plan.gaps", ("question", "answer"), "Record a decision made outside a question", command="decide",
 		optional=("rationale", "concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
 	Exposure("LearningStatus", "guided.operations", (), "Show what memory agents have learned and what awaits them", command="learned", mcp=True),
-	Exposure("ScriptStart", "script.operations", ("script",), "Run a Markdown script on its own, without a plan", command="run",
+	Exposure("ScriptStart", "script.operations", ("script",), "Run a Markdown script on its own, without a plan", command="run", everyday=True,
 		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True, effects=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
 	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Create and elaborate a plan without running it", optional=("budget", "effects", "agents"),
