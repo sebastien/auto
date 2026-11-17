@@ -11,6 +11,7 @@ import time
 import unicodedata
 
 from auto.app.operations import render
+from auto.runtime.config import RUNTIME_DEFAULTS
 from auto.runtime.model import Event, RunStatus
 from auto.utils.layout import planNumber
 
@@ -521,10 +522,12 @@ class Frontend:
 		if kind == Event.EXECUTION_STARTED:
 			self.structured = event.get("output", {}).get("format") == "json" or bool(event.get("transform"))
 			self.active = True
-			model = event.get("config", {}).get("model") or "engine default"
 			if self.terminal:
 				self.clear()
-				print("  › model: " + safeText(model), file=self.stderr, flush=True)
+				config = event.get("config", {})
+				selection = " · ".join(f"{key}: {safeText(config.get(key) or RUNTIME_DEFAULTS.get(key, 'engine default'))}"
+					for key in ("engine", "provider", "model", "agent"))
+				print("  › " + selection, file=self.stderr, flush=True)
 		elif kind == Event.RUN_STARTED:
 			self.active = True
 			self.started = time.monotonic()

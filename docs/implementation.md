@@ -201,6 +201,11 @@ Canonical custom-owner references keep opaque owner revisions and remain usable
 from retained snapshots. Different line ranges, owner identities or resources do
 not become aliases merely because their selected bytes or origins match.
 
+The Memo adapter uses the bound `Memo.agent`, `Memo.learning`,
+`Memo.consolidation`, `Memo.query` and `Memo.log` operators. Storage keeps
+Memo's backend optimistic-write contract; it does not recreate repository
+operations or maintain compatibility wrappers for removed Memo modules.
+
 Runs of plans with agents capture Memo wake layers once, before resolving task
 inputs. Memo material and its clock remain fixed during multi-agent allocation;
 world and recent allowances are shared, preserving each layer's admission

@@ -166,7 +166,7 @@ with patch.object(operations, "atomicWrite", side_effect=atomicWrite), patch.obj
 	def testIndependentMemoMaintenanceLockSerializesPublication(self):
 		holder = subprocess.Popen([sys.executable, "-c", '''import sys
 from memo.integrations.filesystem.backend import LocalBackend
-from memo.features.agent.consolidation.records import RECORD_SCOPE
+from memo.features.agent.consolidation.model import RECORD_SCOPE
 with LocalBackend(sys.argv[1]).lock(RECORD_SCOPE, "urn:test:ux"):
     print("ready", flush=True)
     sys.stdin.readline()

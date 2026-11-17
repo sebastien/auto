@@ -25,17 +25,16 @@ class ConsolidationTests(unittest.TestCase):
 		from memo import Memo
 		from memo.integrations.filesystem.backend import LocalBackend
 		from memo.utils.clock import SystemClock
-		from memo.features.repository.layout import entryForId
-		from memo.features.agent.observations import observe
+		from memo.features.repository.model import entryForId
 		from auto.integration.memo.store import MemoKnowledge
 		temp = tempfile.TemporaryDirectory()
 		self.addCleanup(temp.cleanup)
 		self.root = Path(temp.name)
 		self.memo = Memo(LocalBackend(str(self.root / ".memo")), SystemClock(), cwd=str(self.root))
-		self.memo.createLog("agent-ux/log:Observations", identity="urn:test:ux-log")
+		self.memo.log.createLog("agent-ux/log:Observations", identity="urn:test:ux-log")
 		self.owner = entryForId("agent-ux/agent:Ux").clone(meta={"identity": "urn:test:ux", "observations": "agent-ux/log:Observations"}, body="Design for people.")
 		self.memo.backend.put(self.owner)
-		self.item = observe(self.memo, self.owner.id, {"text": "A useful outcome", "sources": ["archive:conversation/1"]}, "auto:fixture/run/one").split("item=")[1]
+		self.item = self.memo.agent.observe(self.owner.id, {"text": "A useful outcome", "sources": ["archive:conversation/1"]}, "auto:fixture/run/one").split("item=")[1]
 		self.calls = []
 		self.build = lambda inputs: {"id": inputs["consolidation"]["id"], "agent": inputs["agent"]["id"],
 			"snapshot": inputs["due"]["log_revision"], "changes": [], "report": {"summary": "Reviewed the observation", "acknowledged": [self.item]}}
@@ -86,7 +85,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(run["validation"]["effects"], ["memory.consolidate"])
 
 	def testRetiringSelectedCoreLearningRequiresPromotionAuthorization(self):
-		from memo.features.repository.layout import entryForId
+		from memo.features.repository.model import entryForId
 		from memo.features.memory.model import MemoryNode, MemoryTree
 		entry = entryForId("agent-ux/learning:Rule").clone(meta={"identity": "urn:test:rule", "agent_nodes": {
 			"root": {"role": "guidance", "core": True, "status": "active"}}},
@@ -137,7 +136,6 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertIn("denied memory effect", deniedProposal["failure"]["reason"])
 
 	def testAcceptedProposalAuthorizesOnePassAndDismissedDoesNot(self):
-		from memo.features.agent.observations import observe
 		base = self.build
 		change = {"entry": self.owner.id, "expected": None, "properties": {"focus": "Inclusive design"},
 			"history": {"text": "Focus on inclusion", "sources": ["agent-ux/log:Observations item=" + self.item]}}
@@ -152,7 +150,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.memo.backend.invalidate()
 		proposal = ConsolidationStatus(self.context, "ux")["proposals"][0]["id"]
 		# A dismissed proposal grants nothing.
-		observe(self.memo, self.owner.id, {"text": "Rejected", "sources": ["archive:conversation/2"], "meta": {"type": "response", "dismisses": [{"item": proposal, "reason": "Rejected by the owner"}]}}, "auto-agent:conversation/lobby")
+		self.memo.agent.observe(self.owner.id, {"text": "Rejected", "sources": ["archive:conversation/2"], "meta": {"type": "response", "dismisses": [{"item": proposal, "reason": "Rejected by the owner"}]}}, "auto-agent:conversation/lobby")
 		self.build = applying
 		rejected = ConsolidationStart(self.context, "ux")
 		self.assertEqual(rejected["status"], "Failed", rejected)
@@ -164,7 +162,7 @@ class ConsolidationTests(unittest.TestCase):
 		self.assertEqual(ConsolidationStart(self.context, "ux")["status"], "Succeeded")
 		self.memo.backend.invalidate()
 		second = ConsolidationStatus(self.context, "ux")["proposals"][0]["id"]
-		observe(self.memo, self.owner.id, {"text": "Accepted", "sources": ["archive:conversation/3"], "meta": {"type": "response", "resolves": [second]}}, "auto-agent:conversation/lobby")
+		self.memo.agent.observe(self.owner.id, {"text": "Accepted", "sources": ["archive:conversation/3"], "meta": {"type": "response", "resolves": [second]}}, "auto-agent:conversation/lobby")
 		self.build = applying
 		accepted = ConsolidationStart(self.context, "ux")
 		self.assertEqual(accepted["status"], "Succeeded", accepted.get("failure"))

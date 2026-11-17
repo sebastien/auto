@@ -98,9 +98,9 @@ class SchedulerTests(unittest.TestCase):
 		self.assertEqual(readJson(file), before)
 
 	def testAgentWithoutExplicitMemoIdentityIsNotQueuedAsRunnable(self):
-		from memo.features.repository.layout import entryForId
+		from memo.features.repository.model import entryForId
 		from pathlib import Path
-		self.memo.createLog("agent-new/log:Observations", identity="urn:test:new-log")
+		self.memo.log.createLog("agent-new/log:Observations", identity="urn:test:new-log")
 		self.memo.backend.put(entryForId("agent-new/agent:New").clone(meta={"observations": "agent-new/log:Observations"}, body="A new agent"))
 		legacy = self.memo.backend.get("agent-new/agent:New")
 		Path(legacy.path).write_text(documentText({"observations": "agent-new/log:Observations"}, legacy.body))
@@ -115,12 +115,11 @@ class SchedulerTests(unittest.TestCase):
 		self.assertEqual(self.calls, [])
 
 	def testBacklogThresholdIsCheckedAfterRunEnded(self):
-		from memo.features.agent.observations import observe
 		path = self.plan(["backlog:2"])
 		TaskStart(self.context.derive(plan=path), "root")
 		pending = self.root / ".auto/agents/ux/pending.json"
 		self.assertFalse(pending.exists())
-		observe(self.memo, self.owner.id, {"text": "Another outcome"}, "auto:fixture/run/two")
+		self.memo.agent.observe(self.owner.id, {"text": "Another outcome"}, "auto:fixture/run/two")
 		self.assertFalse(pending.exists())
 		TaskStart(self.context.derive(plan=path), "root")
 		self.assertTrue(pending.exists())

@@ -306,12 +306,14 @@ class PlanningTests(unittest.TestCase):
 		events = []
 		run = TaskStart(self.ctx.derive(observe=events.append), "observed")
 		self.assertEqual(run["status"], "Succeeded")
-		self.assertEqual([event["type"] for event in events], ["RunStarted", "RunPhase", "ScriptEnded", "RunFinished"])
+		self.assertEqual([event["type"] for event in events], ["RunStarted", "RunPhase", "ExecutionStarted", "ScriptEnded", "RunFinished"])
 		self.assertEqual(events[0]["budget"], {"cost": 1})
+		self.assertEqual(events[2]["config"]["engine"], "fake")
 		self.assertEqual(events[-1]["run"]["id"], run["id"])
 		journalText = (self.plan / "runs" / run["id"] / "journal.jsonl").read_text()
 		self.assertNotIn("RunStarted", journalText)
 		self.assertNotIn("RunPhase", journalText)
+		self.assertNotIn("ExecutionStarted", journalText)
 
 	def testCyclesAndInvalidElaborationDoNotWrite(self):
 		text = """---

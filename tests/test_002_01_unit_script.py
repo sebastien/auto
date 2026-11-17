@@ -272,6 +272,25 @@ class ScriptTests(unittest.TestCase):
 		result = list(ScriptStart(ctx, self.script("Hello", {"pre": "false"})))[-1]
 		self.assertEqual(result["status"], "Skipped")
 
+	def testEachFailureSummaryKeepsTaskInputsAndReason(self):
+		class Fake:
+			def start(inner, context, request):
+				if context.inputs["item"] == "\\bad":
+					yield {"type": "ScriptEnded", "status": "Failed", "output": None,
+						"failure": {"kind": "output", "reason": "Model rejected the request"}}
+				else:
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": "OK"}
+		ctx = self.ctx.derive(engines={"fake": Fake()}, config={"engine": "fake"}, inputs={"scope": "caller"})
+		script = Script("Describe {{ item }}", self.root / "script.md",
+			{"each": {"item": ["bad", "good"]}, "inputs": {"scope": "default", "mode": "review"}}, "task:review/definition")
+		events = list(ScriptStart(ctx, script))
+		self.assertEqual(events[-2]["status"], "Succeeded")
+		reason = events[-1]["failure"]["reason"]
+		for expected in ("1 of 2 items failed", "task:review/definition", '"item":"bad"',
+			'"scope":"caller"', '"mode":"review"', "Model rejected the request"):
+			self.assertIn(expected, reason)
+		self.assertNotIn('"item":"good"', reason)
+
 	def testDescribeEmptyPrecondition(self):
 		from auto.features.script.templates import Renderer
 		from auto.runtime.operations import Shell

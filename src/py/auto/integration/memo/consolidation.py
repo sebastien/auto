@@ -1,7 +1,6 @@
 """Memo's mechanical consolidation operations and retained application contract."""
 
 import json
-import importlib
 
 from auto.utils.data import AutoError
 
@@ -12,12 +11,6 @@ class MemoConsolidation:
 		from memo.integrations.filesystem.backend import LocalBackend
 		from memo.utils.clock import SystemClock
 		try:
-			for module, names in (("due", ("agentDue",)),
-				("consolidation.operations", ("agentConsolidate", "consolidateRetained")),
-				("consolidation.plan", ("prepareConsolidation",))):
-				loaded = importlib.import_module("memo.features.agent." + module)
-				if any(not callable(getattr(loaded, name, None)) for name in names):
-					raise ImportError("Missing Memo consolidation operation")
 			if any(not callable(getattr(LocalBackend, name, None)) for name in ("lock", "readRecord", "retainRecord", "compactLog")):
 				raise ImportError("Missing Memo retained application storage contract")
 		except ImportError as error:
@@ -27,33 +20,28 @@ class MemoConsolidation:
 
 	def compact(self):
 		from memo.error import MemoError
-		from memo.features.repository.model import entryReference
-		from memo.features.agent.observations import observationStore
 		try:
-			_, log, _, _ = observationStore(self.memo, self.agent, self.memo.backend.listEnvelopes())
-			return self.memo.compactLog(entryReference(log))
+			_, log, _, _ = self.memo.agent.observationStore(self.agent, self.memo.backend.listEnvelopes())
+			return self.memo.log.compactLog(log.reference())
 		except (MemoError, OSError) as error:
 			raise AutoError(f"Memo observation compaction failed: {error}", "system") from error
 
 	def due(self):
 		from memo.error import MemoError
-		from memo.features.repository.model import effectiveIdentity
-		from memo.features.repository.meta.model import canonicalMeta
-		from memo.features.agent.due import agentDue
-		from memo.features.agent.observations import observationSnapshot
+		from memo.features.repository.model import canonicalMeta
 		try:
-			first = agentDue(self.memo, self.agent)
+			first = self.memo.learning.agentDue(self.agent)
 			pages = [first]
 			for number in range(2, first["pages"] + 1):
-				page = agentDue(self.memo, self.agent, page=number)
+				page = self.memo.learning.agentDue(self.agent, page=number)
 				if page["revision"] != first["revision"]:
 					raise MemoError("due work changed while paging; retry from fresh inputs")
 				pages.append(page)
-			snapshot = observationSnapshot(self.memo, self.agent)
+			snapshot = self.memo.agent.observationSnapshot(self.agent)
 			if snapshot["log"].revision() != first["log_revision"] or snapshot["owner"].revision() != first["revisions"][snapshot["owner"].id]:
 				raise MemoError("observations changed while capturing due work; retry")
 			owner = snapshot["owner"]
-			if effectiveIdentity(owner) is None:
+			if owner.identityValue() is None:
 				raise MemoError("assign the Memo agent an explicit identity before consolidation")
 			dueIds = {row["id"] for page in pages for phase in page["phases"] for row in phase["items"] if "id" in row}
 			record = list(dict.fromkeys(source for item in snapshot["log"].log.items if item.id in dueIds for source in item.sources))
@@ -71,9 +59,8 @@ class MemoConsolidation:
 		the proposals themselves; their resolutions are withdrawals, not acceptances.
 		"""
 		from memo.error import MemoError
-		from memo.features.agent.observations import observationSnapshot
 		try:
-			items = list(observationSnapshot(self.memo, self.agent)["log"].log.items)
+			items = list(self.memo.agent.observationSnapshot(self.agent)["log"].log.items)
 		except (MemoError, OSError) as error:
 			raise AutoError(f"Memo observations unavailable: {error}", "system") from error
 		proposals = {item.id: item for item in items if item.meta.get("type") == "proposal"}
@@ -93,14 +80,11 @@ class MemoConsolidation:
 
 	def validate(self, value):
 		from memo.error import MemoError
-		from memo.features.agent.consolidation.operations import agentConsolidate
-		from memo.features.agent.consolidation.plan import prepareConsolidation
-		from memo.features.agent.prompt import PERSPECTIVE_FIELDS, learningCandidates
-		from memo.features.agent.config import validateConfig
-		from memo.features.query.select import select
+		from memo.features.agent.learning.model import PERSPECTIVE_FIELDS
+		from memo.features.agent.model import validateConfig
 		try:
-			preview = agentConsolidate(self.memo, self.agent, value, dry=True)
-			plan = prepareConsolidation(self.memo, self.agent, value)
+			preview = self.memo.consolidation.agentConsolidate(self.agent, value, dry=True)
+			plan = self.memo.consolidation.prepareConsolidation(self.agent, value)
 			effects = {"memory.consolidate"}
 			prospective = {entry.id: entry for entry in plan.entries}
 			original = dict(prospective)
@@ -113,7 +97,7 @@ class MemoConsolidation:
 						original[unit["before"].id] = unit["before"]
 			def startup(entries, owner):
 				config = validateConfig(owner.meta, owner.id)
-				return {(candidate["key"], candidate["role"]) for candidate in learningCandidates(self.memo, owner, config, entries, captured=True)}
+				return {(candidate["key"], candidate["role"]) for candidate in self.memo.learning.learningCandidates(owner, config, entries, captured=True)}
 			if startup(list(original.values()), plan.agent) != startup(plan.entries, prospective[plan.agent.id]):
 				effects.add("memory.promote")
 			for unit in plan.units:
@@ -141,7 +125,7 @@ class MemoConsolidation:
 					properties = {**change.get("properties", {}), **change.get("merge", {})}
 					if properties.keys() & {"core", "agent_bindings", "agent_nodes", "prompt_bytes", "learnings"} or any("core" in policy for policy in change.get("policies", {}).values() if isinstance(policy, dict)):
 						proposed.add("memory.promote")
-					matches = select(self.memo.backend, self.memo.clock, change.get("entry", ""), None, entries=plan.entries, fuzzy=False)
+					matches = self.memo.query.select(change.get("entry", ""), entries=plan.entries, fuzzy=False)
 					if any(entry.id == plan.agent.id for entry in matches) and (properties.keys() & {*PERSPECTIVE_FIELDS, "reads"} or change.keys() & {"content", "append", "history"}):
 						proposed.add("memory.evolve")
 				proposals.append(sorted(proposed))
@@ -151,9 +135,8 @@ class MemoConsolidation:
 
 	def apply(self, value):
 		from memo.error import MemoError, StaleState
-		from memo.features.agent.consolidation.operations import agentConsolidate
 		try:
-			return agentConsolidate(self.memo, self.agent, value)
+			return self.memo.consolidation.agentConsolidate(self.agent, value)
 		except MemoError as error:
 			failure = AutoError(f"Memo consolidation application failed: {error}", "output" if isinstance(error, StaleState) else "system")
 			failure.progress = getattr(error, "progress", None)

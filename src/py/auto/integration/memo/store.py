@@ -116,7 +116,7 @@ class MemoKnowledge:
 		return self.record(entry)
 
 	def write(self, kind: str, value: dict, expected: str = "") -> None:
-		from memo.features.repository.layout import entryForId
+		from memo.features.repository.model import entryForId
 		# Empty fields are not stored: an absent field reads as empty.
 		value = {key: item for key, item in value.items() if key != "digest" and (key in KEPT or item not in (None, [], {}))}
 		current = self.entry(value["identity"])

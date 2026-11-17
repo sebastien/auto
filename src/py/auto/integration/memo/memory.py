@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from copy import deepcopy
 
@@ -24,15 +23,15 @@ class MemoMemorySnapshot:
 			raise AutoError(f"Cannot capture Memo agent material: {error}", "system") from error
 
 	def queryText(self, query):
+		from memo.features.query.model import tokens
 		# Task goals are prose, rather than Memo's quoted search expressions.
 		text = query.replace('"', " ").strip() if query else None
-		return text if text and re.search(r"[^\W_]", text) else None
+		return text if text and tokens(text) else None
 
 	def wake(self, agent, profile, query, budgets=None):
 		from memo.error import MemoError
-		from memo.features.agent.wake import agentWakeLayers
 		try:
-			return agentWakeLayers(self.memo, agent, profile=profile, budgets=budgets,
+			return self.memo.learning.agentWakeLayers(agent, profile=profile, budgets=budgets,
 				query=self.queryText(query), entries=self.entries)
 		except MemoError as error:
 			raise AutoError(f"Memo wake failed for {agent}: {error}") from error
@@ -62,8 +61,7 @@ class MemoMemorySnapshot:
 
 	def model(self, agent, query):
 		from memo.error import MemoError
-		from memo.features.agent.model import agentModel
 		try:
-			return agentModel(self.memo, agent, query=self.queryText(query), others=True, entries=self.entries)
+			return self.memo.agent.agentModel(agent, query=self.queryText(query), others=True, entries=self.entries)
 		except MemoError as error:
 			raise AutoError(f"Memo model failed for {agent}: {error}") from error

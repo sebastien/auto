@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shlex
 from pathlib import Path
 
@@ -51,7 +50,7 @@ def captureInstructions(context, memory, instance):
 				rule = max((rule, ruleFor("memory.observe", layers)["rule"]), key=RANK.get)
 		result.append(f"Agent {ref}; memory.observe = {rule}; instance = {instance}.\n")
 		if rule == "allow":
-			command = shlex.join(["memo", "agent", "observe", data["memo"], "--file", "OBSERVATION.json", "--instance", instance])
+			command = shlex.join(["env", f"MEMO_INSTANCE={instance}", "memo", "agent", "note", "--agent", data["memo"]]) + " < OBSERVATION.json"
 			result.append("When useful, capture through `" + command + "`. "
 				"The JSON observation has text and optional title, sources and meta. "
 				f"Set meta.source to {instance} (or a journal event reference), and meta.type to describe the observation.\n")
@@ -80,15 +79,8 @@ def RunWake(context, run, state):
 		raise AutoError("Task memory profile must be a non-empty name")
 	goal = meta.get("goal") or meta.get("title") or run["task"]
 	if run["task"] == "elaborator":
-		provided = state["inputs"].get("goal", {})
-		if isinstance(provided, str):
-			try:
-				provided = json.loads(provided)
-			except ValueError as error:
-				raise AutoError("Elaborator goal must be a JSON object") from error
-		if not isinstance(provided, dict):
-			raise AutoError("Elaborator goal must be an object")
-		goal = provided.get("goal") or goal
+		# Elaboration supplies prose, optionally followed by its output contract.
+		goal = state["inputs"].get("goal") or goal
 	configured, wakes, minimums = agentsFor(context), {}, {}
 	for ref in selected:
 		name = ref.removeprefix("auto:agent/")

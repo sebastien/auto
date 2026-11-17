@@ -2,6 +2,10 @@
 
 import copy
 import importlib.util
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,7 +75,7 @@ class WakeTests(unittest.TestCase):
 		self.assertLess(text.index("dev: world"), text.index("ux: recent"))
 		self.assertIn("{{ hidden }}", text)
 		self.assertIn("instance = auto:demo/run/r1", text)
-		self.assertIn("memo agent observe private/agent:Ux", text)
+		self.assertIn("env MEMO_INSTANCE=auto:demo/run/r1 memo agent note --agent private/agent:Ux < OBSERVATION.json", text)
 		for layer in ("world", "recent"):
 			self.assertEqual(sum(data["layers"][layer]["allowance"] for data in run["memory"]["agents"].values()), 100)
 		for data in run["memory"]["agents"].values():
@@ -117,7 +121,7 @@ class WakeTests(unittest.TestCase):
 
 	def testElaboratorUsesFullWakeAndAddsWorldViewsAndPlanLearnings(self):
 		run, state = {"id": "r1", "task": "elaborator"}, self.state()
-		state["inputs"] = {"goal": '{"goal":"Target goal"}', "learnings": ["plan learning"], "context": ["existing context"]}
+		state["inputs"] = {"goal": "Target goal", "learnings": ["plan learning"], "context": ["existing context"]}
 		RunWake(self.context, run, state)
 		self.assertTrue(all(call[1:3] == ("full", "Target goal") for call in self.store.snapshot.calls))
 		self.assertEqual(state["inputs"]["learnings"]["plan"], ["plan learning"])
@@ -152,14 +156,64 @@ class WakeTests(unittest.TestCase):
 		state = readJson(self.plan / "runs" / run["id"] / "state.json")
 		self.assertEqual(state["memory"]["agents"]["auto:agent/ux"]["layers"]["world"]["text"], "{{ hidden }}")
 
+	def testElaborationStartUsesGoalProseWithSelectedMemoryAgents(self):
+		from auto.features.elaboration.operations import ElaborationStart
+		elaborator = self.root / "elaborator.md"
+		elaborator.write_text(documentText({"title": "Elaborator"}, "## Process\n\nReview {{ goal }}"))
+		for details in ({}, {"post": ["true"]}):
+			with self.subTest(details=details):
+				rootFile(self.plan).write_text(documentText({"id": "demo", "goal": "Design a useful page",
+					"agents": ["auto:agent/ux", "auto:agent/dev"], "elaborator": {"task": str(elaborator)}, **details}, "Demo"))
+				self.store.snapshot.calls.clear()
+				run = ElaborationStart(self.context.derive(engines={"fake": Fake()}, config={"engine": "fake"}), self.plan, "root")
+				self.assertEqual(run["status"], "Succeeded", run.get("failure"))
+				state = readJson(self.plan / "runs" / run["id"] / "state.json")
+				goal = state["inputs"]["goal"]
+				self.assertTrue(goal.startswith("Design a useful page\n"))
+				if details:
+					self.assertIn("commands:", goal)
+				self.assertTrue(self.store.snapshot.calls)
+				self.assertTrue(all(call[1:3] == ("full", goal) for call in self.store.snapshot.calls))
+
+	@unittest.skipUnless(importlib.util.find_spec("memo"), "Memo checkout is not installed")
+	def testCaptureCommandWritesThroughTheRealCliWithRunProvenance(self):
+		from memo import Memo
+		from memo.features.repository.model import entryForId
+		self.select(["auto:agent/ux"])
+		memo = Memo.Default(str(self.root / ".memo"), cwd=str(self.root))
+		log = "private/log:Observations"
+		memo.log.createLog(log, identity="urn:test:observations")
+		memo.backend.put(entryForId("private/agent:Ux").clone(
+			meta={"identity": "urn:test:ux", "observations": log}, body="Design for people."))
+		run, state = {"id": "r1", "task": "work"}, self.state()
+		state["memory"] = RunWake(self.context, run, state)
+		text = RunMemoryRequest(self.context, run, state, {"prompt": "Do work"})["prompt"]
+		command = text.split("capture through `", 1)[1].split("`", 1)[0]
+		source = "auto:demo/run/r1"
+		(self.root / "OBSERVATION.json").write_text(json.dumps(
+			{"text": "Keep forms concise.", "meta": {"source": source, "type": "observation"}}))
+		environ = {**os.environ, "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
+			"MEMO_CWD": str(self.root), "MEMO_INSTANCE": "inherited-wrong-instance"}
+		result = subprocess.run(command, shell=True, cwd=self.root, env=environ, capture_output=True, text=True, timeout=30)
+		self.assertEqual(result.returncode, 0, result.stderr)
+		items = memo.agent.observationSnapshot("private/agent:Ux")["log"].log.items
+		self.assertEqual(len(items), 1)
+		self.assertEqual(items[0].text, "Keep forms concise.")
+		self.assertEqual(items[0].writer, source)
+		self.assertIn(source, items[0].sources)
+
 	@unittest.skipUnless(importlib.util.find_spec("memo"), "Memo checkout is not installed")
 	def testRealMemoSnapshotAndLayerMinimums(self):
-		from memo.features.repository.layout import entryForId
+		from memo.features.repository.model import entryForId
 		from auto.integration.memo.store import MemoKnowledge
 		store = MemoKnowledge(self.root)
 		owner = entryForId("agent-ux/agent:Ux")
 		store.backend.put(owner.clone(body="You design useful interfaces."))
 		snapshot = store.memorySnapshot()
+		for query in ("123", "你好", "Do it", '""', "..."):
+			with self.subTest(query=query):
+				self.assertEqual(snapshot.wake(owner.id, "standard", query), snapshot.wake(owner.id, "standard", None))
+				self.assertEqual(snapshot.model(owner.id, query), snapshot.model(owner.id, None))
 		wake = snapshot.wake(owner.id, "standard", 'Design "a page')
 		self.assertIn("You design useful interfaces.", wake["layers"]["prompt"]["text"])
 		current = store.backend.get(owner.id)

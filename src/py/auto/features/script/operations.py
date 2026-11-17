@@ -113,10 +113,12 @@ def ended(kind, reason, status=None) -> dict:
 COMPLETE_USAGE_ENGINES = frozenset({"opencode", "pi"})
 
 
-def executePrepared(context: Context, request: dict, journal: dict | None = None):
+def executePrepared(context: Context, request: dict, journal: dict | None = None, *, transform: bool = False):
 	"""Drive one engine stream; answers are sent back through the generator."""
 	config = request["config"]
 	name = config.get("engine", RUNTIME_DEFAULTS["engine"])
+	if context.observe:
+		context.observe({"type": Event.EXECUTION_STARTED, "config": {**config, "engine": name}, "output": request["output"], "transform": transform})
 	entry = {"ts": timestamp(), "project": context.project.name, "plan": context.plan.name if context.plan else None,
 		"kind": "script", "run": None, "task": None, **(journal or {}),
 		"engine": name, "provider": config.get("provider"), "model": config.get("model"), "status": RunStatus.CANCELLED, "failure": None}
@@ -270,9 +272,7 @@ def runScript(context: Context, script, renderer: Renderer | None = None):
 			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 		loaded = loadScript(context, script)
 		request = prepare(context, loaded, renderer)
-		if context.observe:
-			context.observe({"type": Event.EXECUTION_STARTED, "config": request["config"], "output": request["output"], "transform": bool(loaded.meta.get("transform"))})
-		stream = executePrepared(context, request)
+		stream = executePrepared(context, request, transform=bool(loaded.meta.get("transform")))
 		answer = None
 		while True:
 			event = stream.send(answer)
@@ -337,6 +337,9 @@ def ScriptStart(context: Context, script):
 		final = yield from relay(runLifecycle(ctx, loaded))
 		result = {"name": name, "value": item, "status": final["status"], "output": final.get("output")}
 		if final.get("failure"):
+			inputs = {**loaded.meta.get("inputs", {}), **context.inputs, name: item}
+			final = {**final, "failure": {**final["failure"], "reason":
+				f"{loaded.ref or loaded.path} · inputs: {jsonText(inputs)}\n{final['failure']['reason']}"}}
 			result["failure"] = final["failure"]
 		results.append(result)
 		yield {"type": Event.SCRIPT_ITEM_ENDED, "index": index, **result}
@@ -345,7 +348,9 @@ def ScriptStart(context: Context, script):
 			return
 	failed = [result for result in results if result["status"] not in {RunStatus.SUCCEEDED, RunStatus.SKIPPED}]
 	if failed:
-		yield {**ended(FailureKind.OUTPUT, f"{len(failed)} of {len(results)} items failed"), "output": results}
+		reasons = "\n".join(result["failure"]["reason"] if result.get("failure") else
+			f"{loaded.ref or loaded.path} · {result['name']}: {jsonText(result['value'])} · {result['status']}" for result in failed)
+		yield {**ended(FailureKind.OUTPUT, f"{len(failed)} of {len(results)} items failed\n{reasons}"), "output": results}
 	else:
 		yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": results}
 

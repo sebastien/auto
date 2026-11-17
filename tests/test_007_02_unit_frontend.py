@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from auto.app.cli.frontend import Frontend, clip, costText, safeText, spendingText, width
+from auto.features.script.operations import executePrepared
 from auto.integration.process import capture
 from auto.runtime.model import Context
 
@@ -67,17 +68,38 @@ class FrontendTests(unittest.TestCase):
 		self.assertIn("! Failed", err.getvalue())
 		self.assertNotIn("secret", err.getvalue())
 
-	def testLifecycleProgressAndModelLine(self):
+	def testLifecycleProgressAndRuntimeLine(self):
 		out, err = Terminal(), Terminal()
 		with patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": "1"}):
 			frontend = Frontend("text", stdout=out, stderr=err)
 			frontend.event({"type": "ScriptItemStarted", "name": "rev", "value": "abc"})
 			frontend.event({"type": "ScriptAction", "name": "pre", "content": "test -z abc", "lifecycle": True})
 			self.assertEqual(frontend.operation, "pre: test -z abc")
-			frontend.event({"type": "ExecutionStarted", "config": {"model": "example"}})
-			self.assertIn("\r  › model: example\n", err.getvalue())
+			frontend.event({"type": "ExecutionStarted", "config": {"engine": "opencode", "provider": "example-provider", "model": "example", "agent": "build"}})
+			self.assertIn("\r  › engine: opencode · provider: example-provider · model: example · agent: build\n", err.getvalue())
 			frontend.event({"type": "ScriptAction", "name": "pre", "content": "tool event"})
 			self.assertEqual(frontend.operation, "Use pre")
+
+	def testRuntimeLineDefaults(self):
+		out, err = Terminal(), Terminal()
+		with patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": "1"}):
+			frontend = Frontend("text", stdout=out, stderr=err)
+			frontend.event({"type": "ExecutionStarted", "config": {}})
+		self.assertIn("  › engine: pi · provider: engine default · model: engine default · agent: engine default\n", err.getvalue())
+		self.assertEqual(out.getvalue(), "")
+
+	def testPreparedExecutionsReportRuntime(self):
+		events = []
+		request = {"config": {"provider": "example-provider", "model": "example", "agent": "build"}, "output": {"format": "json"}}
+		def engine():
+			yield from ()
+		with tempfile.TemporaryDirectory() as directory:
+			context = Context(project=Path(directory), observe=events.append)
+			stream = executePrepared(context, request, transform=True)
+			with patch("auto.features.script.operations._executePrepared", return_value=engine()):
+				list(stream)
+		self.assertEqual(events, [{"type": "ExecutionStarted", "config": {"engine": "pi", **request["config"]},
+			"output": {"format": "json"}, "transform": True}])
 
 	def testDiagnosticColorsOnlyOnColorTerminals(self):
 		for noColor in (False, True):
