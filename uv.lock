@@ -56,7 +56,7 @@ mcp = [
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.20,<2" },
-    { name = "memo", editable = "../memo" },
+    { name = "memo", editable = "deps/memo" },
     { name = "prompt-toolkit", marker = "extra == 'interactive'", specifier = ">=3.0,<4" },
     { name = "python-liquid", specifier = ">=2.3,<3" },
     { name = "ruamel-yaml", specifier = ">=0.18,<0.19" },
@@ -409,7 +409,7 @@ wheels = [
 [[package]]
 name = "memo"
 version = "0.1.0"
-source = { editable = "../memo" }
+source = { editable = "deps/memo" }
 dependencies = [
     { name = "ruamel-yaml" },
 ]

@@ -57,17 +57,18 @@ def createServer(context):
 		item = exposed[name]
 		arguments = dict(arguments)
 		config = {key: arguments.pop(key) for key in CONTEXT_KEYS if key != "plan" and key not in item.arguments and key in arguments}
-		plan = arguments.pop("plan", None)
-		if plan:
-			from auto.features.plan.store import planPath
-			plan = planPath(context, plan)
 		cancel = threading.Event()
-		ctx = context.derive(plan=plan or context.plan, config={**context.config, **config}, question=None,
-			inputs=arguments.pop("inputs", {}), params=arguments.pop("params", {}), cancelled=cancel.is_set)
-		arguments = coerceArguments(item, arguments)
-		arguments = resolveContextArguments(ctx, item, arguments)
-		arguments = resolvePayload(ctx, item, arguments)
+		ctx = context
 		try:
+			plan = arguments.pop("plan", None)
+			if plan:
+				from auto.features.plan.store import planPath
+				plan = planPath(context, plan)
+			ctx = context.derive(plan=plan or context.plan, config={**context.config, **config}, question=None,
+				inputs=arguments.pop("inputs", {}), params=arguments.pop("params", {}), cancelled=cancel.is_set)
+			arguments = coerceArguments(item, arguments)
+			arguments = resolveContextArguments(ctx, item, arguments)
+			arguments = resolvePayload(ctx, item, arguments)
 			result = await asyncio.to_thread(item.call, ctx, arguments)
 			if item.stream:
 				stream, count = result, 0

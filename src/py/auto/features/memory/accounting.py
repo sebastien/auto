@@ -120,6 +120,7 @@ def foldUsage(ledger, name, run):
 def synchronize(context, ledger):
 	"""Recover known usage from receipts; only a free kernel lock releases a dead reservation."""
 	for file in sorted((context.project / ".auto/agents").glob("*/runs/*/active.json")):
+		# A run can publish its receipt and remove active.json between the two reads.
 		run = readReceipt(file.parent) or readReceipt(file.parent)
 		if run is None:
 			raise AutoError("Agent run disappeared during housekeeping recovery; refusing to release capacity", "system")

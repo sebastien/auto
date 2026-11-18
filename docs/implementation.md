@@ -1,5 +1,7 @@
 # Implementation decisions
 
+For terminology and relationships, see the [glossary](ref-glossary.md).
+
 ## Structure
 
 `src/py/auto/runtime` owns context, configuration, budgets, statuses and

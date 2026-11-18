@@ -3,6 +3,7 @@ SHELL = kash
 default : test
 
 setup :
+	git-deps checkout --missing
 	uv sync --extra mcp --extra interactive
 
 test :

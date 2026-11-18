@@ -18,7 +18,7 @@ inputs:
 
 The source files tracked by version control, excluding tests:
 
-!git ls-files '*.py' '*.js' '*.mjs' '*.ts' '*.tsx' '*.go' '*.rs' '*.java' | grep -vE '(^|/)tests?/|\.test\.' | head -500
+!git ls-files '*.py' '*.js' '*.mjs' '*.ts' '*.tsx' '*.go' '*.rs' '*.java' | grep -vE '(^|/)tests?/|\.test\.'
 
 ### Criteria
 

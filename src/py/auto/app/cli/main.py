@@ -98,7 +98,8 @@ def leaf(commands, name: str, exposure):
 		command.add_argument(argument, nargs="?", help=DESCRIPTORS.get(argument, Descriptor()).help)
 	for argument in exposure.optional:
 		options = {"action": "store_true", "default": None} if exposure.schema["properties"][argument].get("type") == "boolean" else {}
-		command.add_argument("--" + argument, help=DESCRIPTORS.get(argument, Descriptor()).help, **options)
+		flags = ("--override-allowance", "--overrideAllowance") if argument == "overrideAllowance" else ("--" + argument,)
+		command.add_argument(*flags, dest=argument, help=DESCRIPTORS.get(argument, Descriptor()).help, **options)
 	if exposure.name == "PlanStatus":
 		command.add_argument("--verbose", action="store_true", help="Include run identities and the plan path")
 	properties = exposure.schema["properties"]

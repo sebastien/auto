@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,18 @@ from auto.runtime.model import Context
 
 
 class CatalogueTests(unittest.TestCase):
+	def testSymbolAuditScopeIsNotTruncated(self):
+		source = Path(__file__).resolve().parents[1] / "src/md/auto/catalogue/task/audit-symbols.md"
+		command = next(line[1:] for line in source.read_text().splitlines() if line.startswith("!git ls-files"))
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			subprocess.run(["git", "init", "-q", str(root)], check=True)
+			for index in range(501):
+				(root / f"file{index:03}.py").touch()
+			subprocess.run(["git", "add", "."], cwd=root, check=True)
+			result = subprocess.run(command, shell=True, cwd=root, text=True, capture_output=True, check=True)
+			self.assertEqual(len(result.stdout.splitlines()), 501)
+
 	def testShippedElaboratorEndToEnd(self):
 		elaboration = """---
 task: root

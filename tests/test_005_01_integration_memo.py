@@ -9,12 +9,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from auto.features.plan.gaps import DecisionRecord, GapRaise, GapDecide, GapList, PlanRepair
 from auto.features.plan.store import journal
 from auto.integration.memo.store import MemoKnowledge
 from auto.runtime.model import Context
-from auto.utils.data import documentText
+from auto.utils.data import AutoError, documentText
 from support import rootFile
 
 
@@ -79,6 +80,64 @@ class MemoTests(unittest.TestCase):
 			self.assertEqual((GapList(ctx)[0]["plan"], GapList(ctx)[0]["id"]), ("auto:demo", gap))
 			decision = MemoKnowledge(root).get(f"auto:demo/decision/{GapList(ctx)[0]['decision']}")
 			self.assertEqual((decision["answer"], decision["rationale"], decision.get("concerns", [])), ("first", "", []))
+
+	def testClearedMetadataDoesNotReturn(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			plan = root / ".auto/demo"
+			rootFile(plan).write_text("Demo\n")
+			ctx = Context(project=root, plan=plan)
+			gap = GapRaise(ctx, plan, {"kind": "decision", "question": "Which?", "needed_by": ["root"], "effects": ["vcs.push"]})
+			store = MemoKnowledge(root)
+			ref = f"auto:demo/gap/{gap}"
+			before = store.entry(ref).meta.copy()
+			value = store.get(ref)
+			value["needed_by"] = []
+			store.write("gap", value, value["digest"])
+			self.assertEqual(store.get(ref)["needed_by"], [])
+			after = store.entry(ref).meta
+			self.assertNotIn("needed_by", after)
+			for key in ("uuid", "created"):
+				self.assertEqual(after.get(key), before.get(key))
+			self.assertIn("updated", after)
+			digest = store.get(ref)["digest"]
+			store.write("gap", store.get(ref))
+			self.assertEqual(store.get(ref)["digest"], digest)
+			from auto.features.plan.events import revisionEvents
+			self.assertEqual(revisionEvents(ctx, plan, journal(plan)[0])[1]["data"]["needed_by"], [])
+			with self.assertRaisesRegex(AutoError, "human decision"):
+				GapDecide(ctx, gap, {"grant": "vcs.push", "scope": "auto:demo/task/root"})
+			GapDecide(ctx, gap, {"grant": "vcs.push", "scope": "auto:demo"})
+			self.assertEqual([op["op"] for op in journal(plan)[-1]["operations"]], ["resolve", "grant"])
+
+	def testClearedPolicyGapDeniesWaitingRun(self):
+		from auto.features.task.operations import resumeGap
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			plan = root / ".auto/demo"
+			rootFile(plan).write_text("Demo\n")
+			ctx = Context(project=root, plan=plan)
+			policy = {"rule": "confirm", "effect": "vcs.push", "action": "push", "scope": "auto:demo/task/root"}
+			gap = GapRaise(ctx, plan, {"kind": "decision", "question": "Allow?", "needed_by": ["root"], "runtime_policy": policy})
+			store = MemoKnowledge(root)
+			value = store.get(f"auto:demo/gap/{gap}")
+			value["needed_by"] = []
+			store.write("gap", value, value["digest"])
+			GapDecide(ctx, gap, True)
+			run = {"id": "run-test", "gap": gap, "status": "Waiting"}
+			runPath = root / "run"
+			runPath.mkdir()
+			(runPath / "state.json").write_text("{}")
+			with patch("auto.features.task.operations.RunList", return_value=[run]), \
+				patch("auto.features.task.operations.RunGet", return_value=run), \
+				patch("auto.features.task.operations.runDirectory", return_value=runPath), \
+				patch("auto.features.task.operations.runtimeRule") as rule, \
+				patch("auto.features.task.operations.emit") as emit, \
+				patch("auto.features.task.operations._continue", return_value="continued") as continuation:
+				self.assertEqual(resumeGap(ctx, gap, True), "continued")
+				rule.assert_not_called()
+				emit.assert_any_call(runPath, {"type": "PolicyDenied", "effect": "vcs.push", "action": "push"})
+				self.assertIs(continuation.call_args.args[-1], False)
 
 	def testStandaloneDecisionAndCliRoundTrip(self):
 		with tempfile.TemporaryDirectory() as directory:

@@ -37,6 +37,15 @@ class InterfaceTests(unittest.TestCase):
 			self.assertEqual(result.returncode, 0, result.stderr)
 			self.assertIn(exposure.need, result.stdout)
 
+	def testOverrideAllowanceFlags(self):
+		from auto.app.cli.main import parser
+		exposure = next(item for item in EXPOSURES if item.name == "ConsolidationStart")
+		for flag in ("--override-allowance", "--overrideAllowance"):
+			with self.subTest(flag=flag):
+				args = parser().parse_args([*exposure.words, "agent", flag])
+				self.assertTrue(args.overrideAllowance)
+		self.assertIn("--override-allowance", self.cli(*exposure.words, "--help").stdout)
+
 	def testHelpMakesMarkdownScriptsDiscoverable(self):
 		for arguments in (("help",), ("--help",)):
 			with self.subTest(arguments=arguments):
@@ -386,5 +395,20 @@ class InterfaceTests(unittest.TestCase):
 			self.assertFalse(result.isError)
 			self.assertEqual(result.structuredContent["kind"], "PlanRevised")
 			self.assertEqual(session.send_progress_notification.await_count, 1)
+
+	def testMcpArgumentPreparationErrorsAreStructured(self):
+		from unittest.mock import patch
+		from mcp import types
+		from auto.app.mcp.main import createServer
+		from auto.runtime.model import Context
+		from auto.utils.data import AutoError
+		with tempfile.TemporaryDirectory() as directory:
+			server = createServer(Context(project=Path(directory)))
+			request = types.CallToolRequest(method="tools/call", params=types.CallToolRequestParams(name="catalogue_list", arguments={}))
+			for function in ("coerceArguments", "resolveContextArguments", "resolvePayload"):
+				with self.subTest(function=function), patch("auto.app.mcp.main." + function, side_effect=AutoError("Bad argument")):
+					result = asyncio.run(server.request_handlers[types.CallToolRequest](request)).root
+					self.assertTrue(result.isError)
+					self.assertEqual(result.structuredContent["failure"]["reason"], "Bad argument")
 
 # EOF

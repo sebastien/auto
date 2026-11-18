@@ -11,17 +11,25 @@ GOAL → PLAN → TASKS → OUTPUTS → LEARNING
 
 ## Install
 
-Requires Python 3.14+ and one agent engine: Pi (the default), OpenCode V2,
-Vercel's [fx](https://fx.sh) or the [llm](https://llm.datasette.io) CLI.
+Requires Python 3.14+, uv, git-deps and one agent engine: Pi (the default),
+OpenCode V2, Vercel's [fx](https://fx.sh) or the
+[llm](https://llm.datasette.io) CLI.
 
 ```sh
-# Installs the sibling sebastien/memo checkout (../memo), which stores plans:
+git-deps checkout --missing
 uv sync --extra mcp --extra interactive
 bin/auto init   # optional: pick an installed engine and save it
 ```
 
 Memo is a separate project, not the unrelated packages sharing its name on
-package indexes: `uv sync` installs it from the sibling `../memo` checkout.
+package indexes. `git-deps` checks out the pinned revision in `deps/memo`;
+`--missing` leaves an existing checkout untouched. A clean install requires
+that revision to be available from the Memo remote. The pin is not in the
+locally known `origin/main` and must be published if it is not yet available.
+The uv source override applies only when installing from this checkout;
+wheel and sdist metadata name `memo` without identifying its repository, so
+installing those distributions may resolve an unrelated package. Install the
+intended Memo separately and avoid dependency resolution for Auto.
 The OpenCode engine also needs Node.js 22+ and its bridge dependencies:
 `npm ci --prefix src/py/auto/integration/opencode`.
 

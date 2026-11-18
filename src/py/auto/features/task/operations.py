@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from contextlib import ExitStack
@@ -15,19 +14,19 @@ from liquid.exceptions import LiquidError
 # Plan tasks use plan storage and policy; a supplied run scope reuses the lifecycle for agent tasks.
 from auto.features.plan.gaps import GapDecide, GapList, GapRaise, applyPending, planRef, repairLocked
 from auto.features.plan.gates import taskGapState
-from auto.features.plan.events import recordPlanStatus, recordRun
 from auto.features.plan.control import planHold
 from auto.features.plan.model import GapKind, GapState, RevisionOp, createPlan
 from auto.features.plan.operations import PlanRevise, dependencyGraph, tasksAt
 from auto.features.plan.policy import EFFECT, PolicyResolve, runtimeRule, shellPermitted, taskPolicyBlocked
 from auto.features.plan.references import latestRun, readReceipt, runDirectories
-from auto.features.plan.store import exclusive, journal, locked, planPath, recover, runPlanPath
+from auto.features.plan.store import exclusive, journal, locked, planPath, recover
 from auto.features.script.config import commands
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand, ScriptInputs, conform, executePrepared, prepare
 from auto.features.script.templates import Renderer
 from auto.features.script.sources import ScriptSources
 from auto.features.task.model import Run, Task, canonicalTask, createRunFromDict, createTaskFromDict, createTaskFromText
+from auto.features.task.store import emit, runDirectory, saveRun
 from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
@@ -121,40 +120,6 @@ def effectiveTask(context, task: Task) -> Task:
 def resolvedInputs(state: dict) -> dict:
 	"""Return a run's resolved inputs, stored as their changes to its inputs."""
 	return {**state.get("inputs", {}), **state.get("resolvedInputs", {})} if "resolvedInputs" in state else {}
-
-
-def runDirectory(context, run) -> Path:
-	"""Return a run's directory, discovering its plan when none is selected."""
-	if context.runScope is not None:
-		return context.runScope.directory(context, run)
-	return runsPath(runPlanPath(context, run)) / identifier(run["id"] if isinstance(run, dict) else run)
-
-
-def emit(path: Path, event: dict) -> None:
-	"""Append one event to a run journal and flush it durably."""
-	with (path / "journal.jsonl").open("a") as stream:
-		stream.write(jsonText(event) + "\n")
-		stream.flush()
-		os.fsync(stream.fileno())
-
-
-def saveRun(context, path, run, state=None):
-	"""Persist a run receipt or its active state."""
-	if context.runScope is not None:
-		return context.runScope.save(context, path, run, state)
-	plan = path.parent.parent
-	with locked(plan):
-		previous = readReceipt(path)
-		changed = previous is None or previous["status"] != run["status"] or previous.get("gap") != run.get("gap")
-		if changed:
-			recordPlanStatus(context, plan)
-		if state is not None:
-			atomicWrite(path / "state.json", jsonText(state))
-		atomicWrite(path / ("receipt.json" if run["status"] in TERMINAL else "active.json"), jsonText(run))
-		if run["status"] in TERMINAL:
-			(path / "active.json").unlink(missing_ok=True)
-		if changed:
-			recordRun(context, plan, run)
 
 
 def hasCheck(task, phase) -> bool:
@@ -542,7 +507,7 @@ def resumeGap(context, gap, answer):
 						approves = human and (answer is True or isinstance(answer, str) and answer.lower() in {"approve", "approved", "yes"})
 						grants = human and answer == {"grant": policy["effect"], "scope": policy["scope"]}
 						approved = approves if policy["rule"] == "confirm" else grants
-						currentRule, _ = runtimeRule(context, TaskGet(context, value["needed_by"][0]), policy["effect"])
+						currentRule = runtimeRule(context, TaskGet(context, value["needed_by"][0]), policy["effect"])[0] if value.get("needed_by") else "deny"
 						grant = any(op.get("op") == RevisionOp.GRANT and op.get("source") == decision["identity"]
 							and op.get("effect") == policy["effect"] and op.get("scope") == policy["scope"]
 							for row in journal(context.plan) for op in row["operations"])
@@ -550,7 +515,7 @@ def resumeGap(context, gap, answer):
 							pinned = all(Resolve(context, pin["ref"]).digest == pin["digest"] for pin in value.get("subjects", []))
 						except AutoError:
 							pinned = False
-						answer = bool(approved and pinned and (currentRule != "deny" or grant))
+						answer = bool(value.get("needed_by") and approved and pinned and (currentRule != "deny" or grant))
 						if not answer:
 							emit(path, {"type": Event.POLICY_DENIED, "effect": policy["effect"], "action": policy["action"]})
 					emit(path, {"type": Event.GAP_RESOLVED, "gap": gap})
