@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from auto.integration.process import capture
 from auto.runtime.model import DETAIL, Event, RunStatus
+from auto.runtime.tools import DETAIL_LIMIT, toolSummary
 from auto.utils.data import AutoError, jsonText
 
 # -----------------------------------------------------------------------------
@@ -106,6 +107,7 @@ class OpenCode:
 				else:
 					self.api(context, "post", base + f"/form/{request['form']}/reply", {"answer": request.pop("answer")}, config)
 			seen = request.setdefault("seen", {})
+			seenTools = request.setdefault("seenTools", {})
 			accounted = request.setdefault("usage", {"tokens": 0, "cost": 0})
 			# Keep the last text seen across polls: a session can be reported idle
 			# just before the final message content becomes readable.
@@ -148,7 +150,19 @@ class OpenCode:
 						continue
 					lastAssistant = message
 					detail["turns"] += 1
-					text = "".join(part["text"] for part in message.get("content", []) if part["type"] == "text")
+					content = message.get("content", [])
+					for part in content:
+						# Report each status a tool reaches once, with what it touched once its input is known.
+						if part["type"] == "tool" and seenTools.get(part["id"]) != part["state"]["status"]:
+							state = part["state"]
+							seenTools[part["id"]] = state["status"]
+							action = {"type": Event.SCRIPT_ACTION, "name": part["name"], "content": state["status"]}
+							if isinstance(state.get("input"), dict):
+								action.update(toolSummary(part["name"], state["input"], context.project, config.get("cwd")))
+							if state["status"] == "error" and isinstance(state.get("error"), dict) and state["error"].get("message"):
+								action["error"] = str(state["error"]["message"])[:DETAIL_LIMIT]
+							yield action
+					text = "".join(part["text"] for part in content if part["type"] == "text")
 					lastText = text or seen.get(message["id"], "")
 					if lastText:
 						step = lastText

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -11,8 +12,9 @@ import time
 import unicodedata
 
 from auto.app.operations import render
+from auto.features.guided.operations import failureText
 from auto.runtime.config import RUNTIME_DEFAULTS
-from auto.runtime.model import Event, RunStatus
+from auto.runtime.model import Event, RunStatus, budgetValue
 from auto.utils.layout import planNumber
 
 # -----------------------------------------------------------------------------
@@ -107,8 +109,12 @@ def moneyText(cost) -> str:
 
 
 def countText(count) -> str:
-	"""Format a token count briefly: `850`, `12k`, `1.4M`."""
-	return f"{count / 1_000_000:.1f}M" if count >= 1_000_000 else f"{round(count / 1000)}k" if count >= 1000 else str(count)
+	"""Format a token count briefly: `850`, `12.3k`, `1,234k`, `1.4M`, `1,250M`."""
+	count = int(count)
+	if count < 1000:
+		return str(count)
+	value, unit = (count / 1_000_000, "M") if count >= 1_000_000 else (count / 1000, "k")
+	return (f"{value:,.1f}".removesuffix(".0") if value < 100 else f"{round(value):,}") + unit
 
 
 def spendingText(stages: list) -> str:
@@ -128,10 +134,18 @@ def spendingText(stages: list) -> str:
 
 
 def usageText(usage: dict, budget: dict | None = None) -> str:
-	"""Format time and cost, with the budget when one is set."""
+	"""Format usage and any plan limits, keeping individual run summaries short."""
+	plan = budget is not None
+	budget = budgetValue(budget)
 	parts = [durationText(usage.get("time"))] if usage.get("time") else []
+	if "time" in budget:
+		parts = [(parts[0] if parts else "0s") + " of " + (durationText(budget["time"]) or "0s")]
+	if "tokens" in budget:
+		parts.append(f"{countText(usage.get('tokens', 0))} / {countText(budget['tokens'])} tokens")
+	elif plan and usage.get("tokens"):
+		parts.append(f"{countText(usage['tokens'])} tokens")
 	cost = moneyText(usage.get("cost"))
-	if (budget or {}).get("cost") is not None:
+	if budget.get("cost") is not None:
 		parts.append((cost or "$0") + " of " + (moneyText(budget["cost"]) or "$0"))
 	elif cost:
 		parts.append(cost)
@@ -318,6 +332,8 @@ def summaryNext(value: dict) -> str:
 		return "auto resume"
 	if value["failed"]:
 		return f"auto show {value['failed'][0]} to see why, then auto go --task {value['failed'][0]} to retry"
+	if stop == "failed" and value.get("reason"):
+		return 'auto go to retry, or auto change "…" to revise the plan'
 	if stop == "budget":
 		return "auto status to review the budget, then auto go"
 	if value["status"] == "Succeeded":
@@ -325,19 +341,116 @@ def summaryNext(value: dict) -> str:
 	return "auto status"
 
 
+def filesText(files: list, shown: int = 4) -> str:
+	"""Name up to `shown` files, then count the rest: `a, b (+3 more)`, or `5 files` when none are shown."""
+	if not shown:
+		return f"{len(files)} file" + ("s" if len(files) != 1 else "")
+	rest = len(files) - shown
+	return safeText(", ".join(files[:shown])) + (f" (+{rest} more)" if rest > 0 else "")
+
+
+def reasonText(reason, color: bool = False) -> str:
+	"""Format a check or repair reason: one line, or one `element: message` line per violation."""
+	if not reason:
+		return ""
+	try:
+		items = json.loads(reason) if isinstance(reason, str) else reason
+	except ValueError:
+		items = None
+	if items == []:
+		return ""
+	if isinstance(items, list) and all(isinstance(item, dict) for item in items):
+		return "".join("\n" + paint("  - " + safeText(": ".join(str(item[key]) for key in ("element", "message") if item.get(key))), "2", color)
+			for item in items)
+	return paint("  " + safeText(firstLine(reason if isinstance(reason, str) else render(reason, "json"))), "2", color)
+
+
 class EventText:
 	"""Render plan events as one readable line each, remembering which run belongs to which task."""
 
-	def __init__(self, *, color: bool = False, times: bool = False):
+	def __init__(self, *, color: bool = False, times: bool = False, level: str = "info"):
 		self.color = color
 		self.times = times
+		self.level = level
 		self.tasks = {}
 
 	def task(self, run: str) -> str:
 		task = self.tasks.get(run, "")
 		return "planning" if task == "elaborator" else task or "a task"
 
+	def journal(self, item: dict) -> str | None:
+		"""Render one run journal event, indented under the run it belongs to."""
+		event, color = item["event"], self.color
+		kind, name = event.get("type"), safeText(event.get("name", ""))
+		if kind == Event.SCRIPT_ACTION:
+			content = safeText(event.get("content", ""))
+			subject = safeText(", ".join(event.get("files") or []) or event.get("detail") or "")
+			if event.get("lifecycle"):
+				text = f"$ {name}: {content}"
+			elif content in {"error", "failed"}:
+				text = paint(f"✗ {name} {subject}".rstrip() + (": " + safeText(firstLine(event["error"])) if event.get("error") else " failed"), "31", color)
+			else:
+				icon = "✎" if event.get("access") == "write" else "·"
+				text = f"{icon} {name}" + (f" {subject}" if subject else "") + (paint(f"  {content}", "2", color) if content not in {"completed", ""} else "")
+		elif kind == Event.SCRIPT_META:
+			value = event.get("value")
+			if name == "warning":
+				text = paint("! " + safeText(value), "33", color)
+			elif name == "runtime" and isinstance(value, dict):
+				text = "· runtime " + " · ".join(f"{key}: {safeText(item)}" for key, item in value.items())
+			elif name == "usage" and isinstance(value, dict):
+				text = paint(" · ".join(filter(None, ["usage", countText(value.get("tokens") or 0) + " tokens", moneyText(value.get("cost"))])), "2", color)
+			elif name == "tokens" and isinstance(value, dict):
+				text = paint("tokens " + " · ".join(f"{key} {countText(item)}" for key, item in value.items() if item), "2", color)
+			else:
+				text = paint(f"{name}: {safeText(value)}", "2", color)
+		elif kind == Event.SCRIPT_MESSAGE:
+			lines = str(event.get("content", "")).splitlines()
+			text = "\n".join(paint("│ ", "34", color) + safeText(line) for line in lines) or None
+		elif kind == Event.SCRIPT_ENDED:
+			status, output = event.get("status", ""), event.get("output")
+			text = f"{marker(status, color)} script {safeText(status).lower()}"
+			if event.get("failure"):
+				text += paint("  " + safeText(failureText(event["failure"])), "31", color)
+			if output is not None:
+				body = render(output, "text").rstrip()
+				if self.level == "trace":
+					text += "\n" + "\n".join(paint("│ ", "34", color) + safeText(line) for line in body.splitlines())
+				else:
+					count = len(body.splitlines())
+					text += paint(f"  output: {clip(safeText(firstLine(body)), 60)}" + (f" (+{count - 1} lines)" if count > 1 else ""), "2", color)
+		elif kind == Event.TASK_CHECKED:
+			verdict = event.get("verdict") or {}
+			passed = verdict.get("pass", verdict.get("passed"))
+			text = paint(("✓" if passed else "✗") + f" check {safeText(event.get('check', ''))}", "32" if passed else "31", color)
+			text += reasonText(verdict.get("reason"), color)
+		elif kind == Event.TASK_REPAIRING:
+			text = paint(f"↻ repairing (attempt {event.get('attempt')})", "33", color) + reasonText(event.get("reason"), color)
+		elif kind == Event.TASK_EVALUATED:
+			text = "· evaluated"
+		elif kind == Event.TASK_EVALUATION_FAILED:
+			text = paint("✗ evaluation failed  " + safeText(failureText(event.get("failure") or {})), "31", color)
+		elif kind == Event.POLICY_DENIED:
+			text = paint(f"⊘ denied {safeText(event.get('effect', ''))}: {safeText(event.get('action', ''))}", "33", color)
+		elif kind == Event.POLICY_REQUESTED:
+			text = paint(f"? asks to {safeText(event.get('effect', ''))}: {safeText(event.get('action', ''))}", "33", color)
+		elif kind == Event.GAP_RAISED:
+			text = paint(f"? question {safeText(event.get('gap', ''))}", "33", color)
+		elif kind == Event.GAP_RESOLVED:
+			text = paint(f"✓ question {safeText(event.get('gap', ''))} answered", "2", color)
+		else:
+			text = paint(safeText(kind or "event") + " " + safeText(render({key: value for key, value in event.items() if key != "type"}, "json")), "2", color)
+		if not text:
+			return None
+		# Journal events have no time of their own: they line up under their run's line.
+		pad = " " * (13 if self.times else 0) + "    "
+		self.tasks.setdefault(item["run"], item.get("task", ""))
+		label = paint(self.task(item["run"]) + " ", "2", color)
+		return "\n".join(pad + label + line for line in text.split("\n"))
+
 	def line(self, event: dict) -> str | None:
+		if "event" in event and "run" in event:
+			return self.journal(event)
 		kind, data, color = event.get("kind"), event.get("data", {}), self.color
 		if kind == "RunStarted":
 			self.tasks[data["run"]] = data.get("task", "")
@@ -348,8 +461,11 @@ class EventText:
 			usage = usageText(data.get("usage") or {})
 			if usage:
 				text += paint("  " + usage, "2", color)
+			written = (data.get("files") or {}).get("written") or []
+			if written:
+				text += paint("  wrote " + filesText(written, 4 if self.level != "info" else 0), "36", color)
 			if data.get("failure"):
-				text += paint("  " + safeText(firstLine(data["failure"].get("reason", ""))), "31", color)
+				text += paint("  " + safeText(failureText(data["failure"])), "31", color)
 			elif status not in {RunStatus.SUCCEEDED, ""}:
 				text += paint("  " + status, "2", color)
 		elif kind == "RunWaiting":
@@ -381,6 +497,10 @@ class EventText:
 			return None
 		if text is None:
 			return None
+		if self.level != "info":
+			# Name what the event belongs to, and its sequence number for --since.
+			ids = ([f"#{event['seq']}"] if event.get("seq") else []) + [safeText(data[key]) for key in ("run", "gap", "revision", "continuation") if data.get(key)]
+			text += paint("  " + " ".join(ids), "2", color) if ids else ""
 		if self.times and event.get("date"):
 			text = paint(str(event["date"])[5:16].replace("T", " "), "2", color) + "  " + text
 		return text
@@ -413,6 +533,10 @@ def taskView(value: dict, *, color: bool = False) -> str:
 		lines.append(paint("Failure: " + safeText(run["failure"].get("reason") or run["failure"]), "31", color))
 	for question in value["questions"]:
 		lines.append(paint("Needs you: " + safeText(firstLine(question)), "33", color))
+	files = run.get("files") or {}
+	for label, key, code in (("Wrote", "written", "36"), ("Read", "read", "2")):
+		if files.get(key):
+			lines.append(paint(f"{label}: " + filesText(files[key], 12), code, color))
 	if value["output"] is not None:
 		lines += ["", render(value["output"], "text").rstrip()]
 	elif value["description"]:
@@ -461,6 +585,8 @@ class Frontend:
 		self.cost = None
 		self.tokens = None
 		self.budget = {}
+		self.planUsage = None
+		self.planBudget = {}
 		self.last = ""
 		self.lastWidth = 0
 		self.lineStart = True
@@ -507,12 +633,23 @@ class Frontend:
 		self.last, self.lastWidth = line, width(line)
 
 	def metrics(self, seconds: int) -> str:
-		parts = ["cost " + costText(self.cost, self.budget.get("cost"))]
-		if "tokens" in self.budget:
-			parts.append(f"{self.tokens if self.tokens is not None else '—'} / {self.budget['tokens']} tokens")
+		if self.planUsage is None:
+			return self.usageMetrics(seconds, self.cost, self.tokens, self.budget)
+		return "Plan · " + self.usageMetrics(seconds + int(self.planUsage["time"]), self.total("cost", self.cost),
+			self.total("tokens", self.tokens), self.planBudget)
+
+	def total(self, name, value):
+		previous = self.planUsage[name]
+		return previous + (value or 0) if previous or value is not None else None
+
+	def usageMetrics(self, seconds, cost, tokens, budget):
+		parts = ["cost " + costText(cost, budget.get("cost"))]
+		if tokens is not None or "tokens" in budget:
+			parts.append((countText(tokens) if tokens is not None else "—")
+				+ (f" / {countText(budget['tokens'])}" if "tokens" in budget else "") + " tokens")
 		timer = f"{seconds // 60:02d}:{seconds % 60:02d}"
-		if "time" in self.budget:
-			limit = int(self.budget["time"])
+		if "time" in budget:
+			limit = int(budget["time"])
 			timer += f" / {limit // 60:02d}:{limit % 60:02d}"
 		parts.append(timer)
 		return " · ".join(parts)
@@ -527,23 +664,35 @@ class Frontend:
 				config = event.get("config", {})
 				selection = " · ".join(f"{key}: {safeText(config.get(key) or RUNTIME_DEFAULTS.get(key, 'engine default'))}"
 					for key in ("engine", "provider", "model", "agent"))
-				print("  › " + selection, file=self.stderr, flush=True)
+				# Name what runs: several executions (triage, elaboration, checks) can share one plan run.
+				stage = ": ".join(safeText(event[key]) for key in ("kind", "check") if event.get(key) and event[key] != "task")
+				subject = safeText(event.get("task") or "") + (f" ({stage})" if stage else "")
+				print("  › " + (f"task: {subject.strip()} · " if subject.strip() else "") + selection, file=self.stderr, flush=True)
 		elif kind == Event.RUN_STARTED:
+			self.clear()
 			self.active = True
 			self.started = time.monotonic()
+			self.operation = "Thinking"
 			self.budget = event.get("budget", {})
+			self.planUsage = event.get("planUsage")
+			self.planBudget = event.get("planBudget", {})
 			usage = event.get("usage", {})
 			self.initialTime = usage.get("time", 0)
 			self.cost = usage.get("cost") or None
 			self.tokens = usage.get("tokens") or None
 			if self.terminal:
 				task = event.get("task", "")
-				print("  › " + ("Planning" if task == "elaborator" else "Task: " + safeText(task)), file=self.stderr, flush=True)
+				resuming = event.get("resuming")
+				label = ("Resuming planning" if resuming else "Planning") if task == "elaborator" else ("Resuming task: " if resuming else "Task: ") + safeText(task)
+				print("  › " + label, file=self.stderr, flush=True)
+				if self.planUsage is not None and self.budget:
+					print("    Run · " + self.usageMetrics(int(self.initialTime), self.cost, self.tokens, self.budget), file=self.stderr, flush=True)
 		elif kind == Event.RUN_PHASE:
 			self.operation = safeText(event.get("phase", "Running"))
 		elif kind == Event.SCRIPT_ACTION:
 			name = safeText(event.get("name", "tool"))
-			self.operation = name + ": " + safeText(event.get("content", "")) if event.get("lifecycle") else "Use " + name
+			subject = safeText(", ".join(event.get("files") or []) or event.get("detail") or "")
+			self.operation = name + ": " + safeText(event.get("content", "")) if event.get("lifecycle") else "Use " + name + (" " + subject if subject else "")
 		elif kind == Event.SCRIPT_META and event.get("name") == "usage":
 			self.cost = event.get("value", {}).get("cost")
 			self.tokens = event.get("value", {}).get("tokens")
@@ -593,8 +742,7 @@ class Frontend:
 				self.cost = usage["cost"]
 			if "tokens" in usage and (self.tokens is not None or usage["tokens"]):
 				self.tokens = usage["tokens"]
-			marker = "✓" if status == RunStatus.SUCCEEDED else "!"
-			code = "32" if status == RunStatus.SUCCEEDED else "31"
+			marker, code = {RunStatus.SUCCEEDED: ("✓", "32"), RunStatus.WAITING: ("?", "33")}.get(status, ("!", "31"))
 			if self.color:
 				marker = f"\033[{code}m{marker}\033[0m"
 			seconds = max(0, int(self.initialTime + time.monotonic() - self.started))

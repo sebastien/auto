@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from auto.app.cli.frontend import Frontend, clip, costText, safeText, spendingText, width
+from auto.app.cli.frontend import EventText, Frontend, clip, costText, countText, safeText, spendingText, width
 from auto.features.script.operations import executePrepared
 from auto.integration.process import capture
 from auto.runtime.model import Context
@@ -48,9 +48,13 @@ class FrontendTests(unittest.TestCase):
 			frontend = Frontend("text", stdout=out, stderr=err)
 			frontend.event({"type": "RunStarted", "task": "build", "budget": {"cost": 1}})
 			frontend.event({"type": "RunPhase", "phase": "Process"})
+			frontend.event({"type": "RunFinished", "run": {"status": "Waiting"}})
+			frontend.event({"type": "RunStarted", "task": "build", "budget": {"cost": 1}, "resuming": True})
 			frontend.event({"type": "ScriptMeta", "name": "usage", "value": {"cost": .01}})
 			frontend.event({"type": "RunFinished", "run": {"status": "Succeeded", "usage": {"cost": .01}}})
 		self.assertIn("Process", err.getvalue())
+		self.assertIn("? Waiting", err.getvalue())
+		self.assertIn("Resuming task: build", err.getvalue())
 		self.assertIn("$0.0100 / $1.0000", err.getvalue())
 		self.assertIn("✓ Succeeded", err.getvalue())
 		self.assertNotIn("\x1b", err.getvalue())
@@ -67,6 +71,17 @@ class FrontendTests(unittest.TestCase):
 		self.assertEqual(out.getvalue(), "  │ hello world\n  │ next\n")
 		self.assertIn("! Failed", err.getvalue())
 		self.assertNotIn("secret", err.getvalue())
+
+	def testPlanProgressIncludesPriorRunsAndLabelsTheRunLimitSeparately(self):
+		out, err = Terminal(), Terminal()
+		with patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": "1"}):
+			frontend = Frontend("text", stdout=out, stderr=err)
+			frontend.event({"type": "RunStarted", "task": "elaborator", "budget": {"tokens": 5, "time": 30},
+				"usage": {"tokens": 2, "time": 4}, "planUsage": {"tokens": 6, "time": 35, "cost": .1},
+				"planBudget": {"tokens": 10, "time": 60, "cost": 1}})
+			frontend.event({"type": "ScriptMeta", "name": "usage", "value": {"tokens": 3, "cost": .01}})
+		self.assertIn("Run · cost — · 2 / 5 tokens · 00:04 / 00:30", err.getvalue())
+		self.assertEqual(frontend.metrics(5), "Plan · cost $0.1100 / $1.0000 · 9 / 10 tokens · 00:40 / 01:00")
 
 	def testLifecycleProgressAndRuntimeLine(self):
 		out, err = Terminal(), Terminal()
@@ -87,6 +102,51 @@ class FrontendTests(unittest.TestCase):
 			frontend.event({"type": "ExecutionStarted", "config": {}})
 		self.assertIn("  › engine: pi · provider: engine default · model: engine default · agent: engine default\n", err.getvalue())
 		self.assertEqual(out.getvalue(), "")
+
+	def testRuntimeLineNamesTask(self):
+		for event, label in (({"task": "tsk-index", "kind": "task"}, "task: tsk-index · "),
+				({"task": "root", "kind": "triage"}, "task: root (triage) · "),
+				({"task": "tsk-index", "kind": "assessment", "check": "review"}, "task: tsk-index (assessment: review) · ")):
+			out, err = Terminal(), Terminal()
+			with patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": "1"}):
+				Frontend("text", stdout=out, stderr=err).event({"type": "ExecutionStarted", "config": {}, **event})
+			self.assertIn("  › " + label + "engine: pi", err.getvalue())
+
+	def testLogLinesNameWhatEachEventBelongsTo(self):
+		text = EventText(times=True, level="debug")
+		started = text.line({"seq": 3, "kind": "RunStarted", "date": "2026-11-18T06:40:24", "data": {"run": "run-1", "task": "elaborator"}})
+		self.assertEqual(started, "11-18 06:40  ● planning  #3 run-1")
+		violations = json.dumps([{"element": "elaboration", "message": "Invalid gap: none"}])
+		lines = text.line({"run": "run-1", "task": "elaborator", "index": 4, "event": {"type": "TaskChecked", "check": "post",
+			"verdict": {"pass": False, "reason": violations}}}).split("\n")
+		self.assertEqual([line.strip() for line in lines], ["planning ✗ check post", "planning   - elaboration: Invalid gap: none".strip()])
+		self.assertTrue(all(line.startswith(" " * 17) for line in lines))
+		ended = text.line({"run": "run-1", "task": "elaborator", "index": 5, "event": {"type": "ScriptEnded", "status": "Succeeded", "output": "a\nb\nc"}})
+		self.assertIn("✓ script succeeded  output: a (+2 lines)", ended)
+		trace = EventText(level="trace").line({"run": "run-1", "task": "work", "index": 6, "event": {"type": "ScriptMessage", "content": "one\ntwo"}})
+		self.assertEqual(trace.split("\n"), ["    work │ one", "    work │ two"])
+		self.assertEqual(EventText(level="info").line({"seq": 3, "kind": "RunStarted", "data": {"run": "run-1", "task": "work"}}), "● work")
+		def tool(**event):
+			return EventText().line({"run": "run-1", "task": "work", "index": 7, "event": {"type": "ScriptAction", **event}}).strip()
+		self.assertEqual(tool(name="edit", content="completed", access="write", files=["a.md", "b.md"]), "work ✎ edit a.md, b.md")
+		self.assertEqual(tool(name="grep", content="completed", access="read", files=["src"], detail="TODO"), "work · grep src")
+		self.assertEqual(tool(name="bash", content="completed", access="use", detail="make test"), "work · bash make test")
+		self.assertEqual(tool(name="write", content="error", access="write", files=["c.md"], error="Denied\nmore"), "work ✗ write c.md: Denied")
+		ended = {"seq": 9, "kind": "RunEnded", "data": {"run": "run-1", "status": "Succeeded", "files": {"read": ["x"], "written": list("abcdef")}}}
+		self.assertIn("wrote a, b, c, d (+2 more)", EventText(level="debug").line(ended))
+		self.assertIn("wrote 6 files", EventText(level="info").line(ended))
+
+	def testLogWatchIsFollow(self):
+		from auto.app.cli.main import parser
+		args = parser().parse_args(["log", "--watch", "--level", "trace"])
+		self.assertEqual((args.follow, args.level), (True, "trace"))
+
+	def testTokenCounts(self):
+		for count, text in ((850, "850"), (12_345, "12.3k"), (12_000, "12k"), (1_234_567, "1.2M"), (456_789, "457k"), (1_250_000_000, "1,250M")):
+			self.assertEqual(countText(count), text)
+		frontend = Frontend("text", stdout=Terminal(), stderr=Terminal())
+		frontend.tokens, frontend.budget = 12_345, {"tokens": 200_000}
+		self.assertIn("12.3k / 200k tokens", frontend.metrics(0))
 
 	def testPreparedExecutionsReportRuntime(self):
 		events = []

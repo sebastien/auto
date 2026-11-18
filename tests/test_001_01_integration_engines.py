@@ -112,6 +112,26 @@ class EngineTests(unittest.TestCase):
 				self.assertEqual(detail["turns"], 2)
 				self.assertEqual(detail["input"] + detail["output"], context.limits.usage["tokens"])
 
+	def testPiToolCallsReportTheFilesTheyTouch(self):
+		from unittest.mock import patch
+		from auto.integration.pi.engine import Pi
+		events = [
+			{"type": "tool_execution_start", "toolCallId": "t1", "toolName": "edit", "args": {"path": "docs/a.md", "oldText": "x", "newText": "y"}},
+			{"type": "tool_execution_update", "toolCallId": "t1", "toolName": "edit", "args": {}, "partialResult": {}},
+			{"type": "tool_execution_end", "toolCallId": "t1", "toolName": "edit", "result": {}, "isError": False},
+			{"type": "tool_execution_start", "toolCallId": "t2", "toolName": "bash", "args": {"command": "make   test"}},
+			{"type": "tool_execution_end", "toolCallId": "t2", "toolName": "bash", "result": {}, "isError": True},
+			{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}], "stopReason": "stop", "usage": {}}},
+			{"type": "agent_settled"}]
+		data = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+		with tempfile.TemporaryDirectory() as directory, patch("auto.integration.pi.engine.streamWorker", return_value=(item for item in [(0, data), (2, 0)])):
+			result = list(Pi().start(Context(project=Path(directory)), {"config": {}, "prompt": "Work"}))
+		self.assertEqual([event for event in result if event["type"] == "ScriptAction"], [
+			{"type": "ScriptAction", "name": "edit", "content": "running", "access": "write", "files": ["docs/a.md"]},
+			{"type": "ScriptAction", "name": "edit", "content": "completed", "access": "write", "files": ["docs/a.md"]},
+			{"type": "ScriptAction", "name": "bash", "content": "running", "access": "use", "detail": "make test"},
+			{"type": "ScriptAction", "name": "bash", "content": "error", "access": "use", "detail": "make test"}])
+
 	def testPiCurrentJsonAgentEndAndAbortedMessages(self):
 		from unittest.mock import patch
 		from auto.integration.pi.engine import Pi
@@ -226,6 +246,31 @@ class EngineTests(unittest.TestCase):
 		result = list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]
 		self.assertEqual(result["status"], "Succeeded")
 		self.assertEqual(result["output"], "Done")
+
+	def testOpenCodeReportsToolActivityOnceAcrossPolls(self):
+		class Stub(OpenCode):
+			polls = 0
+			def api(self, context, method, path, data=None, config=None):
+				if "/message?" not in path:
+					return {}
+				self.polls += 1
+				status = "running" if self.polls == 1 else "completed"
+				read = {"type": "tool", "id": "call1", "name": "read", "state": {"status": status, "input": {"filePath": str(root / "src/a.py")}, "metadata": {}}}
+				write = {"type": "tool", "id": "call2", "name": "write", "state": {"status": "error", "input": {"filePath": "b.md", "content": "secret body"},
+					"error": {"message": "Denied"}}}
+				messages = [{"id": "step", "type": "assistant", "content": [read, write, {"type": "text", "text": "Done"}]}]
+				if self.polls > 2:
+					messages.append({"id": "idle", "type": "idle", "outcome": "succeeded"})
+				return {"data": messages}
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			events = list(Stub().start(Context(project=root), {"config": {}, "prompt": "Work"}))
+		self.assertEqual([event for event in events if event["type"] == "ScriptAction"], [
+			{"type": "ScriptAction", "name": "read", "content": "running", "access": "read", "files": ["src/a.py"]},
+			{"type": "ScriptAction", "name": "write", "content": "error", "access": "write", "files": ["b.md"], "error": "Denied"},
+			{"type": "ScriptAction", "name": "read", "content": "completed", "access": "read", "files": ["src/a.py"]}])
+		self.assertNotIn("secret body", json.dumps(events))
+		self.assertEqual(events[-1]["output"], "Done")
 
 	def testOpenCodeTerminalAssistantErrorsDoNotRequireAnIdleMarker(self):
 		for error, status in (({"type": "aborted", "message": "The user declined this tool call"}, "Cancelled"),

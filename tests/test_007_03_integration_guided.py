@@ -9,9 +9,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event, get_ident
 from unittest.mock import patch
 
-from auto.app.cli.frontend import TIPS, planView, proposalView, summaryView, tipFor
+from auto.app.cli.frontend import TIPS, EventText, planView, proposalView, summaryView, tipFor
 from auto.app.cli.main import reference
 from auto.app.operations import exitStatus
 from auto.features.guided.operations import (PlanDo, PlanGo, PlanPause, PlanResume, PlanSummary, PlanUse, QuestionAnswer, TaskShow,
@@ -201,6 +202,27 @@ class GuidedTests(unittest.TestCase):
 		events = list(PlanDo(self.context(engine, ["no"]), "Write a third report"))
 		self.assertEqual(Path(events[-1]["data"]["path"]).name, "pln-001-write-third-report")
 
+	def testFailedDeferredPlanningReportsTheValidationError(self):
+		class Deferred(Engine):
+			def start(self, context, request):
+				if "set `task: root`" in request["prompt"]:
+					output = ELABORATION.replace("title: Do the work", "title: Do the work\nhints: {elaborate: later}").partition("### Process")[0]
+					yield {"type": "ScriptEnded", "status": "Succeeded", "output": output}
+				else:
+					yield from super().start(context, request)
+
+		context = self.context(Deferred(), ["run"])
+		failure = {"kind": "output", "reason": '[\n  {"element":"elaboration","message":"Invalid gap: none"}\n]'}
+		run = {"task": "elaborator", "status": "Failed", "failure": failure}
+		with patch("auto.features.orchestration.operations.PlanRefine", return_value={"run": run}):
+			events = list(PlanDo(context, "Write a small report", route="plan"))
+		summary = events[-1]
+		self.assertEqual((summary["data"]["stop"], summary["data"]["reason"]), ("failed", "Invalid gap: none"))
+		self.assertEqual(exitStatus(summary), 1)
+		self.assertIn("auto go to retry", summaryView(summary["data"]))
+		line = EventText().line({"kind": "RunEnded", "data": {"run": "run-elaborator", **run}})
+		self.assertIn("Invalid gap: none", line)
+
 	def testDecliningKeepsThePlanWithoutRunningIt(self):
 		engine = Engine()
 		context = self.context(engine, ["no"])
@@ -214,9 +236,33 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual(events[-1]["data"]["status"], "Succeeded")
 
 	def testQuestionsAreAskedInlineAndTheRunResumes(self):
-		context = self.context(Engine(ask=True), ["run", "markdown"])
+		reported = Event()
+		class Working(Engine):
+			def start(self, context, request):
+				if request.get("answer") == "markdown":
+					yield {"type": "ScriptAction", "name": "write-report"}
+					if not reported.wait(3):
+						raise AssertionError("Resumed work did not report its action live")
+				yield from super().start(context, request)
+
+		context = self.context(Working(ask=True), ["run", "markdown"])
+		caller, observed = get_ident(), []
+		def observe(event):
+			self.assertEqual(get_ident(), caller)
+			if event["type"] == "ExecutionStarted" and event.get("task") == "tsk-work":
+				observed.append("engine")
+			if event["type"] == "ScriptAction" and event["name"] == "write-report":
+				observed.append("action")
+				reported.set()
+		ask = context.question
+		def question(event):
+			if event["type"] == "ScriptQuestion":
+				observed.append("question")
+			return ask(event)
+		context = context.derive(observe=observe, question=question)
 		events = list(PlanDo(context, "Write a small report"))
 		self.assertEqual(self.questions[1]["content"], "Which format?")
+		self.assertEqual(observed, ["engine", "question", "engine", "action"])
 		summary = events[-1]["data"]
 		self.assertEqual((summary["stop"], summary["status"], summary["decisions"]), ("ended", "Succeeded", 1))
 		self.assertIn("markdown", summary["results"][0]["output"])
@@ -413,6 +459,12 @@ class GuidedCliTests(unittest.TestCase):
 			self.assertNotEqual(result.returncode, 2, result.stderr)
 			self.assertTrue((root / ".auto").is_dir())
 			self.assertEqual(len(list((root / ".auto").glob("pln-000-write-report"))), 1)
+			missing = self.cli("./missing.md", cwd=root)
+			self.assertIn("Cannot resolve", missing.stderr)
+			with patch.dict(os.environ, {"AUTO_ENGINE": "missing-engine"}):
+				result = self.cli("Spec status across plans/tasks/scripts", "--yes", "--format", "json", cwd=root)
+			self.assertNotIn("Cannot resolve", result.stdout + result.stderr)
+			self.assertEqual(len(list((root / ".auto").glob("pln-001-*"))), 1)
 
 	def testInternalsLiveUnderX(self):
 		with tempfile.TemporaryDirectory() as directory:

@@ -17,8 +17,9 @@ from pathlib import Path
 from auto.app.operations import (DESCRIPTORS, EXPOSURES, Descriptor, coerceArguments, exitStatus, render, resolveContextArguments, resolvePayload,
 	resumeResult)
 from auto.app.cli import prompt
-from auto.app.cli.frontend import (EventText, Frontend, colorFor, learningView, planView, plansView, proposalView, safeText, summaryView, taskView,
-	width)
+from auto.app.cli.frontend import (EventText, Frontend, colorFor, learningView, paint, planView, plansView, proposalView, safeText, summaryView,
+	taskView, width)
+from auto.features.plan.events import LOG_LEVELS, logLevel
 from auto.runtime.config import CONTEXT_KEYS, RUNTIME_DEFAULTS, contextFor
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, merge, yamlLoad
@@ -98,7 +99,9 @@ def leaf(commands, name: str, exposure):
 		command.add_argument(argument, nargs="?", help=DESCRIPTORS.get(argument, Descriptor()).help)
 	for argument in exposure.optional:
 		options = {"action": "store_true", "default": None} if exposure.schema["properties"][argument].get("type") == "boolean" else {}
-		flags = ("--override-allowance", "--overrideAllowance") if argument == "overrideAllowance" else ("--" + argument,)
+		flags = {"overrideAllowance": ("--override-allowance", "--overrideAllowance"), "follow": ("--follow", "--watch")}.get(argument, ("--" + argument,))
+		if argument == "level":
+			options["choices"] = LOG_LEVELS
 		command.add_argument(*flags, dest=argument, help=DESCRIPTORS.get(argument, Descriptor()).help, **options)
 	if exposure.name == "PlanStatus":
 		command.add_argument("--verbose", action="store_true", help="Include run identities and the plan path")
@@ -204,11 +207,16 @@ def route(cli, argv: list) -> list:
 		return route(cli, [*argv[1:], "--help"])
 	if not argv or argv[0].startswith("-") or argv[0] in cli.commands:
 		return argv
-	if "/" in argv[0] or Path(argv[0].partition("#")[0]).suffix == ".md":
+	target = argv[0].partition("#")[0]
+	path = "/" in target or Path(target).suffix == ".md"
+	# An existing script runs even when its path has spaces; a goal may mention paths.
+	if path and Path(target).expanduser().exists():
 		return ["run", *argv]
 	# Only a quoted goal starts a plan: unquoted words are more likely a mistyped command.
 	if " " in argv[0].strip():
 		return ["new", *argv]
+	if path:
+		return ["run", *argv]
 	if argv[0] in {exposure.noun for exposure in EXPOSURES if not exposure.command} | {"config", "usage", "mcp"}:
 		cli.error(f"unknown command: {argv[0]}", recovery=f"Main commands are listed by auto help; internal ones are under auto x {argv[0]} --help.")
 	close = difflib.get_close_matches(argv[0], sorted(cli.commands), n=1)
@@ -359,7 +367,8 @@ def main(argv=None) -> int:
 		color = colorFor(sys.stdout)
 		if exposure.stream:
 			stream, result = result, None
-			events = EventText(color=color, times=exposure.name == "PlanEvents")
+			level = logLevel(context, args.level) if exposure.name == "PlanLog" else "info"
+			events = EventText(color=color, times=exposure.name == "PlanLog", level=level)
 			try:
 				for result in stream:
 					if args.format != "text":
@@ -370,7 +379,7 @@ def main(argv=None) -> int:
 						print(proposalView(result["data"], color=color), flush=True)
 					elif isinstance(result, dict) and result.get("kind") == SUMMARY:
 						print("\n" + summaryView(result["data"], color=color), flush=True)
-					elif isinstance(result, dict) and "kind" in result:
+					elif isinstance(result, dict) and ("kind" in result or "event" in result):
 						line = events.line(result)
 						if line:
 							frontend.clear()
@@ -379,8 +388,12 @@ def main(argv=None) -> int:
 						print(render(result, args.format), flush=True)
 			finally:
 				stream.close()
-			if args.format == "text" and exposure.name == "PlanEvents" and result is None:
-				print("No events yet.")
+			if args.format == "text" and exposure.name == "PlanLog":
+				if result is None:
+					print("No events yet.")
+				elif level != "trace":
+					print(paint("\nMore detail: auto log --level " + ("debug (what each run did, with run ids) or " if level == "info" else "")
+						+ "trace (+ agent messages and usage); auto show TASK for a task's output", "2", colorFor(sys.stderr)), file=sys.stderr)
 		elif args.format == "text":
 			show(context, exposure, result, args, color, frontend)
 		else:

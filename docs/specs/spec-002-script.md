@@ -212,7 +212,12 @@ apply:
 Events, streamed by `ScriptStart`, can be consumed and relayed through the CLI:
 - `ScriptMeta(name,value)`: meta information emitted by the runtime (model,
   cost, tokens, etc).
-- `ScriptAction(name,content)`: internal action logged.
+- `ScriptAction(name,content,access?,files?,detail?,error?)`: internal
+  action logged. For an engine tool call, `content` is its status
+  (`running`, `completed`, `error`), reported once per status; `access` is
+  `read`, `write` or `use` by tool name; `files` the paths its input names;
+  `detail` a short command, pattern or address (at most 200 characters); and
+  `error` the failure message. Tool inputs and results are never copied.
 - `ScriptMessage(content)`: message output by the model (for information).
 - `ScriptQuestion(name,content)`: question raised by the model, answered live
   by the consumer (eg. a CLI prompt). Scripts rarely need questions.

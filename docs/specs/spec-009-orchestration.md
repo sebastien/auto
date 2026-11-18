@@ -164,9 +164,16 @@ pending (see [Interface](spec-007-interface.md)).
 - `PlanHold(context,plan,mode,reason)`: sets a Hold, acted upon by the
   running continuation, if any.
 - `PlanRelease(context,plan,reason)`: releases the Hold.
-- `PlanEvents(context,plan,since?,follow?)`: returns the PlanEvents after
+- `PlanEvents(context,plan,since?,follow?,level?)`: returns the PlanEvents after
   the `since` sequence number, in order. With `follow`, streams new events as
-  they are appended, until interrupted.
+  they are appended, until interrupted. At `level` `debug` or `trace` (default
+  `info`), each run's journal events follow its `RunStarted`, and precede its
+  `RunWaiting` or `RunEnded`, as `{run, task, index, event}`: `debug` leaves
+  out streamed messages, usage counters, sessions and in-flight tool calls,
+  `trace` keeps everything. Journal events carry no time, so a replayed run's
+  events all follow its start; followed live, they interleave as they happen.
+- `PlanLog(context,plan,since?,follow?,level?)`: `PlanEvents` at the given
+  level, else `AUTO_LOG_LEVEL`, else the `[log] level` setting, else `debug`.
 
 ## Rules
 

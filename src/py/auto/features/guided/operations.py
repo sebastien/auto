@@ -134,22 +134,22 @@ def excerpt(value, size: int = 160) -> str:
 def drive(context, path, before: dict | None = None):
 	"""Continue a plan, asking for answers whenever it waits on them, then summarise with what changed since `before`."""
 	before = before or snapshot(context.project)
-	stop = None
 	# The person running a guided plan approves it: the `confirm` effects of its tasks are granted.
 	PlanApprove(context, path)
 	while True:
-		stop = None
+		stop, reason = None, None
 		for event in PlanContinue(context, path):
 			yield event
 			if event["kind"] == PlanEventKind.CONTINUATION_STOPPED:
 				stop = event["data"]["stop"]
+				reason = failureText(event["data"].get("error")) or None
 		if stop == ContinuationStop.WAITING and context.question and answerOpen(context, path):
 			continue
 		# Tasks added by a refinement while it ran are part of the plan the person is running.
 		if stop == ContinuationStop.BLOCKED and PlanApprove(context, path):
 			continue
 		break
-	yield {"kind": SUMMARY, "data": PlanSummary(context, path, stop, changes(context.project, before))}
+	yield {"kind": SUMMARY, "data": PlanSummary(context, path, stop, changes(context.project, before), reason=reason)}
 
 # -----------------------------------------------------------------------------
 #
@@ -236,7 +236,7 @@ def PlanUse(context, id: str) -> dict:
 
 
 def PlanSummary(context, plan, stop: str | None = None, changed: list | None = None, reason: str | None = None) -> dict:
-	"""Summarise where a plan stands: progress, cost, decisions, results, files `changed` and why it stopped, with the `reason` of a failed planning."""
+	"""Summarise progress, cost, decisions, results, files `changed`, and the `reason` for stopping."""
 	path = planPath(context, plan)
 	context = context.derive(plan=path)
 	status = PlanStatus(context, path)
@@ -278,7 +278,7 @@ def TaskShow(context, task: str) -> dict:
 			output = None
 	return {"id": id, "goal": detail["goal"], "state": status["tasks"][id], "description": tasks[id].description or tasks[id].sections.get("Process", ""),
 		"parent": detail["parent"], "dependencies": detail["dependencies"], "attempts": len(runs),
-		"latest": {key: latest[key] for key in ("id", "status", "failure", "question", "usage", "started", "ended") if key in latest} if latest else None,
+		"latest": {key: latest[key] for key in ("id", "status", "failure", "question", "usage", "started", "ended", "files") if key in latest} if latest else None,
 		"output": output, "questions": [gap["question"] for gap in status["gaps"] if id in gap["needed_by"]]}
 
 

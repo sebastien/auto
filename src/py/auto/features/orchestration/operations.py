@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from contextlib import ExitStack
+from queue import Empty, SimpleQueue
 
 from auto.features.elaboration.operations import PlanRefine
 from auto.features.plan.control import planHold, reconcileContinuations, saveContinuation
@@ -75,8 +76,20 @@ def PlanContinue(context, plan):
 	cursor, timeouts, attempted, refined = 0, 0, set(), set()
 	stop, error, finalEvents = ContinuationStop.CANCELLED, None, []
 	callerCancelled = context.cancelled
-	workerContext = context.derive(author=value["id"], observe=None, tick=None,
+	# Keep live engine feedback on the caller thread, separate from durable plan events.
+	progress = SimpleQueue()
+	workerContext = context.derive(author=value["id"], observe=progress.put if context.observe else None, tick=None,
 		variables={**context.variables, "continuation": value["id"]}, cancelled=lambda: cancel.is_set() or callerCancelled())
+
+	def report():
+		while context.observe:
+			try:
+				event = progress.get_nowait()
+			except Empty:
+				break
+			context.observe(event)
+		if context.tick:
+			context.tick()
 
 	def events():
 		nonlocal cursor
@@ -100,10 +113,12 @@ def PlanContinue(context, plan):
 		worker = threading.Thread(target=execute)
 		worker.start()
 		while worker.is_alive():
+			report()
 			yield from events()
 			if callerCancelled() or (planHold(path) or {}).get("mode") == "Stop":
 				cancel.set()
 			worker.join(.05)
+		report()
 		yield from events()
 		worker = None
 		if callerCancelled() or cancel.is_set():
@@ -224,8 +239,9 @@ def PlanContinue(context, plan):
 						refinement = yield from perform(lambda: PlanRefine(ctx, path, "Successful task requests refinement", task="root"))
 						if isinstance(refinement, dict) and isinstance(refinement.get("run"), dict) and refinement["run"]["status"] != RunStatus.SUCCEEDED:
 							result = refinement["run"]
-					if result.get("status") == RunStatus.FAILED and result.get("failure", {}).get("kind") == "system":
-						stop = ContinuationStop.FAILED
+					failure = result.get("failure") or {}
+					if result.get("status") == RunStatus.FAILED and (result.get("task") == "elaborator" or failure.get("kind") == "system"):
+						stop, error = ContinuationStop.FAILED, failure.get("reason")
 						break
 					timeouts = timeouts + 1 if result.get("status") == RunStatus.TIMED_OUT else 0
 					if timeouts >= threshold:

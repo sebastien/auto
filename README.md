@@ -131,7 +131,7 @@ More, when you need it:
 |---|---|
 | `auto pause` / `auto stop` | Pause once the current task finishes, or stop it now |
 | `auto resume` | Release a paused or stopped plan and continue it |
-| `auto log` | The plan's history; `--follow` keeps watching it |
+| `auto log` | What happened in the plan, run by run (tools, checks, repairs, denials); `--watch` (or `--follow`) keeps watching it, `--level trace` adds agent messages and usage, `--level info` keeps only the plan history |
 | `auto plans` / `auto use PLAN` | List the project's plans, choose the current one |
 | `auto decide "QUESTION" "ANSWER"` | Record a decision made outside a question |
 | `auto learned` | What memory agents have learned and what awaits them |
@@ -216,6 +216,9 @@ temperature = 0.2
 
 [features.example]
 enabled = true
+
+[log]
+level = "trace"   # auto log detail: info, debug (default) or trace; AUTO_LOG_LEVEL and --level override it
 ```
 
 Execution defaults belong under `[runtime]` (or `runtime:` in YAML); flat

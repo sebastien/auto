@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from auto.features.guided.operations import PlanGo
 from auto.features.orchestration.operations import PlanContinue
 from auto.features.plan.gaps import GapDecide
 from auto.features.plan.operations import PlanRevise, PlanStatus
@@ -120,7 +121,11 @@ class BudgetCombinationTests(unittest.TestCase):
 		self.assertEqual(RunGet(self.context, waiting)["status"], "Waiting")
 		self.assertEqual(len(allocations), 2)
 		self.limit(tokens=8, cost=1, time=60)
-		self.assertEqual(list(PlanContinue(self.context, self.plan))[-1]["data"]["stop"], "ended")
+		observed = []
+		self.assertEqual(list(PlanGo(self.context.derive(observe=observed.append), self.plan))[-1]["data"]["stop"], "ended")
+		progress = next(event for event in observed if event["type"] == "RunStarted")
+		self.assertEqual(progress["planBudget"], {"tokens": 8, "cost": 1, "time": 60})
+		self.assertEqual((progress["planUsage"]["tokens"], progress["usage"]["tokens"]), (2, 2), "other runs plus saved usage of this run")
 		resumed = RunGet(self.context, waiting)
 		self.assertEqual(resumed["usage"]["tokens"], 4)
 		self.assertEqual(resumed["usage"]["cost"], .5)

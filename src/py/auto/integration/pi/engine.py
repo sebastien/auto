@@ -7,6 +7,7 @@ import json
 
 from auto.integration.pi.worker import streamWorker
 from auto.runtime.model import DETAIL, Event, RunStatus
+from auto.runtime.tools import toolSummary
 from auto.utils.data import AutoError
 
 # -----------------------------------------------------------------------------
@@ -39,6 +40,8 @@ class Pi:
 			args += ["--system-prompt", config["prompt"] + "\n"]
 		decoder, pending, output, settled = codecs.getincrementaldecoder("utf-8")(), "", "", False
 		stderr, currentUsage, detail = [], {"tokens": 0, "cost": 0}, dict.fromkeys(DETAIL, 0)
+		# Tool calls in flight, by id: what their arguments touch.
+		calls = {}
 		stream = streamWorker(context.process, args, config, request["prompt"])
 		try:
 			for number, chunk in stream:
@@ -86,8 +89,14 @@ class Pi:
 						if message.get("stopReason") in {"error", "aborted"}:
 							raise AutoError(message.get("errorMessage", "Pi execution failed"), "system")
 						output = "".join(part["text"] for part in message["content"] if part["type"] == "text")
-					elif kind.startswith("tool_execution"):
-						yield {"type": Event.SCRIPT_ACTION, "name": event["toolName"], "content": kind}
+					elif kind in {"tool_execution_start", "tool_execution_end"}:
+						# Only the end tells the outcome, so it repeats what the start's arguments touched.
+						call = event.get("toolCallId")
+						if kind == "tool_execution_start":
+							calls[call] = toolSummary(event["toolName"], event.get("args"), context.project, config.get("cwd"))
+						status = "running" if kind == "tool_execution_start" else "error" if event.get("isError") else "completed"
+						yield {"type": Event.SCRIPT_ACTION, "name": event["toolName"], "content": status,
+							**(calls.pop(call, {}) if kind == "tool_execution_end" else calls.get(call, {}))}
 					elif kind in {"agent_end", "agent_settled"}:
 						if event.get("aborted"):
 							raise AutoError("Pi aborted", "cancelled")

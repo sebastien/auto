@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from auto.features.plan.control import PlanHold, PlanRelease
-from auto.features.plan.events import PlanEvents
+from auto.features.plan.events import PlanEvents, logLevel
 from auto.features.plan.gaps import DecisionRecord, GapDecide, GapDismiss, GapRaise, PlanRepair
 from auto.features.plan.operations import PlanAbandon, PlanGet, PlanRevise, PlanStatus
 from auto.features.plan.store import journal
@@ -84,6 +85,53 @@ class EventTests(unittest.TestCase):
 		kinds = [row["kind"] for row in events]
 		self.assertLess(kinds.index("GapRaised"), kinds.index("RunWaiting"))
 		self.assertLess(kinds.index("GapResolved"), kinds.index("RunEnded"))
+
+	def testLogLevelsAddRunJournalsUnderTheirRun(self):
+		class Chatty:
+			def start(inner, context, request):
+				yield {"type": "ScriptAction", "name": "read", "content": "running"}
+				yield {"type": "ScriptAction", "name": "read", "content": "completed"}
+				yield {"type": "ScriptAction", "name": "write", "content": "completed", "access": "write", "files": ["docs/a.md"]}
+				yield {"type": "ScriptMeta", "name": "usage", "value": {"tokens": 12, "cost": 0}}
+				yield {"type": "ScriptMessage", "content": "Done"}
+				yield {"type": "ScriptEnded", "status": "Succeeded", "output": "Done"}
+		self.context.engines["fake"] = Chatty()
+		self.add("work")
+		run = TaskStart(self.context, "work")
+		self.assertFalse(any("event" in row for row in self.events()))
+		self.assertEqual(run["files"], {"read": [], "written": ["docs/a.md"]})
+		self.assertEqual(next(row for row in self.events() if row["kind"] == "RunEnded")["data"]["files"], run["files"])
+		def journal(level):
+			rows = list(PlanEvents(self.context, level=level))
+			start = next(index for index, row in enumerate(rows) if row.get("kind") == "RunStarted")
+			end = next(index for index, row in enumerate(rows) if row.get("kind") == "RunEnded")
+			items = [row for row in rows if "event" in row]
+			self.assertTrue(all(start < rows.index(item) < end and item["run"] == run["id"] and item["task"] == run["task"] for item in items))
+			return [(item["event"]["type"], item["event"].get("content", item["event"].get("name"))) for item in items]
+		debug = journal("debug")
+		self.assertIn(("ScriptAction", "completed"), debug)
+		self.assertNotIn(("ScriptAction", "running"), debug)
+		self.assertFalse({("ScriptMeta", "usage"), ("ScriptMessage", "Done"), ("RunEnded", None)} & set(debug))
+		trace = journal("trace")
+		self.assertTrue({("ScriptAction", "running"), ("ScriptMeta", "usage"), ("ScriptMessage", "Done")} <= set(trace))
+		# Following from a cursor after the run started only shows what it journals next.
+		started = next(row["seq"] for row in self.events() if row["kind"] == "RunStarted")
+		self.assertFalse(any("event" in row for row in PlanEvents(self.context, since=started, level="trace")))
+		with self.assertRaises(AutoError):
+			list(PlanEvents(self.context, level="verbose"))
+
+	def testLogLevelComesFromArgumentEnvironmentThenConfiguration(self):
+		configured = self.context.derive(defaults={**self.context.defaults, "log": {"level": "trace"}})
+		with patch.dict(os.environ, {}, clear=False):
+			os.environ.pop("AUTO_LOG_LEVEL", None)
+			self.assertEqual(logLevel(self.context), "debug")
+			self.assertEqual(logLevel(configured), "trace")
+			os.environ["AUTO_LOG_LEVEL"] = "debug"
+			self.assertEqual(logLevel(configured), "debug")
+			self.assertEqual(logLevel(configured, "info"), "info")
+			os.environ["AUTO_LOG_LEVEL"] = "loud"
+			with self.assertRaises(AutoError):
+				logLevel(self.context)
 
 	def testCursorResumesAndFollowSeesAnotherWriter(self):
 		self.add("first")

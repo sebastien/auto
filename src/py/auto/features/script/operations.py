@@ -118,7 +118,8 @@ def executePrepared(context: Context, request: dict, journal: dict | None = None
 	config = request["config"]
 	name = config.get("engine", RUNTIME_DEFAULTS["engine"])
 	if context.observe:
-		context.observe({"type": Event.EXECUTION_STARTED, "config": {**config, "engine": name}, "output": request["output"], "transform": transform})
+		context.observe({"type": Event.EXECUTION_STARTED, "config": {**config, "engine": name}, "output": request["output"], "transform": transform,
+			**{key: (journal or {}).get(key) for key in ("task", "kind", "check") if (journal or {}).get(key)}})
 	entry = {"ts": timestamp(), "project": context.project.name, "plan": context.plan.name if context.plan else None,
 		"kind": "script", "run": None, "task": None, **(journal or {}),
 		"engine": name, "provider": config.get("provider"), "model": config.get("model"), "status": RunStatus.CANCELLED, "failure": None}

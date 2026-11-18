@@ -163,7 +163,7 @@ Main commands, in the order of the reference:
 | `PlanPause` | `pause` | — | Pause a plan once its current task finishes |
 | `PlanStop` | `stop` | — | Stop a plan now, cancelling its current task |
 | `PlanResume` | `resume` | — | Release a held plan and continue it |
-| `PlanEvents` | `log` | `plan_events` | Review a plan's history, and follow it, from any interface |
+| `PlanLog` | `log` | `plan_events` | Review a plan's history, and follow it (`--follow`/`--watch`), from any interface; `level` (`info`, `debug`, `trace`; default `AUTO_LOG_LEVEL`, then `[log] level`, then `debug`) adds each run's journal events |
 | `TaskShow` | `show` | `task_show` | Know what a task does, how its latest attempt went and what it produced |
 | `PlanList` | `plans` | `plan_list` | Find the plans of a project, and pick one to follow |
 | `PlanUse` | `use` | — | Choose the plan later commands act on |

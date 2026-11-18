@@ -56,6 +56,8 @@ needed_by: [{task ids, or root}]
 
 {The question, stating what is needed and why.}
 
+{Omit the entire `## gap:` section when there is no question. Do not use `## gap: none`.}
+
 ## remove: {id}
 
 {Why the task is removed. Refinement only.}

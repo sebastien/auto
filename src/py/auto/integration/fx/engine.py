@@ -6,6 +6,7 @@ import json
 
 from auto.integration.process import capture
 from auto.runtime.model import Event, RunStatus
+from auto.runtime.tools import toolSummary
 from auto.utils.data import AutoError
 
 # -----------------------------------------------------------------------------
@@ -70,7 +71,9 @@ class Fx:
 			not all(isinstance(tool.get(key), str) for key in ("name", "status")) for tool in tools):
 			raise AutoError("fx returned invalid tool_calls", "system")
 		for tool in tools:
-			yield {"type": Event.SCRIPT_ACTION, "name": tool["name"], "content": tool["status"]}
+			arguments = tool.get("input", tool.get("arguments"))
+			yield {"type": Event.SCRIPT_ACTION, "name": tool["name"], "content": tool["status"],
+				**(toolSummary(tool["name"], arguments, context.project, config.get("cwd")) if arguments is not None else {})}
 		yield {"type": Event.SCRIPT_MESSAGE, "content": result["final_output"]}
 		yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": result["final_output"]}
 

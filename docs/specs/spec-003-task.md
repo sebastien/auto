@@ -64,7 +64,10 @@ Run: the stored execution of a task, extended by the layers above.
   run (see `ScriptInputs`), so that changed content can invalidate the run;
   each digest is supplied by the content owner (see Plan digest)
 - `receipt`: the run metadata (status, timing, runtime, usage, inputs,
-  verdicts, evaluation, failure)
+  verdicts, evaluation, failure, and `files`: the `read` and `written` paths
+  of the engine tool calls that completed, across attempts, relative to the
+  project when within it; shell commands are not inspected, so files they
+  change are not listed)
 
 The journal only tracks runtime events; each engine may keep more granular logs
 (eg. full transcript).

@@ -31,6 +31,7 @@ from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
 from auto.runtime.operations import Engine, Knowledge, Resolve, Shell, Value
+from auto.runtime.tools import recordFiles
 from auto.utils.data import AutoError, atomicWrite, document, identifier, identity, jsonText, merge, readJson, timestamp
 from auto.utils.references import relocate
 from auto.utils.layout import runsPath, taskFile, taskId, taskStem
@@ -224,6 +225,9 @@ def _drive(context, path, run, state, request, answer=None):
 				observed = {**event, "value": dict(context.limits.usage)} if event.get("type") == Event.SCRIPT_META and event.get("name") == "usage" else event
 				context.observe(observed)
 			run["usage"] = dict(context.limits.usage)
+			if event["type"] == Event.SCRIPT_ACTION:
+				# The receipt keeps what the run's tools read and wrote, across attempts.
+				recordFiles(run, event)
 			if event["type"] == Event.SCRIPT_META:
 				context.runtime.recordRunMetadata(run, event)
 			if event["type"] == Event.SCRIPT_META and event["name"] == "session":
@@ -309,7 +313,12 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 	if context.runScope is None:
 		context = context.derive(allowShell=context.allowShell and shellPermitted(context.derive(defaults=context.policyDefaults), task))
 	if context.observe:
-		context.observe({"type": Event.RUN_STARTED, "task": run["task"], "budget": run["budget"], "usage": run["usage"]})
+		progress = {"type": Event.RUN_STARTED, "task": run["task"], "budget": run["budget"], "usage": run["usage"], "resuming": answer is not UNSET}
+		if context.runScope is None:
+			previous = [value["usage"] for value in RunList(context) if value["id"] != run["id"]]
+			progress["planUsage"] = {key: sum(value.get(key, 0) for value in previous) for key in ("cost", "tokens", "time")}
+			progress["planBudget"] = budgetValue(createPlan(context.plan).meta.get("budget"))
+		context.observe(progress)
 	run["status"] = RunStatus.RUNNING
 	try:
 		if context.cancelled():

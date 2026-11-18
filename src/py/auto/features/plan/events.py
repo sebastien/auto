@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from auto.features.plan.model import PlanEvent, PlanEventKind, PlanState, RevisionOp, createPlan
 from auto.features.plan.references import readReceipt, runDirectories
 from auto.features.plan.store import journal, locked, planPath
-from auto.runtime.model import RunStatus, TERMINAL
+from auto.runtime.model import Event, RunStatus, TERMINAL
 from auto.runtime.operations import Knowledge
-from auto.utils.data import AutoError, atomicWrite, jsonText, readJson, timestamp
+from auto.utils.data import AutoError, atomicWrite, identifier, jsonText, readJson, timestamp
+from auto.utils.layout import runsPath
 
 
 def eventRows(path):
@@ -115,6 +117,14 @@ def recordPlanStatus(context, path):
 		recordEvent(context, path, **event)
 
 
+def runEnded(run) -> dict:
+	"""Project a terminal receipt: status, usage, failure and the files its tools read and wrote."""
+	data = {"run": run["id"], "status": run["status"], "usage": run["usage"], "failure": run.get("failure")}
+	if run.get("files"):
+		data["files"] = run["files"]
+	return data
+
+
 def recordRun(context, path, run):
 	"""Project a durable run creation, waiting state or terminal receipt."""
 	base = "auto:" + createPlan(path).id
@@ -124,9 +134,7 @@ def recordRun(context, path, run):
 	if run["status"] == RunStatus.WAITING:
 		recordEvent(context, path, PlanEventKind.RUN_WAITING, ref, {"run": run["id"], "gap": run["gap"]}, author=run["id"])
 	elif run["status"] in TERMINAL:
-		recordEvent(context, path, PlanEventKind.RUN_ENDED, ref,
-			{"run": run["id"], "status": run["status"], "usage": run["usage"], "failure": run.get("failure")},
-			date=run["ended"], author=run["id"])
+		recordEvent(context, path, PlanEventKind.RUN_ENDED, ref, runEnded(run), date=run["ended"], author=run["id"])
 	recordPlanStatus(context, path)
 
 
@@ -160,26 +168,103 @@ def repairEvents(context, path):
 				candidates.append({"kind": PlanEventKind.RUN_WAITING, "ref": ref, "date": run["started"],
 					"data": {"run": run["id"], "gap": run["gap"]}, "author": run["id"]})
 			elif run["status"] in TERMINAL:
-				candidates.append({"kind": PlanEventKind.RUN_ENDED, "ref": ref, "date": run["ended"],
-					"data": {"run": run["id"], "status": run["status"], "usage": run["usage"], "failure": run.get("failure")}, "author": run["id"]})
+				candidates.append({"kind": PlanEventKind.RUN_ENDED, "ref": ref, "date": run["ended"], "data": runEnded(run), "author": run["id"]})
 		for event in sorted(candidates, key=lambda item: item["date"]):
 			recordEvent(context, path, **event)
 		recordPlanStatus(context, path)
 
 
-def PlanEvents(context, plan=None, since: int | None = None, follow: bool = False):
-	"""Stream events after a sequence cursor, optionally following new appends."""
+LOG_LEVELS = ("info", "debug", "trace")
+# Journal events too frequent or verbose for `debug`: streamed text, usage counters and engine sessions.
+TRACE_META = frozenset({"tokens", "usage", "session"})
+TRACE_TYPES = frozenset({Event.SCRIPT_MESSAGE, Event.ASSESSMENT_USAGE})
+# A run's own end is already a plan event; tool calls in flight are shown once they settle.
+QUIET_ACTIONS = frozenset({"pending", "running", "streaming"})
+
+
+def logLevel(context, level: str | None = None) -> str:
+	"""Choose the log level: the argument, then `AUTO_LOG_LEVEL`, then `[log] level`, then `debug`."""
+	log = context.defaults.get("log", {})
+	level = level or os.environ.get("AUTO_LOG_LEVEL") or (log.get("level") if isinstance(log, dict) else None) or "debug"
+	if level not in LOG_LEVELS:
+		raise AutoError(f"Unknown log level: {level}", recovery="Use one of: " + ", ".join(LOG_LEVELS) + ".")
+	return level
+
+
+def journalShown(event: dict, level: str) -> bool:
+	"""Tell whether a run journal event belongs to the log at `level`."""
+	if level == "trace":
+		return True
+	kind = event.get("type")
+	if kind == Event.RUN_ENDED or kind in TRACE_TYPES:
+		return False
+	if kind == Event.SCRIPT_META:
+		return event.get("name") not in TRACE_META
+	if kind == Event.SCRIPT_ACTION and not event.get("lifecycle"):
+		return event.get("content") not in QUIET_ACTIONS
+	return True
+
+
+def PlanEvents(context, plan=None, since: int | None = None, follow: bool = False, level: str = "info"):
+	"""Stream events after a sequence cursor, optionally following new appends.
+
+	Above `info`, each run's journal events follow its `RunStarted`, as `{run, task, index, event}`."""
 	if since is not None and (type(since) is not int or since < 0):
 		raise AutoError("since must be a non-negative event sequence")
 	if type(follow) is not bool:
 		raise AutoError("follow must be a boolean")
+	if level not in LOG_LEVELS:
+		raise AutoError(f"Unknown log level: {level}", recovery="Use one of: " + ", ".join(LOG_LEVELS) + ".")
 	path, cursor = planPath(context, plan), since or 0
+	# Runs being tailed: run id to its task, journal lines read and their byte length.
+	tailed = {}
+	def journal(run, final=False):
+		task, index, offset = tailed[run]
+		file = runsPath(path) / identifier(run) / "journal.jsonl"
+		data = b""
+		if file.exists():
+			with file.open("rb") as stream:
+				stream.seek(offset)
+				data = stream.read()
+		# Only whole lines: a writer may be midway through the last one.
+		data = data[:data.rfind(b"\n") + 1]
+		lines = data.decode().splitlines()
+		tailed[run] = (task, index + len(lines), offset + len(data))
+		if final:
+			del tailed[run]
+		for number, line in enumerate(lines, index):
+			event = json.loads(line)
+			if journalShown(event, level):
+				yield {"run": run, "task": task, "index": number, "event": event}
+	if level != "info" and cursor:
+		# Runs already under way at the cursor show only what they journal from now on.
+		with locked(path):
+			for row in eventRows(path):
+				if row["seq"] <= cursor and row["kind"] == PlanEventKind.RUN_STARTED:
+					tailed[row["data"]["run"]] = (row["data"].get("task", ""), 0, 0)
+				elif row["seq"] <= cursor and row["kind"] == PlanEventKind.RUN_ENDED:
+					tailed.pop(row["data"]["run"], None)
+		for run in list(tailed):
+			list(journal(run))
 	while not context.cancelled():
 		with locked(path):
 			rows = [row for row in eventRows(path) if row["seq"] > cursor]
 		for row in rows:
 			cursor = row["seq"]
+			run = row["data"].get("run") if level != "info" else None
+			if run and row["kind"] in {PlanEventKind.RUN_WAITING, PlanEventKind.RUN_ENDED} and run in tailed:
+				yield from journal(run, final=row["kind"] == PlanEventKind.RUN_ENDED)
 			yield row
+			if run and row["kind"] == PlanEventKind.RUN_STARTED:
+				tailed[run] = (row["data"].get("task", ""), 0, 0)
+				yield from journal(run)
+		for run in list(tailed):
+			yield from journal(run)
 		if not follow:
 			return
 		time.sleep(.05)
+
+
+def PlanLog(context, plan=None, since: int | None = None, follow: bool = False, level: str | None = None):
+	"""Stream the plan's log at the chosen or configured level (see `logLevel`)."""
+	yield from PlanEvents(context, plan, since, follow, logLevel(context, level))
