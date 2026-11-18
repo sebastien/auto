@@ -227,6 +227,25 @@ class EngineTests(unittest.TestCase):
 		self.assertEqual(result["output"], "Done")
 		self.assertGreater(engine.polls, 2)
 
+	def testOpenCodeDeniesEveryToolForEmptyTools(self):
+		class Stub(OpenCode):
+			def __init__(self):
+				self.calls = []
+			def api(self, context, method, path, data=None, config=None):
+				self.calls.append((path, data))
+				if path.endswith("/form"):
+					return {"data": []}
+				if "/message?" in path:
+					return {"data": [{"id": "answer", "type": "assistant", "content": [{"type": "text", "text": "Done"}]},
+						{"id": "idle", "type": "idle", "outcome": "succeeded"}], "cursor": {}}
+				return {}
+		engine = Stub()
+		ctx = Context(engines={"opencode": engine}, config={"engine": "opencode", "tools": [], "agent": "auto-help"})
+		self.assertEqual(list(ScriptStart(ctx, Script("Work", Path("work.md"))))[-1]["status"], "Succeeded")
+		create = next(data for path, data in engine.calls if path == "/api/session")
+		self.assertEqual(create["agent"], "auto-help")
+		self.assertEqual(create["permissions"][-1], {"action": "*", "resource": "*", "effect": "deny"})
+
 	def testOpenCodeReportsTokensByKindAndTurns(self):
 		class Stub(OpenCode):
 			def api(self, context, method, path, data=None, config=None):
@@ -394,7 +413,7 @@ class EngineTests(unittest.TestCase):
 			({"engine": "pi", "agent": "custom", "temperature": .1}, "named agents"),
 			({"engine": "pi", "provider": "openai"}, "needs a model"),
 			({"engine": "llm", "tools": ["read"]}, "without tools"),
-			({"engine": "opencode", "tools": []}, "cannot restrict tools"),
+			({"engine": "opencode", "tools": ["read"]}, "cannot restrict tools"),
 			({"engine": "fx", "tools": []}, "cannot restrict tools"),
 			({"engine": "pi", "tools": "read"}, "tools must be a list"),
 			({"engine": "pi", "tools": ["read; rm"]}, "tools must be a list"),

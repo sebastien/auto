@@ -78,7 +78,9 @@ operation remains available, by noun and verb, under `auto x`.
   engine. `auto help "QUESTION"` runs the bundled `auto:catalogue/task/help`
   preset once, with the shipped reference and no tools. It does not create or
   update a plan or save a task. Use `auto help -- "COMMAND"` to ask about a
-  command rather than show its static help. Freeform help needs Pi or LLM.
+  command rather than show its static help. Freeform help needs Pi, LLM or
+  OpenCode. OpenCode runs it with the catalogue's hidden `auto-help` agent,
+  which has no tools, but it still adds the user's global instructions.
 - *Arguments*: required arguments are positional, then optional positional
   arguments (eg. `auto answer [NUMBER] [ANSWER]`); other optional arguments
   are `--{name}` flags. Repeated arguments repeat the flag (eg.

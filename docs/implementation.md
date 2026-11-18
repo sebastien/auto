@@ -552,7 +552,7 @@ silently grant a consequential effect.
 | Engine | Behaviour |
 | --- | --- |
 | Pi | Default; warm JSONL RPC execution, optional ambient-context isolation, tools and reported token/cost usage. Named agents are rejected. |
-| OpenCode V2 | Authenticated `opencode api` transport; durable sessions and forms. Isolation and system-prompt overrides cannot be provided by this transport; temperature overrides are ignored with a warning. |
+| OpenCode V2 | Authenticated `opencode api` transport; durable sessions and forms. Isolation and system-prompt overrides cannot be provided by this transport; `tools: []` denies every tool through session permissions, and freeform help uses the catalogue's tool-less `auto-help` agent; temperature overrides are ignored with a warning. |
 | LLM CLI | Ephemeral text execution. Named agents and token/cost budgets are rejected because the adapter lacks live usage reporting. |
 | fx CLI | `fx ask --json --no-save`; final output and tool summaries, model/provider and system-prompt overrides. No saved sessions or subagents. Named agents, isolation, temperature overrides and token/cost budgets are rejected. Only final main-agent token usage is reported; no cost total. |
 

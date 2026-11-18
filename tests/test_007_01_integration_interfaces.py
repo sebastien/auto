@@ -119,10 +119,24 @@ class InterfaceTests(unittest.TestCase):
 			after = {path.relative_to(plan): path.read_bytes() for path in plan.rglob("*") if path.is_file()}
 			self.assertEqual(after, before)
 
-	def testFreeformHelpRejectsEngineWithoutIsolation(self):
-		with patch("auto.app.cli.main.contextFor", return_value=Context(config={"engine": "opencode"})), redirect_stderr(StringIO()) as stderr:
+	def testFreeformHelpRejectsEngineWithTools(self):
+		with patch("auto.app.cli.main.contextFor", return_value=Context(config={"engine": "fx"})), redirect_stderr(StringIO()) as stderr:
 			self.assertEqual(main(["help", "How do I get started?"]), 1)
-			self.assertIn("cannot run isolated help without tools", stderr.getvalue())
+			self.assertIn("cannot run help without tools", stderr.getvalue())
+
+	def testFreeformHelpUsesToollessOpenCodeAgent(self):
+		requests = []
+		class Engine:
+			def start(self, context, request):
+				requests.append(request)
+				yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": "Use auto x catalogue."}
+
+		context = Context(config={"engine": "opencode"}, engines={"opencode": Engine()})
+		with patch("auto.app.cli.main.contextFor", return_value=context), redirect_stdout(StringIO()):
+			self.assertEqual(main(["help", "How do I list the catalogue?"]), 0)
+		config = requests[0]["config"]
+		self.assertEqual((config["agent"], config["tools"], config["isolated"]), ("auto-help", [], False))
+		self.assertTrue((Path(config["cwd"]) / ".opencode/agents/auto-help.md").is_file())
 
 	def testHumanResultsKeepStdoutClean(self):
 		result = self.cli("x", "script", "expand", "-", stdin="Hello world")

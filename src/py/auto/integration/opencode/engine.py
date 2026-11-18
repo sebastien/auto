@@ -65,8 +65,8 @@ class OpenCode:
 
 	def start(self, context, request):
 		config = request["config"]
-		if "tools" in config:
-			raise AutoError("OpenCode API cannot restrict tools per run; use agent permissions, or an engine supporting tools")
+		if config.get("tools"):
+			raise AutoError("OpenCode API cannot restrict tools per run; use tools: [], agent permissions, or an engine supporting tools")
 		if config.get("isolated", False):
 			raise AutoError("OpenCode API cannot guarantee ambient-context isolation; use isolated: false or an isolating engine")
 		if "prompt" in config:
@@ -86,6 +86,9 @@ class OpenCode:
 				if config.get("access") == "read":
 					# The last matching rule wins: file edits are denied, whatever came before.
 					payload["permissions"] = [*payload.get("permissions", []), {"action": "edit", "resource": "*", "effect": "deny"}]
+				if config.get("tools") == []:
+					# Denied tools stay visible to the model; an agent with steps: 1 removes them.
+					payload["permissions"] = [*payload.get("permissions", []), {"action": "*", "resource": "*", "effect": "deny"}]
 				if config.get("agent"):
 					payload["agent"] = config["agent"]
 				if config.get("provider") or config.get("model"):

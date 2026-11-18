@@ -83,7 +83,7 @@ EPILOG = 'Use auto help COMMAND, auto COMMAND --help, or auto help "QUESTION". W
 # The shorthand a person types for a main command, shown in its place by the reference.
 SHORTHANDS = {"new": 'auto "GOAL"', "status": "auto"}
 ENGINES = ("pi", "opencode", "fx", "llm")
-HELP_ENGINES = ("pi", "llm")
+HELP_ENGINES = ("pi", "llm", "opencode")
 # What each configuration override selects, for the reference.
 CONTEXT_HELP = {"plan": "The plan to act on, by id, number or path (default: the current plan)",
 	"engine": "The agent engine: " + ", ".join(ENGINES), "provider": "The engine's model provider", "model": "The model the engine uses",
@@ -279,13 +279,16 @@ def askHelp(cli, args) -> int:
 	settings = merge(context.defaults, context.config)
 	engine = settings.get("engine", RUNTIME_DEFAULTS["engine"])
 	if engine not in HELP_ENGINES:
-		raise AutoError(f"The {engine} engine cannot run isolated help without tools.", recovery="Use auto help --engine pi or --engine llm with your question.")
+		raise AutoError(f"The {engine} engine cannot run help without tools.", recovery="Use auto help --engine pi, llm or opencode with your question.")
 	catalogue = builtinCatalogue()
 	root = catalogue.parent if (catalogue.parent / "README.md").is_file() else catalogue.parents[3]
 	referenceText = "\n\n".join([cli.format_help(), *(f"## {name}\n\n" + (root / name).read_text(encoding="utf-8")
 		for name in ("README.md", "docs/specs/spec-007-interface.md"))])
 	path = catalogue / "task/help.md"
 	task = createTaskFromText(path.read_text(encoding="utf-8"), path)
+	if engine == "opencode":
+		# OpenCode always adds global instructions; the catalogue's tool-less agent is the closest to isolation.
+		task.meta = {**task.meta, "isolated": False, "agent": "auto-help"}
 	context = context.derive(plan=None, allowShell=False, defaults={}, inputs={"question": "\\" + args.question}, question=None,
 		config={**{key: settings[key] for key in ("engine", "provider", "model") if key in settings}, "cwd": str(catalogue)},
 		variables={"reference": referenceText})
