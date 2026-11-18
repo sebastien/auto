@@ -8,7 +8,7 @@ from auto.features.plan.model import GapKind, GapState, RevisionOp, createPlan
 from auto.features.plan.store import commit, journal, locked, planPath, recover
 from auto.features.plan.references import definitionPath
 from auto.features.task.model import Task
-from auto.runtime.config import RUNTIME_DEFAULTS
+from auto.runtime.config import RUNTIME_DEFAULTS, runtimeConfig
 from auto.runtime.operations import Engine, Knowledge, Resolve
 from auto.utils.data import AutoError, digest
 from auto.utils.layout import planFile, taskFile, taskId, taskRef
@@ -148,7 +148,7 @@ def PolicyResolve(context, plan=None, task=None):
 	definitions = [tasks[task]] if task else list(tasks.values())
 	enforced = set(effects)
 	for definition in definitions:
-		name = context.config.get("engine", definition.meta.get("engine", context.defaults.get("engine", RUNTIME_DEFAULTS["engine"])))
+		name = runtimeConfig(context, definition.meta, "tasks").get("engine", RUNTIME_DEFAULTS["engine"])
 		try:
 			declared = getattr(Engine(context, name), "enforceableEffects", ())
 			enforced.intersection_update(declared if isinstance(declared, (set, frozenset, list, tuple)) else ())

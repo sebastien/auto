@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from auto.features.elaboration.catalogue import layers
+from auto.features.elaboration.catalogue import entryPaths
 from auto.features.script.sources import ScriptSources
 from auto.features.script.model import Script
 from auto.features.elaboration.metadata import MetadataProjection
@@ -69,7 +69,7 @@ def validateMethodology(context, content, tasks, graph, *, deferred=None, overri
 			if len(parts) != 2:
 				raise
 			kind, name = map(identifier, parts)
-			paths = [root / kind / (name + ".md") for _, root in layers(context)]
+			paths = [path for _, path in entryPaths(context, kind, name)]
 			# A live higher-priority selection must not be replaced by a stale
 			# snapshot of some other catalogue layer.
 			if any(path.is_file() for path in paths):

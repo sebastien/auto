@@ -95,6 +95,7 @@ class GuidedTests(unittest.TestCase):
 		self.assertEqual((summary["data"]["stop"], summary["data"]["status"]), ("ended", "Succeeded"))
 		self.assertEqual(summary["data"]["results"][0]["task"], "tsk-work")
 		self.assertTrue(summary["data"]["results"][0]["output"].startswith("Result:"))
+		self.assertEqual(summary["data"]["written"], [], "the fake engine records no file writes")
 		self.assertEqual(currentPlan(self.root), Path(summary["data"]["path"]))
 		self.assertEqual(contextFor(self.root).plan, Path(summary["data"]["path"]))
 
@@ -266,6 +267,16 @@ class GuidedTests(unittest.TestCase):
 		summary = events[-1]["data"]
 		self.assertEqual((summary["stop"], summary["status"], summary["decisions"]), ("ended", "Succeeded", 1))
 		self.assertIn("markdown", summary["results"][0]["output"])
+		(decided,) = summary["decided"]
+		self.assertEqual((decided["question"], decided["answer"], decided["author"]), ("Which format?", "markdown", "human"))
+		# Triage runs on the decision profile's model, the rest on the engine's default.
+		models = summary["models"]
+		self.assertEqual([(row["engine"], row["model"]) for row in models["models"]], [("fake", "gpt-6-luna"), ("fake", None)])
+		self.assertEqual(models["total"]["runs"], sum(row["runs"] for row in models["models"]))
+		text = summaryView(summary)
+		self.assertIn("Decided 1 question:\n  ✓ Which format?  → markdown", text)
+		self.assertIn("Usage:\n  fake openai/gpt-6-luna  — tokens\n  fake default            — tokens\n  total                   — tokens\n", text)
+		self.assertIn(f"Details: auto show tsk-work · auto log --level debug · auto x usage --where plan={summary['id']} --by kind,model", text)
 
 	def testWithoutAPersonQuestionsWaitAndAreAnsweredByNumber(self):
 		context = self.context(Engine(ask=True)).derive(question=None)
@@ -340,6 +351,43 @@ class GuidedViewTests(unittest.TestCase):
 		waiting = summaryView(self.summary(status="Active", stop="waiting", questions=["Which format?"], changed=[]))
 		self.assertNotIn("Tip:", waiting)
 		self.assertNotIn("Changed", waiting)
+
+	def testSummaryIsAReceiptOfDecisionsAndUsagePerModel(self):
+		decided = [{"question": "Which format?\nmore", "answer": "mermaid", "author": "human"},
+			{"question": "May it write files?", "answer": {"grant": "repo.write", "scope": "auto:p/task/tsk-a"}, "author": "human"},
+			{"question": "Keep tests?", "answer": True, "author": "human"}]
+		row = {"runs": 1, "tokens": None, "cost": None, "cost_estimate": None}
+		models = {"models": [{**row, "engine": "pi", "provider": "openai", "model": "gpt-6-luna", "tokens": 12_300, "cost_estimate": .004},
+			{**row, "engine": "pi", "provider": "anthropic", "model": "claude-opus-5-5", "tokens": 140_000, "cost": .45, "cost_estimate": .45}],
+			"total": {**row, "runs": 2, "tokens": 152_300, "cost": .45, "cost_estimate": .454}}
+		stages = [{"stage": "planning", "tokens": 12_300}]
+		text = summaryView(self.summary(decided=decided, decisions=3, models=models, spending=stages,
+			results=[{"task": "tsk-a", "goal": "A", "output": "Done"}]))
+		self.assertIn("Decided 3 questions:\n  ✓ Which format?  → mermaid\n  ✓ May it write files?  → grant repo.write\n  ✓ Keep tests?  → yes", text)
+		self.assertIn("Usage:\n  pi openai/gpt-6-luna          12.3k tokens  ≈<$0.01\n"
+			"  pi anthropic/claude-opus-5-5   140k tokens  $0.45\n"
+			"  total                          152k tokens  $0.45\n  by stage: planning 12.3k tokens", text)
+		self.assertIn("Details: auto show tsk-a · auto log --level debug · auto x usage --where plan=pln-001-report --by kind,model", text)
+		bare = summaryView(self.summary(stop="declined", status="Active"))
+		self.assertNotIn("Usage:", bare)
+		self.assertNotIn("Decided", bare)
+		self.assertNotIn("Details:", bare)
+
+	def testStatusOfAnEndedPlanShowsItsOutcome(self):
+		status = {"id": "pln-001-report", "goal": "Write a report", "path": "/p", "status": "Succeeded", "tasks": {"root": "Succeeded", "tsk-a": "Succeeded"},
+			"taskDetails": {"root": {"goal": "Write a report", "dependencies": [], "run": None},
+				"tsk-a": {"goal": "A", "dependencies": [], "run": None}},
+			"usage": {"tokens": 1200}, "budget": {}, "gaps": [], "hold": None, "continuation": None, "policy": {"tasks": {}}, "failures": []}
+		models = {"models": [{"engine": "pi", "provider": "openai", "model": "gpt-6-luna", "tokens": 1200, "cost": 0, "cost_estimate": .02}],
+			"total": {"tokens": 1200, "cost": 0, "cost_estimate": .02}}
+		outcome = self.summary(results=[{"task": "tsk-a", "goal": "A", "output": "Report written"}], written=["docs/report.md"], models=models)
+		text = planView(status, outcome=outcome)
+		self.assertIn("Results:\n  ✓ tsk-a  Report written\nWrote 1 file:\n  ~ docs/report.md\nUsage:", text)
+		self.assertIn("  total                 1.2k tokens  ≈$0.02", text)
+		self.assertIn("Details: auto show tsk-a", text)
+		self.assertNotIn("Results:", planView(status))
+		# Files the run changed in git are listed rather than those it recorded writing.
+		self.assertNotIn("Wrote", summaryView({**outcome, "changed": [{"path": "docs/report.md", "change": "added"}]}))
 
 	def testHelpListsTheEverydayCommandsFirst(self):
 		text = reference()

@@ -50,6 +50,29 @@ class Audit:
 	findings: list = field(default_factory=list)
 	malformed: list = field(default_factory=list)
 
+
+# What was done about a finding. `fix` mode fixes; `triage` only proposes (`to-fix`).
+RESOLUTION_MODES = ("fix", "triage")
+RESOLUTION_STATUSES = ("fixed", "to-fix", "stale", "deferred", "wont-fix", "needs-decision")
+
+
+@dataclass(slots=True)
+class Resolution:
+	"""What was done about one finding, with the locations changed."""
+
+	id: str
+	title: str
+	status: str = ""
+	changes: list = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AuditResolution:
+	"""An audit resolution: the selected findings and what was done about each."""
+
+	meta: dict
+	items: list = field(default_factory=list)
+
 # -----------------------------------------------------------------------------
 #
 # UTILITIES
@@ -109,5 +132,31 @@ def createAuditFromText(text: str) -> Audit:
 	_, findings = sections(parts.get("Findings", ""), 3)
 	audit.findings = [createFinding(key, value) for key, value in findings.items()]
 	return audit
+
+
+def createResolutionFromText(text: str) -> AuditResolution:
+	"""Parse an audit resolution: its frontmatter and one `### F1: title` section per finding."""
+	meta, body = document(text)
+	_, parts = sections(body)
+	resolution = AuditResolution(meta)
+	for key, value in sections(parts.get("Resolutions", ""), 3)[1].items():
+		id, _, title = key.partition(":")
+		item, current = Resolution(id.strip(), title.strip()), None
+		for line in value.splitlines():
+			match = re.match(r"^-\s+(status|changes)\s*:\s*(.*?)\s*$", line)
+			if match:
+				current = match[1]
+				if current == "status":
+					item.status = match[2].strip("`")
+				else:
+					item.changes.extend(part.strip() for part in match[2].split(",") if part.strip())
+				continue
+			nested = re.match(r"^\s+-\s+(.+?)\s*$", line)
+			if nested and current == "changes":
+				item.changes.append(nested[1])
+			elif line.strip() and not line[:1].isspace():
+				current = None
+		resolution.items.append(item)
+	return resolution
 
 # EOF

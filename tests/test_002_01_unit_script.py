@@ -168,7 +168,8 @@ class ScriptTests(unittest.TestCase):
 		self.assertTrue(ScriptExpand(context, loaded).startswith("Caller data Caller data"))
 
 	def testInputDiscoveryKeepsMaterializedParametersFrozen(self):
-		loaded = self.script("{{ params.mode }}", {"from": "./template.md", "params": {"mode": "\\Frozen"}})
+		# Materialised tasks record their template as `{ref, digest}`; a bare string would be inherited.
+		loaded = self.script("{{ params.mode }}", {"from": {"ref": "./template.md", "digest": "sha256:0"}, "params": {"mode": "\\Frozen"}})
 		context = self.ctx.derive(params={"mode": "./missing.txt"})
 		self.assertEqual(ScriptInputs(context, loaded)["references"], [])
 		self.assertTrue(ScriptExpand(context, loaded).startswith("Frozen"))

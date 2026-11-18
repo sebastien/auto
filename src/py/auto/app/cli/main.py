@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import sys
+from contextlib import closing
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from auto.app.cli.frontend import (EventText, Frontend, colorFor, learningView, 
 	taskView, width)
 from auto.features.plan.events import LOG_LEVELS, logLevel
 from auto.runtime.config import CONTEXT_KEYS, RUNTIME_DEFAULTS, contextFor
-from auto.utils.config import RUNTIME_KEYS
+from auto.utils.config import RUNTIME_KEYS, RUNTIME_TABLES
 from auto.utils.data import AutoError, merge, yamlLoad
 from auto.utils.layout import planPaths, storePath, taskId
 
@@ -78,10 +79,11 @@ def assignments(items):
 DESCRIPTION = """Auto runs Markdown scripts or turns a goal into a plan of tasks.
 It runs them with an agent, asks you when it needs a decision, and learns from
 what happened (version {version})."""
-EPILOG = "Use auto help COMMAND or auto COMMAND --help. Without a terminal, or with --no-input, Auto never prompts."
+EPILOG = 'Use auto help COMMAND, auto COMMAND --help, or auto help "QUESTION". Without a terminal, or with --no-input, Auto never prompts.'
 # The shorthand a person types for a main command, shown in its place by the reference.
 SHORTHANDS = {"new": 'auto "GOAL"', "status": "auto"}
 ENGINES = ("pi", "opencode", "fx", "llm")
+HELP_ENGINES = ("pi", "llm")
 # What each configuration override selects, for the reference.
 CONTEXT_HELP = {"plan": "The plan to act on, by id, number or path (default: the current plan)",
 	"engine": "The agent engine: " + ", ".join(ENGINES), "provider": "The engine's model provider", "model": "The model the engine uses",
@@ -140,6 +142,7 @@ def reference() -> str:
 			name, alias = label(exposure)
 			(everyday if exposure.everyday else more).append(row(name, exposure.need + alias))
 	more += [row("auto init", "Choose an engine and write the project configuration"),
+		row('auto help "QUESTION"', "Ask a question about Auto without starting a plan"),
 		row("auto x", "Internals: runs, questions, policy, catalogue, consolidation, config, usage, MCP")]
 	return "\n".join(everyday + [""] + more)
 
@@ -164,7 +167,15 @@ def parser():
 	init.set_defaults(special="init", argumentParser=init)
 	init.add_argument("--engine", choices=ENGINES)
 	init.add_argument("--no-input", action="store_true", help="Never prompt for missing values")
-	commands.add_parser("help", help="Show this reference").set_defaults(special="help")
+	helpCommand = commands.add_parser("help", description="Show the command reference or ask a question about Auto.",
+		epilog='Use auto help COMMAND for static help or auto help -- "COMMAND" to ask about that command.')
+	helpCommand.set_defaults(special="help", argumentParser=helpCommand)
+	helpCommand.add_argument("question", metavar="QUESTION", nargs="?", help="A quoted question about Auto")
+	helpCommand.add_argument("--engine", choices=HELP_ENGINES, help="The engine for freeform help")
+	for key in ("provider", "model"):
+		helpCommand.add_argument("--" + key, metavar=key.upper(), help=CONTEXT_HELP[key])
+	helpCommand.add_argument("--format", choices=("text", "markdown", "json"), default="text", help="Output format (default: text)")
+	helpCommand.add_argument("--no-input", action="store_true", help="Accepted for consistency; help never prompts")
 	internals = commands.add_parser("x", help="Internals, for inspection, recovery and agents", description="Internal operations, by noun.",
 		usage="auto x NOUN VERB [ARGUMENT…] [options]")
 	internals.set_defaults(special="x", argumentParser=internals)
@@ -204,7 +215,12 @@ def parser():
 def route(cli, argv: list) -> list:
 	"""Map the shorthands to commands: a script path runs it, a goal of several words starts a plan."""
 	if len(argv) > 1 and argv[0] == "help":
-		return route(cli, [*argv[1:], "--help"])
+		target = argv[1].partition("#")[0]
+		path = "/" in target or Path(target).suffix == ".md"
+		if argv[1] in cli.commands or not argv[1].startswith("-") and path and (
+			not any(char.isspace() for char in target) or Path(target).expanduser().is_file()
+		):
+			return route(cli, [*argv[1:], "--help"])
 	if not argv or argv[0].startswith("-") or argv[0] in cli.commands:
 		return argv
 	target = argv[0].partition("#")[0]
@@ -241,15 +257,48 @@ def welcome(context) -> int:
 	return 0
 
 
-def detectEngine(context, say):
+def detectEngine(context, say, engines=ENGINES):
 	"""Use an installed engine when none is configured and the default one is missing."""
 	if "engine" in context.config or "engine" in context.defaults or shutil.which(RUNTIME_DEFAULTS["engine"]):
 		return context
-	engine = next((engine for engine in ENGINES if shutil.which(engine)), None)
+	engine = next((engine for engine in engines if shutil.which(engine)), None)
 	if engine is None:
 		return context
 	say(f"Using the {engine} engine, as {RUNTIME_DEFAULTS['engine']} is not installed; save this choice with auto init.")
 	return context.derive(defaults={**context.defaults, "engine": engine})
+
+
+def askHelp(cli, args) -> int:
+	"""Run the bundled help preset once, with no current plan or project tools."""
+	from auto.features.elaboration.catalogue import builtinCatalogue
+	from auto.features.script.operations import ScriptStart
+	from auto.features.task.model import createTaskFromText
+
+	context = contextFor(engine=args.engine, provider=args.provider, model=args.model)
+	context = detectEngine(context, lambda text: print(text, file=sys.stderr), HELP_ENGINES)
+	settings = merge(context.defaults, context.config)
+	engine = settings.get("engine", RUNTIME_DEFAULTS["engine"])
+	if engine not in HELP_ENGINES:
+		raise AutoError(f"The {engine} engine cannot run isolated help without tools.", recovery="Use auto help --engine pi or --engine llm with your question.")
+	catalogue = builtinCatalogue()
+	root = catalogue.parent if (catalogue.parent / "README.md").is_file() else catalogue.parents[3]
+	referenceText = "\n\n".join([cli.format_help(), *(f"## {name}\n\n" + (root / name).read_text(encoding="utf-8")
+		for name in ("README.md", "docs/specs/spec-007-interface.md"))])
+	path = catalogue / "task/help.md"
+	task = createTaskFromText(path.read_text(encoding="utf-8"), path)
+	context = context.derive(plan=None, allowShell=False, defaults={}, inputs={"question": "\\" + args.question}, question=None,
+		config={**{key: settings[key] for key in ("engine", "provider", "model") if key in settings}, "cwd": str(catalogue)},
+		variables={"reference": referenceText})
+	result = None
+	with closing(Frontend(args.format)) as frontend, closing(ScriptStart(context, task.script())) as stream:
+		if args.format == "text":
+			context.observe, context.tick = frontend.event, frontend.tick
+		for result in stream:
+			if args.format == "text":
+				frontend.scriptEvent(result)
+			else:
+				print(render(result, args.format), flush=True)
+	return exitStatus(result)
 
 
 def initProject(context, args, prompter) -> int:
@@ -282,15 +331,21 @@ def main(argv=None) -> int:
 	args = cli.parse_args(argv)
 	special = getattr(args, "special", None)
 	if special == "help":
-		cli.print_help()
-		return 0
+		if args.question is None:
+			cli.print_help()
+			return 0
+		if not args.question.strip():
+			args.argumentParser.error("the question must not be empty")
 	if special == "x" and args.noun is None:
 		args.argumentParser.print_help()
 		return 0
-	prompter = prompt.session(argv)
 	frontend = None
 	usage = True
 	try:
+		if special == "help":
+			usage = False
+			return askHelp(cli, args)
+		prompter = prompt.session(argv)
 		if args.command is None:
 			context = contextFor()
 			if context.plan is None and len(planPaths(context.project)) != 1:
@@ -315,7 +370,7 @@ def main(argv=None) -> int:
 				if key not in context.defaults and key not in context.config:
 					sources[("runtime", key)] = "built-in"
 			settings = merge(RUNTIME_DEFAULTS, context.defaults, context.config)
-			runtime = {key: settings.pop(key) for key in RUNTIME_KEYS if key in settings}
+			runtime = {key: settings.pop(key) for key in (*RUNTIME_KEYS, *RUNTIME_TABLES) if key in settings}
 			showConfig({**settings, "runtime": runtime}, sources)
 			return 0
 		if special == "mcp":
@@ -344,7 +399,8 @@ def main(argv=None) -> int:
 		arguments = resolvePayload(context, exposure, arguments)
 		if prompter and exposure.payloadKind == "script":
 			for name in missingInputs(context, arguments[exposure.payload]):
-				value = prompter.ask(name, Descriptor("value", "Script input, as a YAML value"), context, need=commandNeed(exposure), optional=True, check=yamlLoad)
+				value = prompter.ask(name, Descriptor("value", "Script input, as a YAML value", candidates=lambda context, arguments, name=name: recordedRuns(context, name)),
+					context, need=commandNeed(exposure), optional=True, check=yamlLoad)
 				if value is not None:
 					context.inputs[name] = yamlLoad(value)
 					args.input.append(f"{name}={value}")
@@ -409,7 +465,7 @@ def main(argv=None) -> int:
 		return exitStatus(result, exposure)
 	except (AutoError, OSError, ValueError) as error:
 		words = getattr(getattr(args, "exposure", None), "words", None)
-		helpCommand = "auto " + " ".join(words) + " --help" if words else "auto help"
+		helpCommand = "auto " + " ".join(words) + " --help" if words else "auto help --help" if special == "help" else "auto help"
 		recovery = getattr(error, "recovery", None) or f"Run {helpCommand} to check arguments and options; run auto x config to inspect effective settings and their sources."
 		if frontend and frontend.terminal:
 			frontend.error(error)
@@ -526,7 +582,11 @@ def show(context, exposure, result, args, color: bool, frontend) -> None:
 	"""Print the result of a command for a person."""
 	name = exposure.name
 	if name == "PlanStatus":
-		print(planView(result, color=color, verbose=args.verbose))
+		outcome = None
+		if result["status"] in {"Succeeded", "Failed", "Abandoned"}:
+			from auto.features.guided.operations import PlanSummary
+			outcome = PlanSummary(context, result["path"], "ended")
+		print(planView(result, color=color, verbose=args.verbose, outcome=outcome))
 	elif name == "PlanList":
 		print(plansView(result, str(context.plan) if context.plan else None, color=color))
 	elif name == "TaskShow":
@@ -626,6 +686,17 @@ def complete(args, exposure, context, prompter):
 			if getattr(args, name) is None:
 				setattr(args, name, ask(name, optional=True))
 	return context
+
+
+def recordedRuns(context, name: str) -> list:
+	"""Offer the outputs of recorded script runs for an input, those producing an artifact of its name first."""
+	from auto.features.script.runs import REF_PREFIX, receipts
+	from auto.runtime.model import RunStatus
+	runs = [run for run in reversed(receipts(context.project)) if run.get("status") == RunStatus.SUCCEEDED and run.get("outputFile")]
+	def matches(run):
+		return str(run.get("artifact", "")).rsplit("/", 1)[-1].removesuffix(".md") == name
+	runs = sorted(runs, key=lambda run: not matches(run))[:20]
+	return [(REF_PREFIX + run["id"], Path(run.get("script", "")).name + (" · " + run["from"]["ref"] if run.get("from") else "")) for run in runs]
 
 
 def missingInputs(context, script) -> list:

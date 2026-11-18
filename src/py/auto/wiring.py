@@ -21,6 +21,8 @@ def validateContext(context: Context) -> None:
 	from auto.features.memory.config import defaultAgents, housekeepingFor, memoryPolicy
 	from auto.features.memory.accounting import constraintsFor
 	from auto.integration.resolvers import validateResolvers
+	from auto.features.elaboration.catalogue import actionPatterns
+	actionPatterns(context)
 	defaultAgents(context)
 	housekeepingFor(context)
 	for name in context.defaults.get("memory", {}).get("agents", {}) or {"": {}}:
@@ -35,10 +37,12 @@ def installResolvers(context: Context) -> None:
 	from auto.features.elaboration.catalogue import catalogueContent
 	from auto.features.plan.references import planContent
 	from auto.features.memory.references import agentContent
+	from auto.features.script.runs import scriptRunContent
 	from auto.integration.resolvers import configuredContent, validateResolvers
 	for prefix, resolver in {
 		"auto:catalogue/": catalogueContent,
 		"auto:agent/": agentContent,
+		"auto:runs/": scriptRunContent,
 		"auto:": planContent,
 		"plan:": planContent,
 		"task:": planContent,

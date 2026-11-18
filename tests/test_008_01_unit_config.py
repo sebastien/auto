@@ -14,8 +14,9 @@ from unittest.mock import patch
 from auto.app.cli.main import showConfig
 from auto.features.script.model import Script
 from auto.features.script.operations import prepare, ScriptStart
+from auto.features.script.templates import Renderer
 from auto.integration.opencode.engine import OpenCode
-from auto.runtime.config import contextFor
+from auto.runtime.config import contextFor, roleFor
 from auto.runtime.model import Context
 from auto.utils.data import AutoError
 
@@ -65,6 +66,58 @@ class ConfigTests(unittest.TestCase):
 				with self.assertRaisesRegex(AutoError, "config.toml"):
 					contextFor(project)
 
+	def testEngineAndRoleDefaults(self):
+		with tempfile.TemporaryDirectory() as directory:
+			root = Path(directory)
+			(root / ".auto").mkdir()
+			(root / ".auto/config.toml").write_text(
+				'[runtime]\nengine = "opencode"\nprovider = "global"\nmodel = "global"\n'
+				'[runtime.engines.opencode]\nprovider = "engine"\nmodel = "engine"\n'
+				'[runtime.engines.pi]\nmodel = "pi-engine"\n'
+				'[runtime.roles.script]\nmodel = "script"\n'
+				'[runtime.roles.planning]\nengine = "pi"\nmodel = "planning"\n'
+				'[runtime.roles.checks]\nengine = "pi"\n')
+			environ = {"HOME": directory, "XDG_CONFIG_HOME": str(root / "xdg")}
+			with patch.dict(os.environ, environ, clear=True):
+				ctx = contextFor(root)
+				# Engine defaults apply to the selected engine, over the global ones.
+				renderer = Renderer(ctx, Script("hello", root / "test.md"))
+				self.assertEqual((renderer.config["provider"], renderer.config["model"]), ("engine", "engine"))
+				# A role can select another engine, and its defaults then follow that engine.
+				request = prepare(ctx, Script("hello", root / "test.md"), role="planning")
+				self.assertEqual((request["config"]["engine"], request["config"]["model"]), ("pi", "planning"))
+				self.assertEqual(request["config"]["provider"], "global")
+				# A role's selected engine supplies the defaults the role leaves unset.
+				checks = prepare(ctx, Script("hello", root / "test.md"), role="checks")["config"]
+				self.assertEqual((checks["engine"], checks["provider"], checks["model"]), ("pi", "global", "pi-engine"))
+				# Explicit settings select the engine whose defaults apply.
+				self.assertEqual(prepare(contextFor(root, engine="pi"), Script("hello", root / "test.md"))["config"]["model"], "pi-engine")
+				# Script metadata and explicit settings win over both kinds of default.
+				script = Script("hello", root / "test.md", {"model": "meta"})
+				self.assertEqual(prepare(ctx, script, role="script")["config"]["model"], "meta")
+				explicit = contextFor(root, model="flag")
+				self.assertEqual(prepare(explicit, Script("hello", root / "test.md"), role="script")["config"]["model"], "flag")
+				# TOML cannot hold `runtime.engine` as both a string and a table.
+				(root / ".auto/config.toml").write_text('[runtime]\nengine = "pi"\n[runtime.engine]\nmodel = "x"\n')
+				with self.assertRaisesRegex(AutoError, "config.toml"):
+					contextFor(root)
+
+	def testRoleForRunKind(self):
+		cases = (
+			({"kind": "script"}, "script"),
+			({"kind": "triage"}, "planning"),
+			({"kind": "elaboration", "phase": "Process"}, "planning"),
+			({"kind": "elaboration", "phase": "Post"}, "checks"),
+			({"kind": "task", "phase": "Process"}, "tasks"),
+			({"kind": "task", "phase": "Process", "attempt": 1}, "repairs"),
+			({"kind": "task", "phase": "Post"}, "checks"),
+			({"kind": "assessment", "phase": "Evaluation"}, "checks"),
+			({"kind": "memory", "phase": "Process"}, "memory"),
+		)
+		for journal, role in cases:
+			with self.subTest(journal=journal):
+				self.assertEqual(roleFor(journal.get("kind"), journal.get("phase"), journal.get("attempt", 0)), role)
+
 	def testInvalidRuntimeSettings(self):
 		cases = (
 			('engine = "opencode"\n', r"move settings under \[runtime\]: engine"),
@@ -72,6 +125,10 @@ class ConfigTests(unittest.TestCase):
 			('[runtime]\nmodle = "gpt-6-luna"\n', "unknown runtime settings: modle"),
 			('[runtime]\nmodel = 42\n', "model must be a string"),
 			('[runtime]\nisolated = "false"\n', "isolated must be a boolean"),
+			('[runtime.roles.unknown]\nmodel = "x"\n', "Unknown role: unknown"),
+			('[runtime.engines.pi]\nengine = "pi"\n', r"engines\.pi cannot set engine"),
+			('[runtime.engines]\npi = "x"\n', r"engines\.pi must be a mapping"),
+			('[runtime.roles.planning]\nmodel = 42\n', "model must be a string"),
 		)
 		with tempfile.TemporaryDirectory() as directory:
 			root = Path(directory)
@@ -151,7 +208,7 @@ class ConfigTests(unittest.TestCase):
 			for path in (home / ".auto", xdg / "auto", project / ".auto"):
 				path.mkdir(parents=True)
 			(xdg / "auto/config.toml").write_text('[runtime]\nmodel = "old"\n[features.example]\na = 1\nb = 2\n')
-			(project / ".auto/config.toml").write_text('[runtime]\nprovider = "openai"\n[features.example]\nb = 3\n')
+			(project / ".auto/config.toml").write_text('[runtime]\nprovider = "openai"\n[runtime.engines.pi]\nmodel = "engine"\n[features.example]\nb = 3\n')
 			environ = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(xdg), "AUTO_MODEL": "env"}
 			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "config", "--model", "flag"], cwd=project, env=environ, text=True, capture_output=True)
 			self.assertEqual(result.returncode, 0, result.stderr)
@@ -160,6 +217,7 @@ class ConfigTests(unittest.TestCase):
 			self.assertNotIn('isololated', result.stdout)
 			self.assertIn('runtime.model = "flag" # source=--model', result.stdout)
 			self.assertIn(f'runtime.provider = "openai" # source={project / ".auto/config.toml"}', result.stdout)
+			self.assertIn(f'runtime.engines.pi.model = "engine" # source={project / ".auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.a = 1 # source={xdg / "auto/config.toml"}', result.stdout)
 			self.assertIn(f'features.example.b = 3 # source={project / ".auto/config.toml"}', result.stdout)
 			result = subprocess.run([sys.executable, "-m", "auto.app.cli.main", "x", "config"], cwd=project, env=environ, text=True, capture_output=True)

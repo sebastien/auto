@@ -8,8 +8,8 @@ import re
 from pathlib import Path
 
 from auto.runtime.model import Context
-from auto.utils.config import loadConfig
-from auto.utils.data import AutoError, identifier
+from auto.utils.config import RUNTIME_TABLES, loadConfig
+from auto.utils.data import AutoError, identifier, merge
 from auto.utils.layout import PLAN_PREFIX, STORE, currentPlan, isPlan, planNumber, planPaths, storePath
 
 # -----------------------------------------------------------------------------
@@ -20,6 +20,13 @@ from auto.utils.layout import PLAN_PREFIX, STORE, currentPlan, isPlan, planNumbe
 
 RUNTIME_DEFAULTS = {"engine": "pi", "isolated": False}
 CONTEXT_KEYS = ("plan", "engine", "provider", "model", "agent")
+# What an engine invocation is for, so that defaults can differ by role.
+ROLES = ("planning", "tasks", "checks", "repairs", "memory", "script")
+# What a run may do to the project: `read` is enforced where the engine can, and
+# otherwise only warned about; the workspace is compared after the run either way.
+ACCESS = ("read", "write")
+# Engines that can keep a run from editing files.
+READ_ONLY_ENGINES = frozenset({"pi", "opencode", "llm"})
 
 # -----------------------------------------------------------------------------
 #
@@ -36,8 +43,28 @@ def validateConfig(value: dict) -> None:
 	for name in ("engine", "provider", "model", "agent", "cwd", "prompt", "title", "description"):
 		if name in value and not isinstance(value[name], str):
 			raise AutoError(f"{name} must be a string")
+	for name in RUNTIME_TABLES:
+		if name not in value:
+			continue
+		table = value[name]
+		if not isinstance(table, dict) or any(not isinstance(key, str) for key in table):
+			raise AutoError(f"{name} must be a string-keyed mapping")
+		for key, item in table.items():
+			if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+				raise AutoError(f"{name} names must be letters, digits, '_' or '-': {key}")
+			if not isinstance(item, dict):
+				raise AutoError(f"{name}.{key} must be a mapping")
+			if name == "roles" and key not in ROLES:
+				raise AutoError(f"Unknown role: {key}", recovery="Use one of: " + ", ".join(ROLES) + ".")
+			if name == "engines" and "engine" in item:
+				raise AutoError(f"engines.{key} cannot set engine")
+			if any(nested in item for nested in RUNTIME_TABLES):
+				raise AutoError(f"{name}.{key} cannot contain " + " or ".join(RUNTIME_TABLES))
+			validateConfig(item)
 	if "isolated" in value and type(value["isolated"]) is not bool:
 		raise AutoError("isolated must be a boolean")
+	if "access" in value and value["access"] not in ACCESS:
+		raise AutoError("access must be one of: " + ", ".join(ACCESS))
 	if "tools" in value and (not isinstance(value["tools"], list) or any(not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9_*:.-]+", item) for item in value["tools"])):
 		raise AutoError("tools must be a list of tool names; [] disables all tools")
 	if "temperature" in value and (type(value["temperature"]) not in (int, float) or not math.isfinite(value["temperature"])):
@@ -55,6 +82,35 @@ def validateConfig(value: dict) -> None:
 			raise AutoError("each must be a mapping with a single input name")
 		if next(iter(each)) in {"inputs", "params", "plan", "run", "output"}:
 			raise AutoError(f"Input name is reserved: {next(iter(each))}")
+
+
+def roleFor(kind: str | None = None, phase: str | None = None, attempt: int = 0) -> str:
+	"""Name what an engine invocation is for, so that role defaults can apply."""
+	if kind in (None, "script") and phase is None:
+		return "script"
+	if kind == "memory":
+		return "memory"
+	if attempt:
+		return "repairs"
+	if kind == "triage" or kind == "elaboration" and phase in (None, "Process"):
+		return "planning"
+	if kind == "assessment" or phase not in (None, "Process"):
+		return "checks"
+	return "tasks"
+
+
+def runtimeConfig(context: Context, defaults: dict | None = None, role: str | None = None) -> dict:
+	"""Merge runtime settings, then the selected engine's and role's defaults, then
+	the caller's defaults and explicit settings, in increasing precedence."""
+	base = merge(RUNTIME_DEFAULTS, context.defaults)
+	engines, roles = base.pop("engines", {}) or {}, base.pop("roles", {}) or {}
+	roleDefaults = (roles.get(role) or {}) if role else {}
+	selected = merge(base, roleDefaults, defaults or {}, context.config)
+	engine = selected.get("engine", RUNTIME_DEFAULTS["engine"])
+	result = merge(base, engines.get(engine) or {}, roleDefaults, defaults or {}, context.config)
+	result.pop("engines", None)
+	result.pop("roles", None)
+	return result
 
 
 def planDirectory(plans: Path, name: str) -> Path:

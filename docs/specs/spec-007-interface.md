@@ -74,6 +74,11 @@ operation remains available, by noun and verb, under `auto x`.
   starts a plan (an internal noun points to `auto x`). `auto` alone
   shows the current plan (`auto status`), or how to start one when there is
   none.
+- *Help*: `auto help` and `auto help COMMAND` show static reference without an
+  engine. `auto help "QUESTION"` runs the bundled `auto:catalogue/task/help`
+  preset once, with the shipped reference and no tools. It does not create or
+  update a plan or save a task. Use `auto help -- "COMMAND"` to ask about a
+  command rather than show its static help. Freeform help needs Pi or LLM.
 - *Arguments*: required arguments are positional, then optional positional
   arguments (eg. `auto answer [NUMBER] [ANSWER]`); other optional arguments
   are `--{name}` flags. Repeated arguments repeat the flag (eg.
@@ -169,13 +174,15 @@ Main commands, in the order of the reference:
 | `PlanUse` | `use` | — | Choose the plan later commands act on |
 | `DecisionRecord` | `decide` | — | Record a decision made without a gap (eg. in conversation), so that none is lost (see [Plan](spec-004-plan.md)) |
 | `LearningStatus` | `learned` | `learning_status` | Know what memory agents have consolidated and what awaits them (see [Memorisation](spec-010-memorisation.md)) |
-| `ScriptStart` | `run` (and `auto PATH.md`) | `script_run` | Run a script standalone |
+| `ScriptRun` | `run` (and `auto PATH.md`) | `script_run` | Run a script standalone, keeping its output (see [Agent Script](spec-002-script.md#recorded-runs)) |
 
 Internals, under `auto x`:
 
 | Operation | CLI | MCP | Need |
 |---|---|---|---|
 | `ScriptExpand` | `script expand` | — | Inspect the prompt of a script while authoring it |
+| `ScriptList` | `script list` | `script_list` | Find the recorded runs of standalone scripts |
+| `ScriptOutput` | `script output` | `script_output` | Read the stored output of a script run |
 | `PlanCreate` | `plan create` | — | Start a plan from a goal without running it |
 | `PlanContinue` | `plan continue` | — | Run a plan until it needs a human, without asking (see [Orchestration](spec-009-orchestration.md)) |
 | `PlanHold` | `plan hold` | — | Pause or stop a running plan |
@@ -193,6 +200,7 @@ Internals, under `auto x`:
 | `CatalogueGet` | `catalogue get` | `catalogue_get` | Read a framework entry by identity |
 | `ElaborationValidate` | `elaboration validate` | `elaboration_validate` | Post check of Elaborators, and self-check before answering |
 | `AuditValidate` | `audit validate` | `audit_validate` | Post check of audit reports, and self-check before answering |
+| `AuditResolutionValidate` | `resolution validate` | `resolution_validate` | Post check of audit resolutions, and self-check before answering |
 
 `auto x config` (effective configuration and its sources), `auto x usage`
 (the usage journal) and `auto x mcp` are interface commands, not operations.
@@ -238,6 +246,14 @@ takes; they add no state of their own.
   stage (`planning`, `tasks`, `checks`, `repairs`, `memory`): runs, duration,
   model turns, tokens by kind, cost and `cost_estimate` (the reported cost, or
   an estimate from the model's price where none was reported).
+- *Receipt*: the summary's `decided` lists the plan's decisions in the order
+  they were made, each with its `question`, `answer` and `author`
+  (`decisions` counts them); `models` totals the plan's usage journal per
+  engine, provider and model as `spending` does per stage, with a `total`
+  row (`{"models": [], "total": null}` before any usage). The text view
+  renders them as a receipt, then a `Details:` line naming `auto show TASK`,
+  `auto log --level debug` and `auto x usage --where plan=ID`; a declined
+  plan has none.
 - A runtime policy request answered yes becomes the grant its rule requires
   (see [Plan Policy](spec-008-plan-policy.md)).
 

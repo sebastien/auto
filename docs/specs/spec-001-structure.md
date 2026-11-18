@@ -85,6 +85,8 @@ src/py/auto/
       operations.py         # Feature operations, using the runtime
       config.py             # Feature configuration
       templates.py          # Liquid renderer and transclusions
+      inheritance.py        # Scripts specialising a template with `from`
+      runs.py               # Recorded standalone runs under .auto/runs/
     task/
       model.py              # Task and Run models
       operations.py         # Task and run operations

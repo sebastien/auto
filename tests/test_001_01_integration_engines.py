@@ -190,6 +190,23 @@ class EngineTests(unittest.TestCase):
 		stream.close()
 		self.assertTrue(engine.calls[-1][1].endswith("/interrupt"))
 
+	def testOpenCodeNormalizesQualifiedModels(self):
+		from unittest.mock import patch
+
+		for config, provider, model in (
+			({"provider": "openai", "model": "openai/gpt-6.1-terra"}, "openai", "gpt-6.1-terra"),
+			({"provider": "openai", "model": "gpt-6.1-terra"}, "openai", "gpt-6.1-terra"),
+			({"model": "openai/gpt-6.1-terra"}, "openai", "gpt-6.1-terra"),
+			({"provider": "gateway", "model": "openai/gpt-6.1-terra"}, "gateway", "openai/gpt-6.1-terra"),
+		):
+			with self.subTest(config=config), patch.object(OpenCode, "api") as api:
+				stream = OpenCode().start(Context(), {"config": config, "prompt": "Work"})
+				try:
+					next(stream)
+					self.assertEqual(api.call_args.args[3]["model"], {"providerID": provider, "id": model})
+				finally:
+					stream.close()
+
 	def testOpenCodeWaitsForSettledOutput(self):
 		class Stub(OpenCode):
 			def __init__(self):

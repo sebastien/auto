@@ -61,6 +61,11 @@ def runCandidates(context, arguments):
 	return [(run["id"], f"{run['task']} · {run['status']}") for run in runs]
 
 
+def scriptRunCandidates(context, arguments):
+	from auto.features.script.runs import ScriptList
+	return [(run["id"], f"{Path(run['script']).name} · {run['status']}") for run in ScriptList(context)]
+
+
 def gapCandidates(context, arguments):
 	from auto.features.plan.gaps import GapList
 	from auto.features.plan.model import GapState
@@ -126,8 +131,10 @@ DESCRIPTORS = {
 	"source": Descriptor("text", "Where the decision was made, eg. a conversation reference"),
 	"identity": Descriptor("choice", "A catalogue entry", candidates=catalogueCandidates),
 	"script": Descriptor("path", "A markdown script", suffix=".md"),
+	"record": Descriptor("choice", "A recorded script run", candidates=scriptRunCandidates, recovery="List recorded runs with auto x script list."),
 	"elaboration": Descriptor("path", "A task elaboration document", suffix=".md"),
 	"audit": Descriptor("path", "An audit report", suffix=".md"),
+	"resolution": Descriptor("path", "An audit resolution", suffix=".md"),
 	"budget": Descriptor("structured", "What the plan may spend, as YAML, eg. '{cost: 2, time: 1800}' (dollars, seconds)"),
 	"effects": Descriptor("structured", "Effects granted up front, as a YAML list, eg. '[vcs.commit, net.read]'"),
 	"agents": Descriptor("structured", "Memory agents watching the plan, as a YAML list; default: default_agents"),
@@ -261,9 +268,11 @@ EXPOSURES = [
 	Exposure("DecisionRecord", "plan.gaps", ("question", "answer"), "Record a decision made outside a question", command="decide",
 		optional=("rationale", "concerns", "source"), valueArguments=("answer",), passPlan=True, effects=True, needsPlan=True),
 	Exposure("LearningStatus", "guided.operations", (), "Show what memory agents have learned and what awaits them", command="learned", mcp=True),
-	Exposure("ScriptStart", "script.operations", ("script",), "Run a Markdown script on its own, without a plan", command="run", everyday=True,
+	Exposure("ScriptRun", "script.runs", ("script",), "Run a Markdown script on its own, without a plan", command="run", everyday=True,
 		mcp=True, payload="script", payloadKind="script", stream=True, inputs=True, params=True, messages=True, effects=True),
 	Exposure("ScriptExpand", "script.operations", ("script",), "Inspect a script prompt", payload="script", payloadKind="script", inputs=True, params=True),
+	Exposure("ScriptList", "script.runs", (), "List recorded script runs", mcp=True, optional=("filter",)),
+	Exposure("ScriptOutput", "script.runs", ("record",), "Read the stored output of a script run", mcp=True),
 	Exposure("PlanCreate", "elaboration.operations", ("goal",), "Create and elaborate a plan without running it", optional=("budget", "effects", "agents"),
 		inputs=True, effects=True, ask=("budget",)),
 	Exposure("PlanContinue", "orchestration.operations", (), "Run a plan until it needs a human, without asking", stream=True, passPlan=True,
@@ -287,6 +296,8 @@ EXPOSURES = [
 	Exposure("ElaborationValidate", "elaboration.operations", ("elaboration",), "Validate an elaboration before applying it",
 		optional=("task",), mcp=True, payload="elaboration", passPlan=True, violations=True, needsPlan=True),
 	Exposure("AuditValidate", "audit.operations", ("audit",), "Validate an audit report", mcp=True, payload="audit", violations=True),
+	Exposure("AuditResolutionValidate", "audit.operations", ("resolution",), "Validate an audit resolution", mcp=True, payload="resolution",
+		violations=True, noun="resolution", verb="validate"),
 ]
 
 STATUS_EXIT = {RunStatus.FAILED: 1, RunStatus.WAITING: 3, RunStatus.BLOCKED: 3, RunStatus.SKIPPED: 3,
@@ -375,14 +386,28 @@ def exitStatus(result, exposure: Exposure | None = None) -> int:
 	return 0
 
 
-ENTRY_FIELDS = {"identity", "kind", "layer", "title", "description"}
+ENTRY_FIELDS = {"identity", "kind", "layer", "title", "description", "specialises", "inputs", "required", "params", "access", "artifact", "error"}
 
 
 def entryLine(item: dict) -> str:
-	"""Render a catalogue-like entry as one Markdown list item."""
+	"""Render a catalogue-like entry as one Markdown list item, with how to use it when known."""
 	labels = ", ".join(str(item[key]) for key in ("kind", "layer") if item.get(key))
 	text = ". ".join(str(item[key]).strip().rstrip(".") for key in ("title", "description") if item.get(key))
-	return f"- `{item['identity']}`" + (f" ({labels})" if labels else "") + (f": {text}." if text else "") + "\n"
+	line = f"- `{item['identity']}`" + (f" ({labels})" if labels else "") + (f": {text}." if text else "")
+	usage = []
+	if item.get("specialises"):
+		usage.append(f"specialises `{item['specialises']}`")
+	if item.get("inputs"):
+		required = set(item.get("required", []))
+		usage.append("inputs: " + ", ".join(f"`{name}`" + (" (required)" if name in required else "") for name in item["inputs"]))
+	if item.get("params"):
+		usage.append("params: " + ", ".join(f"`{name}` (default {jsonText(value)})" for name, value in item["params"].items()))
+	for key in ("access", "artifact"):
+		if item.get(key):
+			usage.append(f"{key}: `{item[key]}`")
+	if item.get("error"):
+		usage.append("unusable: " + item["error"])
+	return line + ("\n  " + "; ".join(usage) if usage else "") + "\n"
 
 
 def render(result, format: str = "text") -> str:

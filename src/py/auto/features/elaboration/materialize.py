@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 
 from auto.features.task.model import Task, createTaskFromText, taskText
@@ -14,7 +15,9 @@ from auto.features.elaboration.metadata import MetadataProjection
 from auto.features.elaboration.templates import ParameterTemplate, Unknown
 from auto.features.elaboration.sources import TemplateSources
 from auto.runtime.operations import Resolve, Value, isReference
-from auto.utils.data import AutoError, document, documentText, merge
+from auto.features.script.inheritance import inheritTemplate
+from auto.features.script.model import Script
+from auto.utils.data import AutoError, document, documentText, merge, sections
 from auto.utils.references import relocate, relocateMeta
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.layout import taskFile
@@ -24,6 +27,46 @@ from auto.utils.layout import taskFile
 # OPERATIONS
 #
 # -----------------------------------------------------------------------------
+
+
+TASK_SECTIONS = {"Pre", "Process", "Post", "Evaluation"}
+
+
+def demote(text: str) -> str:
+	"""Nest the headings of a script body one level down, outside fenced code."""
+	lines, fence = [], None
+	for line in text.splitlines(keepends=True):
+		marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+		if marker:
+			fence = marker[1] if fence is None else None if marker[1][0] == fence[0] and len(marker[1]) >= len(fence) else fence
+		lines.append("#" + line if fence is None and not marker and re.match(r"^#{1,5} ", line) else line)
+	return "".join(lines)
+
+
+def taskTemplate(context, meta: dict, body: str, path) -> tuple[dict, str]:
+	"""Give a script-style template (an action) the shape of a task template.
+
+	A template inheriting another with `from`, or a script whose body is not
+	in task sections, is composed as `auto run` would compose it; its content
+	becomes the Process."""
+	if not isinstance(meta.get("from"), str):
+		# Task templates may choose their sections with Liquid: only a static
+		# body can be told apart from a task by its headings.
+		if "{%" in body or not body.strip():
+			return meta, body
+		try:
+			_, parts = sections(body)
+		except AutoError:
+			return meta, body
+		if any("{{" in name for name in parts):
+			return meta, body
+		if "Process" in parts or parts and set(parts) <= TASK_SECTIONS:
+			return meta, body
+	composed = inheritTemplate(context, Script(body, path, meta))
+	# Sources resolve from the task template's folder: pin relative ones to their origin.
+	text = relocate(composed.content, composed.path.parent)
+	# A script body's own sections nest under the Process.
+	return composed.meta, "## Process\n\n" + (demote(text) if sections(text)[1] else text)
 
 
 def materialize(context, value: dict, parent: str, *, dry: bool = False, deferred=None) -> Task:
@@ -43,6 +86,7 @@ def materialize(context, value: dict, parent: str, *, dry: bool = False, deferre
 		if expected is not None and content.digest != expected:
 			raise AutoError("Task template changed since its pinned revision")
 		meta, body = document(content.text)
+		meta, body = taskTemplate(context, meta, body, content.path)
 		validateConfig({key: item for key, item in meta.items() if key in {"pre", "post", "transform", "apply", "eval"}})
 		if not isinstance(meta.get("params", {}), dict) or not isinstance(definition.get("params", {}), dict):
 			raise AutoError("Template parameters must be mappings")

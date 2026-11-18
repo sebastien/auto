@@ -137,6 +137,14 @@ def UsageStages(context, plan: str) -> list[dict]:
 	return [{"stage": stage, **UsageSummary(stages[stage], ())[0]} for stage in STAGES if stage in stages]
 
 
+def UsageModels(context, plan: str) -> dict:
+	"""Total a plan's engine invocations per engine, provider and model, and overall."""
+	entries, _ = UsageEntries(context, where={"plan": plan})
+	if not entries:
+		return {"models": [], "total": None}
+	return {"models": UsageSummary(entries), "total": UsageSummary(entries, ())[0]}
+
+
 def UsageSummary(entries: list[dict], by: tuple[str, ...] = DEFAULT_GROUPS) -> list[dict]:
 	"""Total runs, failures, duration, tokens and cost per group, in first-seen order."""
 	unknown = set(by) - set(GROUPS)

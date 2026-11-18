@@ -190,6 +190,16 @@ the artifact type:
   expanded with the given `params`, then the elaborated keys and sections take
   precedence. The task records `from` as `{ref,digest}`, so later template
   changes do not affect it (see Plan immutability).
+- A standalone script may also give `from` (eg. `from: task/audit`, short
+  for `auto:catalogue/task/audit`): it is composed with the template when it
+  runs, its sections filling the template inputs they name (see
+  [Agent Script](spec-002-script.md#templates)).
+- A task template may itself be such a script (an action): one giving
+  `from`, or whose static body has no `## Process` but sections of its own.
+  It is composed as `auto run` would compose it, and its content becomes the
+  Process, its own sections nested one level down. The elaborated keys still
+  take precedence. A template choosing its sections with Liquid is a task
+  template.
 - A profile gives `engine`, `model`, `agent`, `temperature`, a default
   `budget`, a `memory` profile (`minimal`, `standard` or `full`, see
   [Memorisation](spec-010-memorisation.md#actuation)), and a description of
@@ -216,11 +226,32 @@ The catalogue makes framework files available across plans and projects:
 | Layer | Location |
 |---|---|
 | Project | `.auto/catalogue/` |
+| Actions | Project scripts matched by `[catalogue] actions` globs, as `task` entries |
 | User | `~/.config/auto/catalogue/` |
 | Built-in | `src/md/auto/catalogue/`, shipped with Auto |
 
+- *Actions* are the project's own scripts, kept where the project keeps them
+  (eg. `action-*.md` at its root), and made available to plans with:
+
+  ```toml
+  [catalogue]
+  actions = ["action-*.md", "actions/*.md"]
+  ```
+
+  Globs are relative to the project. Each matched Markdown file is the task
+  entry `auto:catalogue/task/{stem}`; the first match wins, and stems that are
+  not identifiers are left out.
+- `CatalogueList` gives each task entry its *signature*, so that it can be
+  instantiated without reading it: the template it `specialises`, the
+  `inputs` left to its callers (those it does not give itself, in its
+  frontmatter or its sections), the `required` ones among them, its `params`
+  with their defaults, its `access` and its `artifact`. An action specialising
+  a template without its own `description` is described by its first
+  paragraph. The markdown listing gives the signature on a second line.
 - An Elaborator may be given catalogue entries as content, as references, or
-  query them through the harness (eg. a Memo query).
+  query them through the harness (eg. a Memo query). The built-in one is
+  given the listing, and prefers the most specific entry doing what a task
+  needs, such as an action specialising a built-in template.
 
 ## Format
 
@@ -421,9 +452,32 @@ tasks, for a plan run like a script.
 `auto:catalogue/task/audit` checks a scope of the project against a list of
 criteria, from one perspective (eg. conventions, structure, symbols,
 documentation, UI/UX, security). It produces an `auto:catalogue/artifact/audit`,
-whose Post runs `auto x audit validate`. An audit is specialised by a task
-giving `### Scope` and `### Criteria` in its Process, then transcluding
-`@auto:catalogue/task/audit#Process` (see `auto:catalogue/task/audit-symbols`).
+whose Post runs `auto x audit validate`. It runs with `access: read`. An
+audit is specialised by a task giving `### Scope` and `### Criteria` in its
+Process, then transcluding `@auto:catalogue/task/audit#Process` (see
+`auto:catalogue/task/audit-symbols`), or by a script giving `from: task/audit`
+with `## Scope` and `## Criteria` sections, the rest of its body being the
+`brief`. Recorded runs of the same template, facet and scope give the next
+run its `baseline` (see [Agent Script](spec-002-script.md#recorded-runs)).
+
+`auto:catalogue/task/audit-resolve` acts on the findings of an Audit report,
+given as its required `audit` input (eg. `auto:runs/{id}`, or `task:{id}` in
+a plan). It runs with `access: write` and produces an
+`auto:catalogue/artifact/audit-resolution`, whose Post runs
+`auto x resolution validate`. Its parameters vary independently:
+
+| Param | Values | Effect |
+|---|---|---|
+| `severity` | list of severities, default `[critical, major]` | Selects the findings to resolve, when `findings` is empty |
+| `findings` | list of finding ids | Selects these findings instead, eg. to split a large audit across tasks |
+| `mode` | `fix` (default), `triage` | Fix the findings, or only decide what to do with each, changing nothing |
+
+Each selected finding is `fixed` (listing the locations changed), `to-fix`
+(triage), `stale`, `deferred`, `wont-fix` or `needs-decision`, with a reason;
+choices left to people are gathered under `Decisions`. A fix is verified by
+re-running the audit with the resolved report as `baseline`, whose `Changes`
+then list the fixed findings. To fix an audit's findings, the built-in
+Elaborator chains the audit, the resolution and the re-audit.
 
 ## Out of Scope
 

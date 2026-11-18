@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from auto.features.audit.operations import AuditValidate
+from auto.features.audit.operations import AuditResolutionValidate, AuditValidate
 from auto.features.script.model import Script
 from auto.features.script.operations import ScriptExpand
 from auto.runtime.model import Context
@@ -81,5 +81,51 @@ class AuditTests(unittest.TestCase):
 			self.assertIn("perspective of\n*things*", result)
 			self.assertIn("### Method", result)
 			self.assertEqual(result.count("## Process"), 1)
+
+
+RESOLUTION = """---
+mode: fix
+selected: [F1, F2]
+summary: One fixed, one deferred
+---
+## Resolutions
+
+### F1: Two names for one concept
+
+- status: fixed
+- changes:
+  - src/a.py:3
+  - src/b.py:9
+
+Renamed.
+
+### F2: Abbreviations
+
+- status: deferred
+
+Too wide for this change.
+"""
+
+
+class AuditResolutionTests(unittest.TestCase):
+	def messages(self, text):
+		return [item["message"] for item in AuditResolutionValidate(Context(), text)]
+
+	def testValidResolution(self):
+		self.assertEqual(self.messages(RESOLUTION), [])
+		self.assertEqual(self.messages("---\nmode: triage\nselected: []\n---\n## Resolutions\n"), [])
+
+	def testEverySelectedFindingIsResolvedOnce(self):
+		messages = self.messages(RESOLUTION.replace("[F1, F2]", "[F1, F3]"))
+		self.assertIn("Selected finding has no resolution", messages)
+		self.assertIn("Resolves a finding that is not selected", messages)
+		self.assertIn("Frontmatter `selected` lists the ids of the selected findings", self.messages(RESOLUTION.replace("[F1, F2]", "F1")))
+
+	def testStatusesFollowTheMode(self):
+		self.assertIn("A fixed finding lists the locations changed", self.messages(RESOLUTION.replace("  - src/a.py:3\n  - src/b.py:9\n", "")))
+		self.assertIn("A triage changes nothing: use to-fix", self.messages(RESOLUTION.replace("mode: fix", "mode: triage")))
+		self.assertIn("In fix mode, fix the finding, or defer it with a reason", self.messages(RESOLUTION.replace("status: deferred", "status: to-fix")))
+		self.assertTrue(any("Status must be" in item for item in self.messages(RESOLUTION.replace("status: deferred", "status: later"))))
+		self.assertTrue(any("Mode must be" in item for item in self.messages(RESOLUTION.replace("mode: fix", "mode: auto"))))
 
 # EOF

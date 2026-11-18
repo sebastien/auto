@@ -27,7 +27,7 @@ from auto.features.script.templates import Renderer
 from auto.features.script.sources import ScriptSources
 from auto.features.task.model import Run, Task, canonicalTask, createRunFromDict, createTaskFromDict, createTaskFromText
 from auto.features.task.store import emit, runDirectory, saveRun
-from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
+from auto.runtime.config import roleFor, runtimeConfig, validateConfig
 from auto.runtime.integration import CancellableEngine
 from auto.runtime.model import Context, Event, FailureKind, Limits, RunStatus, TERMINAL, budgetValue, failureFor, kindFor, statusFor
 from auto.runtime.operations import Engine, Knowledge, Resolve, Shell, Value
@@ -133,13 +133,13 @@ def outputText(value) -> str:
 	return "" if value is None else value if isinstance(value, str) else jsonText(value)
 
 
-def checkRequest(context, task, check):
+def checkRequest(context, task, check, *, role: str = "checks"):
 	"""Expand checks, run shell evidence first, then ask the model only if needed.
 
 	Front matter commands run before the body `!?` checks: both add up, the
 	body does not override the front matter."""
 	checks = []
-	renderer = Renderer(context, task.script(check), checks=checks)
+	renderer = Renderer(context, task.script(check), checks=checks, role=role)
 	namespace = renderer.bindings()
 	if check != "Pre":
 		namespace["output"] = context.variables.get("result")
@@ -164,7 +164,7 @@ def checkRequest(context, task, check):
 	# Already-expanded prose is supplied as data, so transclusions cannot execute twice.
 	content = "{{ instructions }}\n\n{{ evidence }}\n\nTask inputs: {{ inputs | json }}\nRun output: {{ result | json }}"
 	ctx = context.derive(variables={**context.variables, "instructions": text, "evidence": evidence, "result": context.variables.get("result")})
-	return prepare(ctx, Script(content, task.path, meta)), None
+	return prepare(ctx, Script(content, task.path, meta), role=role), None
 
 
 def applyEffects(context, task) -> dict:
@@ -352,6 +352,8 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 				continue
 			limits.check()
 			state["phase"] = phase
+			kind = "memory" if context.runScope is not None else "elaboration" if task.id == "elaborator" else "task"
+			role = roleFor(kind, phase, state.get("repairs", 0))
 			if context.observe:
 				context.observe({"type": Event.RUN_PHASE, "phase": phase})
 			if phase in {"Post", "Apply", "Evaluation"}:
@@ -367,12 +369,12 @@ def _continue(context, path, run, state, answer=UNSET, *, admitted=False):
 							contract = prepare(context, task.script())["output"] if task.meta.get("output") else {"format": "json"}
 							value = conform(value, contract)
 						else:
-							request = prepare(context, task.script())
+							request = prepare(context, task.script(), role=role)
 							request["prompt"] = decisionsPrompt(state.get("decisions")) + request["prompt"] + repairPrompt(state.get("repair"))
 					elif phase == "Apply":
 						value = applyEffects(context, task)
 					else:
-						request, value = checkRequest(context, task, phase)
+						request, value = checkRequest(context, task, phase, role=role)
 				if request:
 					value, waiting = _drive(context, path, run, state, request)
 					if waiting:
@@ -808,10 +810,10 @@ def TaskStart(context: Context, task, inputs: dict | None = None, *, metaTask: b
 				for key, amount in context.limits.budget.items():
 					remaining = max(0, amount - context.limits.usage.get(key, 0))
 					budget[key] = min(budget.get(key, remaining), remaining)
+			runKind = "memory" if context.runScope is not None else "elaboration" if task.id == "elaborator" else "task"
+			settings = runtimeConfig(context, task.meta, roleFor(runKind, "Process", 0))
 			run = Run(id=path.name, task=task.id, status=RunStatus.PENDING, started=timestamp(),
-				runtime={"engine": context.config.get("engine", task.meta.get("engine", context.defaults.get("engine", RUNTIME_DEFAULTS["engine"]))),
-					"provider": context.config.get("provider", task.meta.get("provider", context.defaults.get("provider"))),
-					"model": context.config.get("model", task.meta.get("model", context.defaults.get("model")))},
+				runtime={key: settings.get(key) for key in ("engine", "provider", "model")},
 				budget=budget, usage={"tokens": 0, "cost": 0, "time": 0}, inputs=context.evidence,
 				extra={"author": context.author, **({"continuation": context.variables["continuation"]} if context.variables.get("continuation") else {})}).asDict()
 			policyBlocked = taskPolicyBlocked(context, task) if not metaTask else {}

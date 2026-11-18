@@ -9,10 +9,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from importlib.metadata import version
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
+from auto.app.cli.main import main
 from auto.app.operations import EXPOSURES, exitStatus
+from auto.runtime.model import Context, Event, RunStatus
 from support import rootFile
 
 
@@ -65,6 +70,59 @@ class InterfaceTests(unittest.TestCase):
 				self.assertEqual(result.returncode, 0, result.stderr)
 				self.assertEqual(result.stdout, expected.stdout)
 				self.assertEqual(result.stderr, expected.stderr)
+
+	def testStaticHelpDoesNotLoadEngineConfiguration(self):
+		for args in (["help"], ["help", "run"], ["--help"]):
+			with self.subTest(args=args), patch("auto.app.cli.main.contextFor") as loadContext, redirect_stdout(StringIO()):
+				try:
+					status = main(args)
+				except SystemExit as error:
+					status = error.code
+				self.assertEqual(status, 0)
+				loadContext.assert_not_called()
+
+	def testFreeformHelpRunsBundledPresetWithoutTouchingPlan(self):
+		requests = []
+		class Engine:
+			def start(self, context, request):
+				requests.append((context, request))
+				yield {"type": Event.SCRIPT_ENDED, "status": RunStatus.SUCCEEDED, "output": "Use auto run FILE.md."}
+
+		with tempfile.TemporaryDirectory() as directory:
+			project = Path(directory)
+			plan = project / ".auto/demo"
+			plan.mkdir(parents=True)
+			rootFile(plan).write_text("---\nid: demo\n---\n# Current plan\n")
+			before = {path.relative_to(plan): path.read_bytes() for path in plan.rglob("*") if path.is_file()}
+			override = project / ".auto/catalogue/task/help.md"
+			override.parent.mkdir(parents=True)
+			override.write_text("Project override must not reach the engine.")
+			context = Context(project=project, plan=plan, defaults={"engine": "pi", "prompt": "Project systems prompt"},
+				engines={"pi": Engine()})
+			for args, question in ((["help", "!How do I list current tasks / runs?"], "!How do I list current tasks / runs?"),
+				(["help", "--", "run"], "run")):
+				requests.clear()
+				with self.subTest(args=args), patch("auto.app.cli.main.contextFor", return_value=context), redirect_stdout(StringIO()) as stdout:
+					self.assertEqual(main(args), 0)
+					self.assertEqual(stdout.getvalue().strip(), "Use auto run FILE.md.")
+					self.assertEqual(len(requests), 1)
+					runContext, request = requests[0]
+					self.assertIsNone(runContext.plan)
+					self.assertFalse(runContext.allowShell)
+					self.assertEqual(request["config"]["tools"], [])
+					self.assertTrue(request["config"]["isolated"])
+					self.assertNotIn("prompt", request["config"])
+					self.assertIn("### Question (JSON string)\n\n" + json.dumps(question), request["prompt"])
+					self.assertIn("## README.md", request["prompt"])
+					self.assertIn("## docs/specs/spec-007-interface.md", request["prompt"])
+					self.assertNotIn("Project override must not reach the engine", request["prompt"])
+			after = {path.relative_to(plan): path.read_bytes() for path in plan.rglob("*") if path.is_file()}
+			self.assertEqual(after, before)
+
+	def testFreeformHelpRejectsEngineWithoutIsolation(self):
+		with patch("auto.app.cli.main.contextFor", return_value=Context(config={"engine": "opencode"})), redirect_stderr(StringIO()) as stderr:
+			self.assertEqual(main(["help", "How do I get started?"]), 1)
+			self.assertIn("cannot run isolated help without tools", stderr.getvalue())
 
 	def testHumanResultsKeepStdoutClean(self):
 		result = self.cli("x", "script", "expand", "-", stdin="Hello world")

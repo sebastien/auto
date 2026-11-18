@@ -16,14 +16,15 @@ from auto.features.elaboration.operations import TRIAGED, PlanCreate, PlanRefine
 from auto.features.orchestration.operations import PlanContinue
 from auto.features.plan.control import PlanHold, PlanRelease, planHold
 from auto.features.plan.events import PlanEvents, eventRows
-from auto.features.plan.gaps import GapDecide, GapList
+from auto.features.plan.gaps import GapDecide, GapList, planRef
 from auto.features.plan.model import ContinuationStop, GapState, PlanEventKind, RevisionOp, createPlan
 from auto.features.plan.operations import PlanStatus, tasksAt
 from auto.features.plan.policy import PlanApprove
 from auto.features.plan.store import journal, planPath
 from auto.features.task.operations import RunAnswer, RunGet, RunList, RunOutput, TaskStart
-from auto.features.usage.operations import UsageStages
+from auto.features.usage.operations import UsageModels, UsageStages
 from auto.runtime.model import Event, RunStatus
+from auto.runtime.operations import Knowledge
 from auto.utils.data import AutoError
 from auto.utils.layout import setCurrentPlan, storePath, taskId
 from auto.utils.workspace import changes, snapshot
@@ -241,21 +242,47 @@ def PlanSummary(context, plan, stop: str | None = None, changed: list | None = N
 	context = context.derive(plan=path)
 	status = PlanStatus(context, path)
 	tasks = [id for id in status["tasks"] if id != "root"] or ["root"]
+	# A parent's output only gathers its children's: the results are those of the tasks that did the work.
+	parents = {detail["parent"] for detail in status["taskDetails"].values()}
 	results = []
 	for id in tasks:
 		run = status["taskDetails"][id]["run"]
-		if run and run["status"] == RunStatus.SUCCEEDED:
+		if run and run["status"] == RunStatus.SUCCEEDED and (id not in parents or id == "root"):
 			try:
 				output = excerpt(RunOutput(context, run["id"]))
 			except (AutoError, OSError, ValueError):
 				output = ""
 			results.append({"task": id, "goal": status["taskDetails"][id]["goal"], "output": output})
-	decisions = sum(op["op"] in {RevisionOp.RESOLVE, RevisionOp.RECORD} for row in journal(path) for op in row["operations"])
+	decided = planDecisions(context, path)
 	return {"id": status["id"], "goal": status["goal"], "path": status["path"], "status": status["status"], "stop": stop, "reason": reason,
 		"done": sum(status["tasks"][id] == RunStatus.SUCCEEDED for id in tasks), "total": len(tasks), "usage": status["usage"],
-		"budget": status["budget"], "decisions": decisions, "questions": [gap["question"] for gap in status["gaps"]], "results": results, "changed": changed,
-		"failed": [id for id in tasks if status["tasks"][id] in {RunStatus.FAILED, RunStatus.TIMED_OUT}],
-		"hold": status["hold"], "agents": createPlan(path).meta.get("agents", []), "spending": UsageStages(context, path.name)}
+		"budget": status["budget"], "decisions": len(decided), "decided": decided, "questions": [gap["question"] for gap in status["gaps"]],
+		"results": results, "changed": changed, "failed": [id for id in tasks if status["tasks"][id] in {RunStatus.FAILED, RunStatus.TIMED_OUT}],
+		"hold": status["hold"], "agents": createPlan(path).meta.get("agents", []), "spending": UsageStages(context, path.name),
+		"models": UsageModels(context, path.name), "written": writtenFiles(context)}
+
+
+def writtenFiles(context) -> list:
+	"""Return the files the runs of the current plan recorded writing, in the order first written."""
+	runs = sorted(RunList(context), key=lambda run: run.get("started") or "")
+	return list(dict.fromkeys(name for run in runs for name in (run.get("files") or {}).get("written") or []))
+
+
+def planDecisions(context, path) -> list:
+	"""Return the decisions of a plan in the order they were made: the question, its answer and who answered."""
+	base, store, result = planRef(path), Knowledge(context), []
+	for row in journal(path):
+		for op in row["operations"]:
+			if op["op"] not in {RevisionOp.RESOLVE, RevisionOp.RECORD}:
+				continue
+			try:
+				decision = store.get(f"{base}/decision/{op['decision']}")
+				question = store.get(f"{base}/gap/{op['gap']}").get("question", "") if op.get("gap") else decision.get("question", "")
+			except (AutoError, OSError, ValueError):
+				decision, question = {}, ""
+			result.append({"decision": op["decision"], "gap": op.get("gap"), "question": question, "answer": decision.get("answer"),
+				"author": decision.get("author", row.get("author"))})
+	return result
 
 
 def TaskShow(context, task: str) -> dict:

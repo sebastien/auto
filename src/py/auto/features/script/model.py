@@ -23,6 +23,8 @@ class Script:
 	path: Path
 	meta: dict = field(default_factory=dict)
 	ref: str | None = None
+	# The template a script inherits with `from`: `{ref, digest, artifact?}`.
+	template: dict | None = None
 
 	@property
 	def identity(self):

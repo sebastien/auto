@@ -212,8 +212,8 @@ def firstLine(text) -> str:
 	return str(text or "").strip().partition("\n")[0]
 
 
-def planView(value: dict, *, color: bool = False, verbose: bool = False) -> str:
-	"""Render where a plan stands, what needs the person and what to do next."""
+def planView(value: dict, *, color: bool = False, verbose: bool = False, outcome: dict | None = None) -> str:
+	"""Render where a plan stands, what needs the person and what to do next, with the `outcome` summary of an ended plan."""
 	tasks, details = value["tasks"], value["taskDetails"]
 	children = [id for id in tasks if id != "root"]
 	done = sum(tasks[id] == RunStatus.SUCCEEDED for id in children)
@@ -232,6 +232,9 @@ def planView(value: dict, *, color: bool = False, verbose: bool = False) -> str:
 	if value["gaps"]:
 		lines += ["", paint("Needs you:", "1;33", color)]
 		lines += [f"  {index}. {safeText(firstLine(gap.get('question', '')))}" for index, gap in enumerate(value["gaps"], 1)]
+	outcome = outcomeLines(outcome, color) if outcome else []
+	if outcome:
+		lines += [""] + outcome
 	if verbose:
 		lines += ["", "Path: " + safeText(value["path"])]
 		if value["failures"]:
@@ -278,9 +281,25 @@ def summaryView(value: dict, *, color: bool = False) -> str:
 	lines = [" · ".join([headline, *facts])]
 	if value.get("reason"):
 		lines.append("  " + paint(safeText(value["reason"]), "31", color))
-	spending = spendingText(value.get("spending") or [])
-	if spending:
-		lines.append(paint("Spent: " + spending, "2", color))
+	lines += resultLines(value, color)
+	lines += decisionLines(value.get("decided") or [], color)
+	lines += usageLines(value.get("models") or {}, value.get("spending") or [], color)
+	if value["questions"]:
+		lines.append(paint("Needs you:", "1;33", color))
+		lines += [f"  {index}. {safeText(firstLine(question))}" for index, question in enumerate(value["questions"], 1)]
+	if value["agents"] and stop == "ended":
+		lines.append(paint("Learning: " + ", ".join(value["agents"]) + " (auto learned)", "2", color))
+	if stop != "declined":
+		lines.append(paint("Details: " + detailsHint(value), "2", color))
+	lines.append("Next: " + paint(summaryNext(value), "36", color))
+	if value["status"] == "Succeeded":
+		lines.append(paint("Tip: " + tipFor(value["id"]), "2", color))
+	return "\n".join(lines)
+
+
+def resultLines(value: dict, color: bool) -> list:
+	"""Render what a plan produced: each task's result, the failed tasks, then the files changed, or else those its runs wrote."""
+	lines = []
 	if value["results"]:
 		lines.append("Results:")
 		size = max(width(result["task"]) for result in value["results"])
@@ -289,16 +308,80 @@ def summaryView(value: dict, *, color: bool = False) -> str:
 				+ safeText(result["output"] or firstLine(result["goal"])))
 	for id in value["failed"]:
 		lines.append(f"  {marker(RunStatus.FAILED, color)} {id}")
-	lines += changeLines(value.get("changed") or [], color)
-	if value["questions"]:
-		lines.append(paint("Needs you:", "1;33", color))
-		lines += [f"  {index}. {safeText(firstLine(question))}" for index, question in enumerate(value["questions"], 1)]
-	if value["agents"] and stop == "ended":
-		lines.append(paint("Learning: " + ", ".join(value["agents"]) + " (auto learned)", "2", color))
-	lines.append("Next: " + paint(summaryNext(value), "36", color))
-	if value["status"] == "Succeeded":
-		lines.append(paint("Tip: " + tipFor(value["id"]), "2", color))
-	return "\n".join(lines)
+	if value.get("changed") is not None:
+		return lines + changeLines(value["changed"], color)
+	written = value.get("written") or []
+	if written:
+		lines.append(f"Wrote {len(written)} file" + ("s:" if len(written) != 1 else ":"))
+		lines += [f"  {paint('~', '33', color)} {safeText(name)}" for name in written[:CHANGES_SHOWN]]
+		if len(written) > CHANGES_SHOWN:
+			lines.append(paint(f"  … and {len(written) - CHANGES_SHOWN} more", "2", color))
+	return lines
+
+
+def outcomeLines(value: dict, color: bool) -> list:
+	"""Render the outcome of an ended plan for its status: results, files, usage and where to read more."""
+	lines = resultLines(value, color) + usageLines(value.get("models") or {}, value.get("spending") or [], color)
+	return lines + [paint("Details: " + detailsHint(value), "2", color)] if lines else []
+
+
+def answerText(answer) -> str:
+	"""Format a decision's answer on one line: text as is, yes/no, a grant by its effect, anything else as JSON."""
+	if isinstance(answer, str):
+		return firstLine(answer)
+	if isinstance(answer, bool):
+		return "yes" if answer else "no"
+	if isinstance(answer, dict) and set(answer) == {"grant", "scope"}:
+		return f"grant {answer['grant']}"
+	return json.dumps(answer, ensure_ascii=False, default=str)
+
+
+def decisionLines(decided: list, color: bool) -> list:
+	"""Render the questions a run had answered, one per line with their answer."""
+	if not decided:
+		return []
+	lines = [f"Decided {len(decided)} question" + ("s:" if len(decided) != 1 else ":")]
+	for item in decided:
+		question = clip(safeText(firstLine(item["question"])) or "(decision)", 60)
+		lines.append(f"  {paint('✓', '32', color)} {question}  {paint('→', '2', color)} {clip(safeText(answerText(item['answer'])), 40)}")
+	return lines
+
+
+def modelLabel(row: dict) -> str:
+	"""Name a usage row's model: its engine, then provider/model, or `default` when the engine chose."""
+	model = "/".join(str(row[key]) for key in ("provider", "model") if row.get(key))
+	return " ".join(filter(None, [str(row.get("engine") or ""), model or "default"]))
+
+
+def usageLines(models: dict, stages: list, color: bool) -> list:
+	"""Render tokens and cost per model and in total, `≈` marking estimates, then what each stage spent."""
+	rows = models.get("models") or []
+	if not rows:
+		return []
+	items = []
+	for label, row in [(safeText(modelLabel(row)), row) for row in rows] + [("total", models["total"])]:
+		tokens = countText(row["tokens"]) + " tokens" if row.get("tokens") is not None else "— tokens"
+		cost = row.get("cost_estimate")
+		# Unknown costs stay blank rather than reading as free.
+		money = "" if cost is None else ("≈" if not row.get("cost") and cost else "") + (moneyText(cost) or "$0")
+		items.append((label, tokens, money))
+	size, room = max(width(label) for label, _, _ in items), max(width(tokens) for _, tokens, _ in items)
+	lines = ["Usage:"]
+	for label, tokens, money in items:
+		text = f"  {label}{' ' * (size - width(label))}  {tokens:>{room}}  {money}".rstrip()
+		lines.append(paint(text, "1", color) if label == "total" and len(rows) > 1 else text)
+	spending = spendingText(stages)
+	if spending:
+		lines.append(paint("  by stage: " + spending, "2", color))
+	return lines
+
+
+def detailsHint(value: dict) -> str:
+	"""Name the commands that show a run in detail: a task's output, the plan's log and its usage."""
+	# A failure explains itself; otherwise the last result is the plan's conclusion.
+	task = (value["failed"] or [result["task"] for result in value["results"]][-1:] or ["TASK"])[0]
+	return " · ".join([f"auto show {task}", "auto log --level debug",
+		f"auto x usage --where plan={value['id']} --by kind,model"])
 
 
 def changeLines(changed: list, color: bool) -> list:
@@ -757,6 +840,12 @@ class Frontend:
 				self.error(event["failure"].get("reason", "Execution failed"))
 			elif not self.streamed and event.get("output") is not None:
 				print(render(event["output"], self.format), file=self.stdout)
+			if event.get("run"):
+				# A recorded run says where its output is kept.
+				if event.get("outputPath"):
+					print(f"Output: {safeText(event['outputPath'])}\nNext: auto x script output {safeText(event['run'])}", file=self.stderr, flush=True)
+				else:
+					print(f"Recorded as {safeText(event['run'])}; see auto x script list", file=self.stderr, flush=True)
 
 	def result(self, value):
 		"""Show structured results as readable fields on terminals, without dropping data."""

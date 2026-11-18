@@ -49,6 +49,8 @@ Values are written in YAML, and a string is interpreted by its form:
   the content of the file or reference.
 - `\` prefix: a Literal, with the `\` removed (eg. `'\./not-a-path'`).
 - Anything else, and non-string data: a Literal.
+- `~` (null) as an input default: a *required* input. A run without a value
+  for it fails before the engine is started; interactive sessions ask for it.
 
 Only top-level values are resolved: the items of a list or mapping are
 Literals, so a list of `PATH`s is passed as references (eg. for the agent to
@@ -75,10 +77,15 @@ frontmatter (see Lifecycle).
 The frontmatter holds the parameterisable parts of a script, the body its
 template.
 
-Execution: running a script is ephemeral, like running a shell script. It
-streams events and ends with a status and an output, without storage or
-configuration (see [Goal](spec-000-goal.md)). Persistence starts with task runs
-(see [Task](spec-003-task.md)).
+Template inheritance: a script may specialise a template with `from`, taking
+its configuration, output contract and lifecycle, and filling its inputs with
+its own sections (see Templates).
+
+Execution: running a script streams events and ends with a status and an
+output, without configuration (see [Goal](spec-000-goal.md)). `ScriptStart`
+is ephemeral, like running a shell script; `ScriptRun`, used by `auto run`,
+also records the run, so that its output can be found later (see Recorded
+runs). Task runs add contracts and plans (see [Task](spec-003-task.md)).
 
 ## Format
 
@@ -151,6 +158,8 @@ depends on its source:
 | `prompt` | config | string | Replace system instructions |
 | `isolated` | config | boolean | Isolate ambient context where supported; default `false` |
 | `tools` | config | list | Allowlist of the engine's tool names; `[]` disables all tools. Absent: the engine's own tools. An engine that cannot apply it fails the run |
+| `access` | config | string | `read` or `write` (default): what the run may do to the project. `read` is enforced where the engine can (Pi: read-only tools unless `tools` is given; OpenCode: file edits denied; LLM: no tools), and warned about otherwise. Recorded runs report the files a `read` run changed |
+| `from` | template | string | Template the script specialises: a `PATH`, or `{kind}/{name}` for `auto:catalogue/{kind}/{name}` (see Templates) |
 | `inputs.*` | input | Value | Input data |
 | `params.*` | param | Value | Behaviour parameters |
 | `output.format` | output | string | Output format; default `markdown` |
@@ -200,12 +209,91 @@ apply:
   Its Value is a list, or text with one item per non-empty line (eg. a Shell
   value). Items are Literals: they are not resolved as `PATH` or Shell values.
 
+### Templates
+
+A script giving `from` specialises a template: a script or task file, often
+from the catalogue (see [Elaboration](spec-006-elaboration.md#catalogue)).
+
+```markdown
+---
+from: task/audit
+inputs:
+  facet: documentation structure
+---
+Keep `docs/` focussed on specifications, references and use cases.
+
+## Scope
+
+- docs/
+
+## Criteria
+
+- DOC-01: `docs/` only holds specifications, references and use cases
+```
+
+- *Content*: the template's `## Process` section when it has one (a task
+  template), else its body.
+- *Metadata*: the template's metadata, except its catalogue identity (`kind`,
+  `identity`), then the script's, which takes precedence key by key (and
+  within `inputs`, `params` and `output`). Lifecycle commands are inherited,
+  unlike with transclusion. Relative references keep their origin: the
+  template's resolve from the template, the script's from the script.
+- *Sections*: each `##` section of the script whose heading names a template
+  input (lowercased, other characters as `_`, eg. `## Out of scope` is
+  `out_of_scope`) gives that input, as a Literal. A section given for a list
+  input gives its bullet items, or its text as one item. Giving an input both
+  as a section and in the frontmatter is an error.
+- *Brief*: the rest of the body (text before the first section, and the
+  sections naming no input) gives the `brief` input when the template
+  declares one, with its sections nested as `####`; otherwise it follows the
+  template's content.
+- *Artifact*: an `artifact` gives the output contract (`output`), below the
+  explicit values. A recorded run also runs the shell checks (`!?`) of the
+  artifact's Post on the stored output (see Recorded runs); its other checks
+  are task checks.
+- Templates may themselves give `from`. A cycle fails the expansion.
+
+### Recorded runs
+
+`ScriptRun` runs a script like `ScriptStart` and records it under the
+project's `.auto/runs/{run}/`, beside the plans:
+
+```
+.auto/runs/{run}/
+  receipt.json      # Status, script, template, match key, usage, warnings, changes
+  journal.jsonl     # The script events
+  output.{md,txt,json}
+```
+
+- The terminal `ScriptEnded` event names the run (`run`) and its output file
+  (`outputPath`); the CLI shows both, with the command reading the output.
+- *Checks*: when the script inherits an `artifact`, the shell checks of the
+  artifact's Post run on the stored output after the run succeeds, with
+  `run.output` its path. A failing check fails the run, keeping its output.
+- *Baseline*: when the template declares a `baseline` input left empty, it is
+  given the output of the latest succeeded run with the same match key: the
+  template, and the `facet` and `scope` inputs when given. The receipt names
+  that run in `baseline`, and a `ScriptMeta(baseline)` event announces it.
+- *Access*: a `read` run snapshots the git working tree before running, and
+  reports the files it changed (outside `.auto/`) in a warning and in the
+  receipt's `changes`, without failing the run.
+- A run missing a required input is rejected before it is recorded.
+- *References*: `auto:runs/{id}` resolves to a run's output once it has
+  ended, and `auto:runs/{id}/receipt` and `auto:runs/{id}/journal` to those
+  files, so that one run's output can be another's input (eg.
+  `audit: auto:runs/{id}`). The CLI offers recent succeeded runs when asking
+  for a missing input, those whose artifact is named like the input first.
+
 ## Operations
 
 - `ScriptExpand(context,script)`: renders the script as a prompt without
   running it through a model.
 - `ScriptStart(context,script)`: runs the script through the model, streaming
   its events. Interrupting the stream cancels the execution.
+- `ScriptRun(context,script)`: runs the script as `ScriptStart` does, and
+  records it (see Recorded runs). Interrupting it records a `Cancelled` run.
+- `ScriptList(context,filter?)`: lists recorded runs, newest first.
+- `ScriptOutput(context,record)`: reads the stored output of a recorded run.
 - `ScriptInputs(context,script)`: determines the inputs (including transitive)
   that would be used by the script.
 
@@ -271,7 +359,7 @@ being `pre`, `post`, `transform` or `apply`.
 ## Out of Scope
 
 - Task contracts, dependencies and output quality assessment (see Planning)
-- Persistence of executions (see Task runs)
+- Persistence of executions beyond recorded runs: resumption, plans (see Task runs)
 - Effects of an execution (eg. file system changes) beyond the declared
   `apply` commands, captured by Planning and Orchestration
 - Persistence, resumption and parallelism of `each` items (see Task and Plan)

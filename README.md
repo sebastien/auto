@@ -60,6 +60,14 @@ Results:
 Changed 2 files:
   + docs/architecture.md
   ~ README.md
+Decided 1 question:
+  ✓ Which diagram format should the overview use?  → mermaid
+Usage:
+  pi openai/gpt-6-luna          12.3k tokens  ≈<$0.01
+  pi anthropic/claude-opus-5-5   140k tokens  $0.46
+  total                          152k tokens  $0.46
+  by stage: planning 31k tokens 8 turns $0.09 · tasks 121k tokens 22 turns $0.37
+Details: auto show tsk-survey-modules · auto log --level debug · auto x usage --where plan=pln-000-document-project-architecture --by kind,model
 Next: auto change "…" to refine it, or auto log to review it
 Tip: auto show TASK prints a task's full output
 ```
@@ -71,7 +79,11 @@ a decision. When a task needs an answer, Auto asks you and carries on. Choose
 `c` to say what should change before anything runs, or `n` to keep the plan
 for later. In a git project, the summary lists the files the run added (`+`),
 modified (`~`) or deleted (`-`); each plan that succeeds ends with a tip about
-one more command.
+one more command. The summary is a receipt: it also lists the questions
+answered while it ran, with their answers, the tokens and cost of each model
+used and in total (`≈` marks costs estimated from a price table), and the
+commands that show the detail: a task's output, the plan's log, and its usage
+journal.
 
 Most goals need no plan: a quick, cheap model first decides whether the goal
 can run directly, as one task, and Auto then proposes just that:
@@ -135,10 +147,13 @@ More, when you need it:
 | `auto plans` / `auto use PLAN` | List the project's plans, choose the current one |
 | `auto decide "QUESTION" "ANSWER"` | Record a decision made outside a question |
 | `auto learned` | What memory agents have learned and what awaits them |
-| `auto run FILE.md` | Run a Markdown script on its own (same as `auto FILE.md`) |
+| `auto run FILE.md` | Run a Markdown script on its own (same as `auto FILE.md`); its output is kept under `.auto/runs/` (`auto x script list`) |
+| `auto help "QUESTION"` | Ask about Auto without starting a plan |
 | `auto init` | Choose an engine and write `.auto/config.toml` |
 
-Each command has `--help`. `--plan ID` selects another plan for one command
+Use `auto help` for the command list or `auto help COMMAND` for its options.
+Freeform help uses Pi or LLM; use `--engine` to choose one if needed.
+`--plan ID` selects another plan for one command
 (an ID or its number, eg. `--plan 000`); `AUTO_PLAN` does the same for a
 shell. `--format json` gives structured output, and `--yes` runs a new plan
 without asking. Without a terminal, or with `--no-input`, Auto never prompts:
@@ -163,6 +178,39 @@ Greet {{ name }} in one sentence.
 
 ```sh
 auto ./hello.md --input name=reader
+```
+
+Each run is kept under `.auto/runs/`: `auto x script list` lists them, and
+`auto x script output ID` (or the reference `auto:runs/ID`) gives an output.
+
+A script can specialise a template from the catalogue with `from`. Its
+sections fill the template's inputs, and the rest of its body is the brief:
+
+```markdown
+---
+from: task/audit
+inputs:
+  facet: documentation structure
+---
+Keep `docs/` to specifications, references and use cases.
+
+## Scope
+
+- docs/
+
+## Criteria
+
+- DOC-01: `docs/` only holds specifications, references and use cases
+```
+
+The audit runs read-only, and the next audit of the same scope reports what
+changed since. `task/audit-resolve` fixes the findings of a report
+(`--input audit=auto:runs/ID`). To let plans use your scripts, list them in
+`.auto/config.toml`:
+
+```toml
+[catalogue]
+actions = ["action-*.md"]
 ```
 
 ## Learning
@@ -214,6 +262,20 @@ model = "deepseek/deepseek-chat"
 isolated = false
 temperature = 0.2
 
+# Defaults that apply only when that engine runs.
+[runtime.engines.pi]
+provider = "openai"
+model = "gpt-6-luna"
+
+[runtime.engines.opencode]
+provider = "openrouter"
+model = "deepseek/deepseek-chat"
+
+# Defaults per role; a role may select the engine as well.
+[runtime.roles.planning]
+engine = "opencode"
+model = "anthropic/claude-opus-5-5"
+
 [features.example]
 enabled = true
 
@@ -230,6 +292,17 @@ at the same location. Script metadata overrides file defaults; `AUTO_ENGINE`,
 override script metadata (flags take priority over environment variables).
 OpenCode also accepts the `provider/model` form when `provider` is unset;
 Pi accepts a separate provider; llm does not.
+
+`[runtime.engines.<engine>]` gives defaults used only when that engine runs;
+it cannot set `engine` itself (the plural `engines` avoids colliding with the
+`engine` name). `[runtime.roles.<role>]` gives defaults for what an engine run
+is for: `planning` (goal triage and elaboration), `tasks` (a task's Process),
+`checks` (Pre, Post and Evaluation), `repairs` (corrective attempts), `memory`
+(memory agent runs) and `script` (standalone scripts). A role may select the
+`engine`, and that engine's defaults then fill what the role leaves unset.
+Increasing precedence: built in, `[runtime]`, engine defaults, role defaults,
+script/task/profile metadata, `AUTO_*` variables and flags. Only the per-run
+keys apply to an engine; the `engines` and `roles` tables are configuration.
 
 When no engine is configured and Pi is not installed, Auto uses the first
 installed engine and says so; `auto init` saves the choice.
@@ -293,8 +366,9 @@ output = 0.50
 cache_read = 0.01   # defaults to input; cache_write too
 ```
 
-A guided plan's summary ends with what each stage spent: planning, tasks,
-checks, repairs and memory, eg. `Spent: planning 140k tokens 10 turns ≈$0.02`.
+A guided plan's summary lists its usage per model and in total, then what
+each stage spent: planning, tasks, checks, repairs and memory, eg.
+`by stage: planning 140k tokens 10 turns ≈$0.02`.
 
 ### Consolidation
 

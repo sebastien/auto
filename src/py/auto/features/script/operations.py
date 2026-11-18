@@ -12,10 +12,11 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from liquid.exceptions import LiquidError
 
 from auto.features.script.config import commands, composedMeta
+from auto.features.script.inheritance import inheritTemplate
 from auto.features.script.model import Script, createScript
 from auto.features.script.templates import Renderer
 from auto.features.usage.operations import UsageRecord
-from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
+from auto.runtime.config import READ_ONLY_ENGINES, RUNTIME_DEFAULTS, validateConfig
 from auto.runtime.model import DETAIL, Context, Event, FailureKind, Limits, RunStatus, failureFor, statusFor
 from auto.runtime.operations import Engine, Resolve, Select, Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
@@ -30,14 +31,16 @@ from auto.utils.data import AutoError, document, documentText, jsonText, merge, 
 
 
 def loadScript(context: Context, script: Script | str | dict) -> Script:
-	"""Load a script from a model, a mapping or a reference."""
+	"""Load a script from a model, a mapping or a reference, composed with its template."""
 	if isinstance(script, Script):
-		return script
+		return inheritTemplate(context, script)
 	if isinstance(script, dict):
 		path = Path(script.get("path", context.project / "script.md"))
-		return createScript(script["content"], path, script.get("meta")) if "meta" in script else createScript(script["content"], path)
-	content = Resolve(context, script if isReference(script) else "./" + script)
-	return createScript(content.text, content.path, ref=content.ref)
+		loaded = createScript(script["content"], path, script.get("meta")) if "meta" in script else createScript(script["content"], path)
+	else:
+		content = Resolve(context, script if isReference(script) else "./" + script)
+		loaded = createScript(content.text, content.path, ref=content.ref)
+	return inheritTemplate(context, loaded)
 
 
 def contractText(output: dict) -> str:
@@ -57,11 +60,11 @@ def contractText(output: dict) -> str:
 	return "\n\n".join(part.rstrip("\n") for part in parts) + "\n"
 
 
-def prepare(context: Context, script, renderer: Renderer | None = None) -> dict:
+def prepare(context: Context, script, renderer: Renderer | None = None, *, role: str | None = None) -> dict:
 	"""Render a script and its output contract for one engine request."""
 	loaded = loadScript(context, script)
 	try:
-		renderer = renderer or Renderer(context, loaded)
+		renderer = renderer or Renderer(context, loaded, role=role)
 		prompt = renderer.render()
 		output = dict(renderer.config.get("output", {}))
 		output.setdefault("format", "markdown")
@@ -124,6 +127,8 @@ def executePrepared(context: Context, request: dict, journal: dict | None = None
 		"kind": "script", "run": None, "task": None, **(journal or {}),
 		"engine": name, "provider": config.get("provider"), "model": config.get("model"), "status": RunStatus.CANCELLED, "failure": None}
 	before, reported, started = dict(context.limits.usage) if context.limits else None, False, time.monotonic()
+	if config.get("access") == "read" and name not in READ_ONLY_ENGINES:
+		yield {"type": Event.SCRIPT_META, "name": "warning", "value": f"The {name} engine cannot enforce access: read; the run may change files"}
 	stream, answer = _executePrepared(context, request, name), None
 	try:
 		while True:
@@ -219,7 +224,7 @@ def runLifecycle(context: Context, script: Script):
 	try:
 		if context.cancelled():
 			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
-		renderer = Renderer(context, script)
+		renderer = Renderer(context, script, role="script")
 		namespace = renderer.bindings()
 		# Inputs are resolved once, so shell values do not run again for the prompt.
 		context = context.derive(resolvedInputs={**context.resolvedInputs, **namespace["inputs"]})
@@ -272,7 +277,7 @@ def runScript(context: Context, script, renderer: Renderer | None = None):
 		if context.cancelled():
 			raise AutoError("Execution cancelled", FailureKind.CANCELLED)
 		loaded = loadScript(context, script)
-		request = prepare(context, loaded, renderer)
+		request = prepare(context, loaded, renderer, role="script")
 		stream = executePrepared(context, request, transform=bool(loaded.meta.get("transform")))
 		answer = None
 		while True:
@@ -320,7 +325,7 @@ def ScriptStart(context: Context, script):
 			yield from runLifecycle(context, loaded)
 			return
 		name, value = next(iter(each.items()))
-		value = Value(context, value, loaded.path.parent, Renderer(context, loaded).config)
+		value = Value(context, value, loaded.path.parent, Renderer(context, loaded, role="script").config)
 		items = [line for line in value.splitlines() if line.strip()] if isinstance(value, str) else value
 		if not isinstance(items, list):
 			raise AutoError("each must give a list or lines of text", FailureKind.INPUT)
@@ -375,6 +380,10 @@ def ScriptInputs(context: Context, script, *, definitions=None, expandDefinition
 		if not missingOnly:
 			names.update(loaded.meta.get("inputs", {}))
 			names.update(loaded.meta.get("each", {}) if depth == 0 else {})
+		else:
+			# Required inputs (null defaults) are missing until given.
+			names.update(name for name, value in loaded.meta.get("inputs", {}).items()
+				if value is None and name not in context.inputs and name not in (inherited or {}).get("inputs", {}))
 		transclusions = list(renderer.transclusions())
 		paths = renderer.template.global_variable_paths(include_partials=False)
 		for argument, inline, conditional in transclusions:

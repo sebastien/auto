@@ -83,11 +83,16 @@ class OpenCode:
 						{"action": "question", "resource": "*", "effect": "allow"},
 						{"action": "subagent", "resource": "*", "effect": "deny"},
 					]
+				if config.get("access") == "read":
+					# The last matching rule wins: file edits are denied, whatever came before.
+					payload["permissions"] = [*payload.get("permissions", []), {"action": "edit", "resource": "*", "effect": "deny"}]
 				if config.get("agent"):
 					payload["agent"] = config["agent"]
 				if config.get("provider") or config.get("model"):
 					if config.get("provider"):
 						provider, model = config["provider"], config.get("model")
+						# A qualified model may arrive alongside a provider from another config layer.
+						model = model.removeprefix(provider + "/") if model else model
 						if not model:
 							raise AutoError("OpenCode provider requires a model")
 					else:

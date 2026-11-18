@@ -13,7 +13,7 @@ from liquid.token import TOKEN_TAG
 from auto.features.script.config import composedMeta
 from auto.features.script.model import Script
 from auto.features.script.sources import ScriptSources
-from auto.runtime.config import RUNTIME_DEFAULTS, validateConfig
+from auto.runtime.config import runtimeConfig, validateConfig
 from auto.runtime.operations import Shell, Value, isReference
 from auto.utils.config import RUNTIME_KEYS
 from auto.utils.data import AutoError, document, jsonText, merge
@@ -120,8 +120,9 @@ class Renderer:
 	"""Keep origins, caller values and defaults distinct across composition."""
 
 	def __init__(self, context, script: Script, inherited: dict | None = None, stack: tuple = (), *, checks: list | None = None,
-		scopeWrapper=False, scopeStack=()):
+		scopeWrapper=False, scopeStack=(), role: str | None = None):
 		self.context, self.script = context, script
+		self.role = role
 		self.checks = checks
 		self.scope = script.meta.get("_template_scope", {})
 		if not isinstance(self.scope, dict):
@@ -142,7 +143,7 @@ class Renderer:
 				self.defaults["output"][key] = str((script.path.parent / value).resolve())
 		if isinstance(self.defaults.get("cwd"), str) and not Path(self.defaults["cwd"]).is_absolute():
 			self.defaults["cwd"] = str((script.path.parent / self.defaults["cwd"]).resolve())
-		self.config = merge(RUNTIME_DEFAULTS, context.defaults, self.defaults, context.config)
+		self.config = runtimeConfig(context, self.defaults, role)
 		validateConfig(self.config)
 		if "cwd" in self.config:
 			path = Path(self.config["cwd"])
@@ -176,6 +177,9 @@ class Renderer:
 			for key, value in values.items():
 				if key in inheritedValues:
 					result[key] = inheritedValues[key]
+				elif group == "inputs" and value is None and key not in current:
+					# A null default declares a required input.
+					raise AutoError(f"Missing required input: {key}", recovery=f"Give it with --input {key}=VALUE, or run interactively to be asked.")
 				else:
 					origin = self.context.project if key in current and not materialized else self.script.path.parent
 					result[key] = self.sources.value(value, origin, self.config) if group == "params" else Value(self.context, value, origin, self.config)
@@ -229,7 +233,7 @@ class Renderer:
 		stack = self.stack if self.scopeWrapper else (*self.stack, self.identity)
 		scopeStack = (*self.scopeStack, self.identity) if self.scopeWrapper else self.scopeStack
 		child = Renderer(self.context, Script(body, content.path, meta, content.ref), self.defaults, stack, checks=self.checks,
-			scopeWrapper=wrapper, scopeStack=scopeStack)
+			scopeWrapper=wrapper, scopeStack=scopeStack, role=self.role)
 		childNamespace = child.bindings(namespace)
 		# Loop locals are inherited; child defaults fill previously absent inputs.
 		childNamespace = merge(childNamespace, namespace)
@@ -237,7 +241,7 @@ class Renderer:
 		# A transcluded script supplies otherwise unset execution/output settings.
 		keys = {*RUNTIME_KEYS, "output"}
 		self.defaults = merge({key: value for key, value in child.defaults.items() if key in keys}, self.defaults)
-		self.config = merge(RUNTIME_DEFAULTS, self.context.defaults, self.defaults, self.context.config)
+		self.config = runtimeConfig(self.context, self.defaults, self.role)
 		return result
 
 	def shellArgument(self, source: str, namespace: dict) -> str:

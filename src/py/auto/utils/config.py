@@ -15,8 +15,10 @@ from auto.utils.data import AutoError, merge, yamlLoad
 # -----------------------------------------------------------------------------
 
 
-RUNTIME_KEYS = ("engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated", "tools")
-RUNTIME_SETTINGS = frozenset(RUNTIME_KEYS)
+RUNTIME_KEYS = ("engine", "provider", "model", "agent", "temperature", "cwd", "env", "prompt", "isolated", "tools", "access")
+# Tables of defaults: per engine (`engines`) and per role (`roles`).
+RUNTIME_TABLES = ("engines", "roles")
+RUNTIME_SETTINGS = frozenset((*RUNTIME_KEYS, *RUNTIME_TABLES))
 
 # -----------------------------------------------------------------------------
 #

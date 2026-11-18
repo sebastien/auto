@@ -20,8 +20,14 @@
    When a catalogue template (`auto:catalogue/task/{name}`) does what a task
    needs, instantiate it with `from:` and the `inputs` it declares, rather
    than writing the task or listing the template as an input: it brings its
-   own process and checks. An input path (`./path`) must exist now; for a
-   file a plan task will create, depend on that task (`task:{id}`) and give
+   own process and checks. Prefer the most specific entry: a project action
+   (layer `actions`) that specialises a builtin template already holds the
+   project's scope and criteria. Give every `(required)` input, and only the
+   inputs and params the entry lists. To fix the findings of an audit, chain
+   an audit (or an action specialising it), `auto:catalogue/task/audit-resolve`
+   with `audit: task:{audit}`, then the same audit again with
+   `baseline: task:{audit}` to verify the fixes. An input path (`./path`)
+   must exist now; for a file a plan task will create, depend on that task (`task:{id}`) and give
    the path as plain text (eg. `dir: site`).
 
 5. *Ground*. Reference only inputs, files and catalogue entries that exist;

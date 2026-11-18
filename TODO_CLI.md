@@ -1,0 +1,4 @@
+- Should show the task id in the log `› task: root (elaboration)`
+- Standardise the formats for questions/answers, and provide a nice UI for that (multiple choices with comments, like in opencode)
+- We're getting a lot of gaps/questions for stuff like skills, tools, and proceeding. This should be automatic yes, bug with an audit log of the automatic decision. Principle is that a question should not be trivial, and should involve some context for the user to answer.
+- If a quesiton has already been answerd in the sesion, it should not be asked again.

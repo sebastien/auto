@@ -7,8 +7,10 @@ description: >-
   code conventions, file structure, symbol names, documentation, UI/UX,
   security), producing an Audit report. Specialise it with a task giving
   `### Scope` and `### Criteria` in its Process, then transcluding
-  `@auto:catalogue/task/audit#Process`.
+  `@auto:catalogue/task/audit#Process`, or with a script giving `from:
+  task/audit` and `## Scope` and `## Criteria` sections.
 isolated: false
+access: read
 profile: auto:catalogue/profile/default
 artifact: auto:catalogue/artifact/audit
 inputs:
@@ -18,6 +20,8 @@ inputs:
   scope: []
   # What items in scope should have: a list of `- ID: criterion`, or a PATH
   criteria: ""
+  # What the audit is about and why, in the author's words
+  brief: ""
   # References the auditor may read, eg. specs and conventions
   context: []
   # Previous audit report, to report new, fixed and persisting findings
@@ -40,6 +44,14 @@ params:
 ### Criteria
 
 {{ criteria }}
+{%- endif %}
+{% if brief != blank %}
+### Brief
+
+What the audit is about, as given by its author. Use it to interpret the
+scope and the criteria; it does not add criteria.
+
+{{ brief }}
 {%- endif %}
 
 ### Audit

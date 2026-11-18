@@ -36,6 +36,9 @@ class Pi:
 		if "tools" in config:
 			# An empty list disables every tool; a list is an allowlist of tool names.
 			args += ["--tools", ",".join(config["tools"])] if config["tools"] else ["--no-tools"]
+		elif config.get("access") == "read":
+			# Pi's read-only tools: no edit, write or shell.
+			args += ["--tools", "read,grep,find,ls"]
 		if "prompt" in config:
 			args += ["--system-prompt", config["prompt"] + "\n"]
 		decoder, pending, output, settled = codecs.getincrementaldecoder("utf-8")(), "", "", False

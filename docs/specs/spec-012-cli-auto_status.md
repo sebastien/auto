@@ -28,8 +28,9 @@ has a live event source.
   with `follow`, streams appended events until interrupted. See
   [Orchestration](spec-009-orchestration.md).
 - `RunJournal` exposes run events, while plan events also project run start,
-  waiting and end. `ScriptStart` is an ephemeral stream ending in
-  `ScriptEnded`; standalone scripts do not create persisted runs. See
+  waiting and end. `ScriptRun` streams until `ScriptEnded`,
+  then keeps the run's receipt and output under `.auto/runs/`; it is not
+  resumable. See
   [Task](spec-003-task.md) and [Agent Script](spec-002-script.md).
 - CLI streams preserve event order: text by default and JSON Lines with
   `--format json`. Results go to stdout and diagnostics to stderr.
@@ -63,7 +64,7 @@ usual plan context options.
 |---|---|---|
 | Plan | `PlanStatus` | `PlanEvents` |
 | Task/run within a plan | Included in plan progress where returned by `PlanStatus`; detailed run state is available through run operations | Run journal (`RunJournal`) and plan events that project run transitions |
-| Standalone script | No durable status is defined; `ScriptStart` returns a live event stream | Its own `ScriptStart` stream only; no later subscription is defined |
+| Standalone script | A receipt once ended (`ScriptList`); `ScriptRun` returns a live event stream | Its own `ScriptRun` stream only; no later subscription is defined |
 
 The command must not present a script as a durable, resumable object. Nor
 should it imply that memory-agent housekeeping is a live subscriber: triggers
@@ -77,6 +78,13 @@ updates in event order. In JSON mode, snapshots use the serialized
 `PlanStatus` model, and watch emits one serialized event per JSON Lines record,
 as required for streams by the Interface specification. No extra JSON hints,
 progress prose, or synthesized event kinds are part of the contract.
+
+Once a plan has ended (`Succeeded`, `Failed` or `Abandoned`), the text
+snapshot also shows its outcome, as the guided run's summary does: the result
+of each task that did the work (not of parents that only gather their
+children's), the files its runs recorded writing, tokens and cost per model with
+estimates marked `≈`, and the commands that show more. The JSON snapshot is
+unchanged.
 
 The underlying result remains authoritative: event delivery is at least once,
 so consumers must use event sequence/cursors rather than assume exactly-once

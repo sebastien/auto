@@ -54,9 +54,11 @@ class Fake:
 	def __init__(self, outputs=None):
 		self.outputs = iter(outputs or ["done"])
 		self.calls = []
+		self.configs = []
 
 	def start(self, context, request):
 		self.calls.append(request["prompt"])
+		self.configs.append(request["config"])
 		yield {"type": "ScriptEnded", "status": "Succeeded", "output": next(self.outputs)}
 
 
@@ -255,6 +257,17 @@ class PlanningTests(unittest.TestCase):
 		self.assertEqual(run["status"], "Succeeded", run)
 		self.assertEqual(run["evaluation"]["score"], .2)
 		self.assertGreater(run["usage"]["time"], 0)
+
+	def testEngineAndRoleDefaultsChooseTheModel(self):
+		self.ctx.defaults = {"engines": {"fake": {"provider": "engine", "model": "engine"}},
+			"roles": {"tasks": {"model": "tasks"}, "checks": {"model": "checks"}}}
+		self.add("work")
+		self.assertEqual(TaskStart(self.ctx, "work")["status"], "Succeeded")
+		self.assertEqual((self.engine.configs[0]["provider"], self.engine.configs[0]["model"]), ("engine", "tasks"))
+		self.engine.outputs = iter(["done", '{"pass": true, "reason": "ok"}'])
+		self.add("checked", sections={"Process": "work", "Post": "judge"})
+		self.assertEqual(TaskStart(self.ctx, "checked")["status"], "Succeeded")
+		self.assertEqual((self.engine.configs[1]["model"], self.engine.configs[2]["model"]), ("tasks", "checks"))
 
 	def testFailedEvaluationDoesNotChangeRunStatus(self):
 		self.add("evaluated", eval="false")

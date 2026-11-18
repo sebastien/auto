@@ -249,11 +249,13 @@ anywhere else (eg. Memo records, APIs):
 | Gap | `gap:{id}` | `auto:{plan}/gap/{id}` |
 | Decision | `decision:{id}` | `auto:{plan}/decision/{id}` |
 | Catalogue entry | — | `auto:catalogue/{kind}/{name}` (see [Elaboration](spec-006-elaboration.md)) |
+| Recorded script run (output, receipt, journal) | — | `auto:runs/{id}`, `auto:runs/{id}/{part}` (see [Agent Script](spec-002-script.md#recorded-runs)) |
 
 Task, run, gap and decision ids contain no `/`, so `/{part}` is unambiguous and `#` remains
-available for ranges and symbols. Plan ids `catalogue` and `agent` are reserved:
+available for ranges and symbols. Plan ids `catalogue`, `agent` and `runs` are reserved:
 `auto:agent/{id}` references memorisation agents and their consolidation runs
-(see [Memorisation](spec-010-memorisation.md)).
+(see [Memorisation](spec-010-memorisation.md)), and `auto:runs/{id}` the
+recorded runs of standalone scripts.
 
 A materialized companion source belongs to its task definition and is available
 without a succeeded task output, including after removal through the archived

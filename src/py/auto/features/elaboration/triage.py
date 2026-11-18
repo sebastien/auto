@@ -59,7 +59,7 @@ def GoalTriage(context, goal: str) -> dict:
 		effects = [{"name": effect, "rule": ruleFor(effect, layers)["rule"]} for effect in BUILTINS if effect != "repo.read"]
 		ctx = context.derive(inputs={"goal": goal.strip(), "files": projectFiles(context), "effects": effects},
 			limits=Limits(budgetValue(task.meta.get("budget"))), question=None)
-		request = prepare(ctx, task.script())
+		request = prepare(ctx, task.script(), role="planning")
 		output = None
 		for event in executePrepared(ctx, request, {"kind": "triage", "task": "root"}):
 			if event["type"] in (Event.SCRIPT_QUESTION, Event.POLICY_REQUEST):
