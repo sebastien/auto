@@ -120,6 +120,18 @@ completions while accepting any answer. A runtime policy request is a yes/no
 confirmation. In a non-interactive session, questions are handled as
 non-interactive (see [Interface](spec-007-interface.md)).
 
+*Routing*: `auto "TEXT"` is not a command gap: it is routed (see
+[Learning Loop](spec-013-learning-loop.md)), and the routed command is echoed
+like a filled one, eg. `› auto change "use pnpm"`, before it runs with its
+own confirmations. When routing cannot decide, the routes are offered as a
+picker of the commands they stand for.
+
+*Review*: at the end of a delivery, when `ReviewAssess` asks for one, the
+review is a prompt like the others: `Good? [Y]es / [c]hange / [n]ote`, or one
+free-text question. `Enter` approves; `c` asks what should change and applies
+it as `auto change`; `n` asks for a note; `Ctrl-C` leaves it unanswered,
+which is noted as such. Nothing is asked in a non-interactive session.
+
 *Plan confirmation*: `auto new` shows the plan it proposes, then asks
 `Run it? [Y]es / [c]hange / [n]o`. `c` asks what should change and proposes
 the refined plan again; `n` keeps the plan without running it (exit `0`,

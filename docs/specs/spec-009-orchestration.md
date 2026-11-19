@@ -98,7 +98,7 @@ Plan directory additions (see [Plan](spec-004-plan.md)):
 ```
 
 Orchestration settings are configured under `[orchestration]` (see
-Configuration in the README), and may be overridden in the root task (`tsk/root.md`):
+[ref-configuration](../ref-configuration.md) for the files), and may be overridden in the root task (`tsk/root.md`):
 
 | Key | Default | Purpose |
 |---|---|---|

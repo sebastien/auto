@@ -361,6 +361,9 @@ Triage:
   it needs (built-in effects other than `repo.read`). It is given the goal,
   the project's files known to git (up to 200) and the effects with their
   rules. Any failure answers `plan`, with the reason: triage never blocks.
+  `auto "TEXT"` first routes the request (`RequestTriage`, see
+  [Learning Loop](spec-013-learning-loop.md)); `GoalTriage` runs once the
+  request is known to be a goal.
 - `PlanCreate(…, route)`: `plan` (the default) elaborates the goal; `direct`
   writes a root that does it, with the goal as its Process and `route:
   direct`, without elaboration; `triage` lets `GoalTriage` choose. Triage

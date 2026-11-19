@@ -68,8 +68,11 @@ operation remains available, by noun and verb, under `auto x`.
   noun and verb (eg. `auto x run get`, `auto x elaboration validate`).
 - *Shorthands*: `auto PATH.md [OPTIONS]` is `auto run PATH.md [OPTIONS]`;
   paths resolve from the working directory, and execution context discovery is
-  unchanged by the script's location. `auto "GOAL" [OPTIONS]`, a quoted goal
-  (one argument containing a space), is `auto new "GOAL" [OPTIONS]`; any
+  unchanged by the script's location. `auto "TEXT" [OPTIONS]`, a quoted request
+  (one argument containing a space), is `auto do "TEXT" [OPTIONS]`: it is
+  routed to the command it stands for (a goal, a change, an answer,
+  feedback…), echoed, then run (see
+  [Learning Loop](spec-013-learning-loop.md)); any
   other unknown word is a usage error, so that a mistyped command never
   starts a plan (an internal noun points to `auto x`). `auto` alone
   shows the current plan (`auto status`), or how to start one when there is
@@ -142,8 +145,8 @@ flags (eg. `--plan`) as the default context.
 - *Naming*: tools are named `{noun}_{verb}` after the operation, whatever its
   CLI command (eg. `script_run`, `plan_status`, `elaboration_validate`).
 - *Authority*: tools act with the server's author. Operations through which a
-  person decides (answering, running a guided plan) are not exposed, so that
-  an agent cannot decide for them.
+  person decides (answering, running a guided plan, reviewing, forgetting) are
+  not exposed, so that an agent cannot decide or give feedback for them.
 - *Arguments*: a JSON object, with one property per argument and a JSON
   Schema derived from the operation. Payloads are given as content or as
   a `PATH`.
@@ -162,7 +165,8 @@ Main commands, in the order of the reference:
 
 | Operation | CLI | MCP | Need |
 |---|---|---|---|
-| `PlanDo` | `new` (and `auto "GOAL"`) | — | Go from a goal to a result: plan it, confirm it, run it asking what it needs, and summarise |
+| `RequestDo` | `do` (and `auto "TEXT"`) | — | Say anything and let Auto decide what it is: a goal, a change, an answer, feedback or an instruction (see [Learning Loop](spec-013-learning-loop.md)) |
+| `PlanDo` | `new` | — | Go from a goal to a result: plan it, confirm it, run it asking what it needs, and summarise |
 | `PlanStatus` | `status` (and `auto`) | `plan_status` | Know where the plan stands, what needs you and what to do next; give agents the plan state |
 | `PlanGo` | `go` | — | Continue a plan, or run a task again, answering its questions as they come |
 | `QuestionAnswer` | `answer` | — | Answer the plan's open questions, by number or one after the other |
@@ -175,7 +179,9 @@ Main commands, in the order of the reference:
 | `PlanList` | `plans` | `plan_list` | Find the plans of a project, and pick one to follow |
 | `PlanUse` | `use` | — | Choose the plan later commands act on |
 | `DecisionRecord` | `decide` | — | Record a decision made without a gap (eg. in conversation), so that none is lost (see [Plan](spec-004-plan.md)) |
-| `LearningStatus` | `learned` | `learning_status` | Know what memory agents have consolidated and what awaits them (see [Memorisation](spec-010-memorisation.md)) |
+| `FeedbackNote` | `review` | — | Tell Auto how a delivery went, or how things must be done from now on, so that it learns (see [Learning Loop](spec-013-learning-loop.md)) |
+| `LearningStatus` | `learned` | `learning_status` | Know what memory agents have consolidated, the rules they follow and what awaits them (see [Memorisation](spec-010-memorisation.md)) |
+| `LearningForget` | `forget` | — | Undo what Auto just learned, or retire one rule |
 | `ScriptRun` | `run` (and `auto PATH.md`) | `script_run` | Run a script standalone, keeping its output (see [Agent Script](spec-002-script.md#recorded-runs)) |
 
 Internals, under `auto x`:
@@ -258,6 +264,12 @@ takes; they add no state of their own.
   plan has none.
 - A runtime policy request answered yes becomes the grant its rule requires
   (see [Plan Policy](spec-008-plan-policy.md)).
+- *Review*: after the summary, `ReviewAssess` decides whether to ask the
+  person for a review, and the answer is noted as feedback (see
+  [Learning Loop](spec-013-learning-loop.md#behaviour)); a review never
+  changes the exit status.
+- *Notices*: pending learning notices are shown on stderr before the output
+  of the next human command, never in `json` output.
 
 ## Rules
 

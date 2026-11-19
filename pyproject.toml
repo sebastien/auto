@@ -30,6 +30,7 @@ exclude = ["*.node_modules", "*.node_modules.*"]
 
 [tool.setuptools.data-files]
 "share/auto" = ["README.md"]
+"share/auto/docs" = ["docs/ref-cli.md", "docs/ref-configuration.md"]
 "share/auto/docs/specs" = ["docs/specs/spec-007-interface.md"]
 "share/auto/catalogue/task" = ["src/md/auto/catalogue/task/*.md"]
 "share/auto/catalogue/artifact" = ["src/md/auto/catalogue/artifact/*.md"]

@@ -33,7 +33,9 @@ that AgentMemory entry, by default `agent-{id}/agent:{Name}`, `{Name}` being
 the id in PascalCase (`ui-designer` gives `UiDesigner`), so the Auto id and
 the Memo private namespace match (eg. `designer` and `agent-designer/`).
 The project's `[memory] default_agents` lists the default agent references of
-plans created without `agents`; it defaults to an empty list. Agent definitions
+plans created without `agents`; it defaults to the built-in project agent,
+`["auto:agent/project"]` (see [Learning Loop](spec-013-learning-loop.md)),
+and `[]` disables learning by default. Agent definitions
 remain under `[memory.agents.{id}]`. A plan's explicit `agents` overrides the
 default selection, and `agents: []` disables it. Creation records the resolved
 selection, so later configuration changes do not change existing plans.
@@ -53,6 +55,10 @@ configuration.
 - `concerns`: optional decision concerns the agent follows (see Decisions);
   all decisions of its plans when absent
 - `instructions`: what this agent's memory is for, given to its Memoriser
+- `export`: optional project file (eg. `AGENTS.md`) holding a Memo-managed
+  section with the agent's canonical prompt, refreshed after each applied
+  consolidation that changes it (Memo `AgentPromptExport`), so that tools
+  run outside Auto follow the same rules
 
 Plan (memorisation facet): attributes added to a plan.
 - `agents`: references to the agents informed by and observing the plan
@@ -116,11 +122,14 @@ Observations come from two sources:
 - *Interfaces*: an interface acting for an agent (eg. an auto-agent
   conversation) notes observations with its conversation as instance and
   conversation references as sources; capture rules are those of the
-  interface.
+  interface. The Auto CLI is such an interface: it notes human feedback on
+  deliveries (approvals, corrections, preferences, instructions) for the
+  agents of the plan concerned (see [Learning Loop](spec-013-learning-loop.md)).
 
 Subagents spawned by a run do not observe: they cannot judge what is already
-known, and would duplicate the run's observations. Auto records no observation
-itself; in particular, decisions are not observations (see Decisions).
+known, and would duplicate the run's observations. The runtime records no
+observation itself, only runs and interfaces do; in particular, decisions are
+not observations (see Decisions).
 
 ## Decisions
 
@@ -167,6 +176,7 @@ that agent. Neither allowance may loosen a user-level restriction.
 | Trigger | Requests a consolidation |
 |---|---|
 | `plan-ended` | When a plan with the agent in `agents` ends |
+| `feedback` | When an interface notes human feedback for the agent (see [Learning Loop](spec-013-learning-loop.md)) |
 | `backlog:{n}` | When `AgentDue` reports at least `n` unrouted observations, checked after `RunEnded` |
 | `decision` | When a decision reaching the agent is resolved or recorded, including on an ended plan |
 | (explicit) | By `ConsolidationStart` |
@@ -216,6 +226,11 @@ The run receipt records the report. Consolidation never raises gaps and never
 blocks a plan: it is cheap, and its
 results are reworked by later passes rather than approved in advance.
 
+After an applied pass, Auto records a notice of the rule and perspective
+changes it made (see [Learning Loop](spec-013-learning-loop.md#conceptual-model)),
+shown to the next human command with the way to undo it, and refreshes the
+agent's `export` when its canonical prompt revision changed.
+
 ## Policy
 
 Memorisation declares effects (see [Plan Policy](spec-008-plan-policy.md)):
@@ -224,8 +239,13 @@ Memorisation declares effects (see [Plan Policy](spec-008-plan-policy.md)):
 |---|---|---|
 | `memory.observe` | Appending observations | `allow` |
 | `memory.consolidate` | Applying corrections, summaries, learnings and model changes | `allow` |
-| `memory.promote` | Changing startup selection (`core`, bindings) | `confirm` |
-| `memory.evolve` | Changing a perspective | `confirm` |
+| `memory.promote` | Changing startup selection (`core`, bindings) | `allow` |
+| `memory.evolve` | Changing a perspective | `allow` |
+
+Learning asks for forgiveness, not permission: promotions and perspective
+changes are applied, then shown as notices with their undo (see
+[Learning Loop](spec-013-learning-loop.md#undo)). `confirm` remains available
+for agents whose startup material must be reviewed first.
 
 Rules come from user and project configuration and the agent's `policy` (see
 Plan Policy sources); a later layer may tighten but never loosen an earlier
@@ -318,6 +338,12 @@ MemoryConsolidation format:
   when coalesced. An allowance overrun requires an explicit override.
 - `ConsolidationStatus(context,agent)`: the agent's due work, the latest and
   pending consolidations, open questions and pending proposals.
+- Feedback, notices and undo: `FeedbackNote`, `LearningForget` (see
+  [Learning Loop](spec-013-learning-loop.md#operations)).
+
+The built-in project agent is the exception to "consolidation creates no
+learning stores": Auto creates its Memo agent (`AgentInit`) on first use,
+and says so once.
 
 Plan `agents` are set at creation (`PlanCreate`, see Plan) and changed with an
 `agents` revision operation, extending the PlanRevision operations.
